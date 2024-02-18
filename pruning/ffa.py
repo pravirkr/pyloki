@@ -18,15 +18,11 @@ def unify_fold(
     nchunks = fold.shape[0]
     outdata = np.zeros((nchunks // 2, len(param_cart_new), *fold.shape[-2:]), fold.dtype)
     for iparam_set, param_set in enumerate(param_cart_new):
-        params_ind0, phase_shift0 = dp_funcns.resolve(
-            param_set, param_arr, ffa_level - 1, 0
-        )
-        params_ind1, phase_shift1 = dp_funcns.resolve(
-            param_set, param_arr, ffa_level - 1, 1
-        )
+        param_idx0, phase_shift0 = dp_funcns.resolve(param_set, param_arr, ffa_level, 0)
+        param_idx1, phase_shift1 = dp_funcns.resolve(param_set, param_arr, ffa_level, 1)
         for ipair in range(outdata.shape[0]):
-            fold0 = dp_funcns.shift(fold[ipair * 2][params_ind0], phase_shift0)
-            fold1 = dp_funcns.shift(fold[ipair * 2 + 1][params_ind1], phase_shift1)
+            fold0 = dp_funcns.shift(fold[ipair * 2][param_idx0], phase_shift0)
+            fold1 = dp_funcns.shift(fold[ipair * 2 + 1][param_idx1], phase_shift1)
             outdata[ipair][iparam_set] = dp_funcns.add(fold0, fold1)
     return outdata
 
@@ -121,6 +117,19 @@ class DynamicProgramming(object):
         self._dparams = dparams_new
         self._chunk_duration *= 2
 
+    def ffa_iter_dry(self):
+        self._ffa_level += 1
+        param_steps = self.dp_funcns.step(self.ffa_level)
+        print(f"param steps: {param_steps}")
+        param_arr_new = self.params.get_updated_param_arr(param_steps)
+        dparams_new = self.params.get_updated_dparams(param_steps)
+        complexity = np.prod(list(map(len, param_arr_new)))
+        self._param_steps = param_steps
+        self._param_arr = param_arr_new
+        self._dparams = dparams_new
+        self._chunk_duration *= 2
+        return complexity
+
     def do_iterations(self, n_iters="max"):
         tstart = time.time()
         if n_iters == "max":
@@ -133,10 +142,22 @@ class DynamicProgramming(object):
             print(f"fold dimensions: {self.fold.shape}")
             print(f"elapsed time: {time.time() - tstart}")
 
+    def do_iterations_dry(self, n_iters="max"):
+        if n_iters == "max":
+            n_iters = int(np.log2(len(self.fold)))
+        elif n_iters == "prune":
+            n_iters = int(np.log2(len(self.fold))) - 7
+        complexity = []
+        for _ in range(n_iters):
+            print(f"performing iteration: {self.ffa_level + 1}")
+            complexity.append(self.ffa_iter_dry())
+        return complexity
+
     def _set_dp_funcns(self, params):
         nparams_to_dp_funcns = {
             1: base.PeriodSearchDPFunctions,
             2: base.AccelSearchDPFunctions,
             3: base.JerkSearchDPFunctions,
+            4: base.SnapSearchDPFunctions,
         }
         return nparams_to_dp_funcns[params.nparams](params)

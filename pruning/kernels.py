@@ -535,6 +535,10 @@ def period_step(tobs: float, tsamp: int, p_min: float, tol: float) -> float:
     n_jumps = tobs / p_min
     return tol * tsamp / (n_jumps / 2)
 
+@njit
+def freq_step(tobs: int, tsamp: int, f_min: float, tol: float) -> float:
+    return tol * f_min**2 * tsamp / (tobs * f_min - 1)
+
 
 @njit
 def branch_param(opt_d_par, cur_d_par, cur_val):

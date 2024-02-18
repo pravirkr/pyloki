@@ -151,7 +151,7 @@ class Pruning(object):
             self._complete = True
             return
         else:
-            log_str += f"score max: {self.suggestion.scores.max():.2f}, min: {self.suggestion.scores.min():.2f}, "
+            log_str += f"score thresh: {self.threshold_scheme[self.iter_num]:.2f}, max: {self.suggestion.scores.max():.2f}, min: {self.suggestion.scores.min():.2f}, "
             log_str += f"P(surv): {self.suggestion.size / n_leaves_total:.2f}"
             # With high SNR, these records allow to trace the numerical stability of the pruning algorithm.
             best_ind = np.argmax(self.suggestion.scores)
@@ -188,6 +188,7 @@ class Pruning(object):
         nparams_to_dp_funcns = {
             2: base.PruningAccelDPFunctions,
             3: base.PruningJerkDPFunctions,
+            4: base.PruningSnapDPFunctions,
         }
         return nparams_to_dp_funcns[dyp.params.nparams](
             dyp.params, dyp.param_arr, dyp.dparams, dyp.chunk_duration

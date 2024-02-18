@@ -257,6 +257,7 @@ class PulsarSignal(object):
         table.add_row(["Period", self.params.period])
         table.add_row(["Accel", self.params.mod_func.acc])
         table.add_row(["Jerk", self.params.mod_func.jerk])
+        table.add_row(["Snap", self.params.mod_func.snap])
         table.add_row(["S/N", self.params.snr])
         table.add_row(["Width", spyden_boxcar.best_width])
         table.add_row(["Ducy", f"{ducy:.3f}"])
