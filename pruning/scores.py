@@ -1,5 +1,5 @@
 from __future__ import annotations
-from numba import njit, types
+from numba import njit, types, prange
 from numba.experimental import jitclass
 import numpy as np
 
@@ -154,18 +154,18 @@ def boxcar_snr(data: np.ndarray, widths: np.ndarray, stdnoise: float = 1.0) -> n
     return snrs.reshape((*data.shape[:-1], widths.size))
 
 
-@njit
+@njit(parallel=True, fastmath=True)
 def boxcar_snr_2d(
     folds: np.ndarray, widths: np.ndarray, stdnoise: float = 1.0
 ) -> np.ndarray:
     nfolds = len(folds)
     snrs = np.zeros(shape=(nfolds, widths.size), dtype=np.float32)
-    for ifold in range(nfolds):
+    for ifold in prange(nfolds):
         snrs[ifold] = boxcar_snr_1d(folds[ifold], widths, stdnoise)
     return snrs
 
 
-@njit
+@njit(fastmath=True)
 def boxcar_snr_1d(
     norm_data: np.ndarray, widths: np.ndarray, stdnoise: float = 1.0
 ) -> np.ndarray:

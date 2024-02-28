@@ -1,6 +1,6 @@
 from __future__ import annotations
 import numpy as np
-from numba import njit, types
+from numba import njit, types, vectorize
 from numba.experimental import jitclass
 from pruning import utils
 
@@ -113,43 +113,34 @@ def cartesian_prod(arrays: np.ndarray) -> np.ndarray:
     return out
 
 
-@njit
-def get_phase_idx(proper_time: float, period: float, nbins: int, delay: float = 0) -> int:
-    """Calculate the phase bin index of the folded series.
+@vectorize(cache=True)
+def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> int:
+    """Calculate the phase index of the folded profile.
 
     Parameters
     ----------
     proper_time : float
-        The proper time of the signal
+        Proper time of the signal in time units.
     period : float
-        The period of the signal
+        Period of the signal in time units.
     nbins : int
-        The number of bins in the folded time series
+        Number of bins in the folded profile.
     delay : float
-        The delay of the signal due to binary motion. Correction for acceleration.
+        Signal delay due to pulsar binary motion in time units.
 
     Returns
     -------
     int
-        The index of the folded time series
+        Phase bin index of the proper time in the folded profile.
     """
-    factor = nbins / period
-    index = np.round(((proper_time % period) + delay) * factor) % nbins
-    return int(index)
-
-
-@njit
-def get_phase_idx_many(
-    proper_time: np.ndarray, period: float, nbins: int, delay: float = 0
-) -> np.ndarray:
-    factor = nbins / period
-    indices = np.round(((proper_time % period) + delay) * factor) % nbins
-    return indices.astype(np.uint32)
+    phase = ((proper_time + delay) * freq) % 1
+    phase_idx = int(np.round(phase * nbins))
+    return phase_idx % nbins
 
 
 @njit
 def fold_ts(
-    ts_e: np.ndarray, ts_v: np.ndarray, ind_arrs: np.ndarray, nbins: int
+    ts_e: np.ndarray, ts_v: np.ndarray, ind_arrs: np.ndarray, nbins: int, nsubints: int
 ) -> np.ndarray:
     """Fold a time series for given phase bin indices.
 
@@ -160,38 +151,30 @@ def fold_ts(
     ts_v : np.ndarray
         Time series variance
     ind_arrs : np.ndarray
-        Array of phase bin indices
+        Phase bin indices of each time sample for each period
     nbins : int
-        Number of bins in the folded time series
+        Number of bins in the folded profile
+    nsubints : int
+        Number of sub-integrations in time.
 
     Returns
     -------
     np.ndarray
-        Folded time series with shape (nperiods, 2, nbins)
+        Folded time series with shape (nperiods, nsubints, 2, nbins)
     """
+    nsamps = len(ts_e)
     nperiod = len(ind_arrs)
-    nsamples = len(ts_e)
-    res = np.zeros(shape=(nperiod, 2, nbins))
-
+    samp_per_subint = nsamps // nsubints
+    samps_final = nsubints * samp_per_subint
+    subint_idxs = np.arange(samps_final) // samp_per_subint
+    res = np.zeros(shape=(nperiod, nsubints, 2, nbins), dtype=ts_e.dtype)
     for iperiod in range(nperiod):
         ind_arr = ind_arrs[iperiod]
-        for isamp in range(nsamples):
-            res[iperiod, 0, ind_arr[isamp]] += ts_e[isamp]
-            res[iperiod, 1, ind_arr[isamp]] += ts_v[isamp]
-    return res
-
-
-@njit
-def fold_subints(
-    ts_e: np.ndarray, ts_v: np.ndarray, ind_arr: np.ndarray, nbins: int, nsubints: int
-) -> np.ndarray:
-    nsamps = len(ts_e)
-    samp_per_subint = nsamps // nsubints
-    res = np.zeros(shape=(nsubints, 2, nbins))
-    for isamp in range(nsubints * samp_per_subint):
-        isubint = isamp // samp_per_subint
-        res[isubint, 0, ind_arr[isamp]] += ts_e[isamp]
-        res[isubint, 1, ind_arr[isamp]] += ts_v[isamp]
+        for isamp in range(samps_final):
+            isubint = subint_idxs[isamp]
+            iphase = ind_arr[isamp]
+            res[iperiod, isubint, 0, iphase] += ts_e[isamp]
+            res[iperiod, isubint, 1, iphase] += ts_v[isamp]
     return res
 
 
@@ -199,7 +182,7 @@ def fold_subints(
 def fold_brute_start(
     ts_e: np.ndarray,
     ts_v: np.ndarray,
-    period_arr: np.ndarray,
+    freq_arr: np.ndarray,
     chunk_len: int,
     nbins: int,
     dt: float,
@@ -207,16 +190,16 @@ def fold_brute_start(
     nsamples = len(ts_e)
     chunk_idxs = np.arange(0, nsamples, chunk_len)
     proper_time = np.arange(chunk_len) * dt
-    phase_idx_arrs = np.empty((len(period_arr), chunk_len), dtype=np.int64)
-    for iperiod, period in enumerate(period_arr):
-        phase_idx_arrs[iperiod] = get_phase_idx_many(proper_time, period, nbins)
+    phase_idx_arrs = np.empty((len(freq_arr), chunk_len), dtype=np.int64)
+    for ifreq, freq in enumerate(freq_arr):
+        phase_idx_arrs[ifreq] = get_phase_idx(proper_time, freq, nbins, 0)
     nchunks = int(np.ceil(nsamples / chunk_len))
-    fold = np.zeros((nchunks, len(period_arr), 2, nbins))
+    fold = np.zeros((nchunks, len(freq_arr), 2, nbins))
 
     for isig_ind, chunk_ind in enumerate(chunk_idxs):
         ts_e_chunk = ts_e[chunk_ind : chunk_ind + chunk_len]
         ts_v_chunk = ts_v[chunk_ind : chunk_ind + chunk_len]
-        fold[isig_ind] = fold_ts(ts_e_chunk, ts_v_chunk, phase_idx_arrs, nbins)
+        fold[isig_ind] = fold_ts(ts_e_chunk, ts_v_chunk, phase_idx_arrs, nbins, 1)[:, 0]
     return fold
 
 
@@ -535,9 +518,13 @@ def period_step(tobs: float, tsamp: int, p_min: float, tol: float) -> float:
     n_jumps = tobs / p_min
     return tol * tsamp / (n_jumps / 2)
 
+
 @njit
 def freq_step(tobs: int, tsamp: int, f_min: float, tol: float) -> float:
-    return tol * f_min**2 * tsamp / (tobs * f_min - 1)
+    # tol in unit of bins
+    m_cycle = tobs * f_min
+    delta_f = f_min**2 * tsamp / (m_cycle - 1)
+    return tol * delta_f
 
 
 @njit

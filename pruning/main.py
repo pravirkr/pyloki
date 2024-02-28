@@ -87,7 +87,7 @@ def test_pulsar_search_periodicity(psr_type="msp", tol=None, fold_bins=None):
     signal_params = SignalParams(period, dt)
     psr_signal = generate_signal(signal_params)
 
-    param_limits = typed.List([(signal_params.period * 0.6, signal_params.period * 1.2)])
+    param_limits = typed.List([(signal_params.period * 0.5, signal_params.period * 1.6)])
     if tol is None:
         tol = signal_params.tol
     if fold_bins is None:
@@ -106,7 +106,7 @@ def test_pulsar_search_periodicity(psr_type="msp", tol=None, fold_bins=None):
     return dyp
 
 
-def test_pulsar_search_accn(psr_type="msp", accel=100):
+def test_pulsar_search_accn(psr_type="msp", accel=100, tol=None, fold_bins=None):
     if psr_type == "msp":
         period = 1.012345678910111213 * 1e-2  # (s)
         dt = 8.192e-5
@@ -122,11 +122,16 @@ def test_pulsar_search_accn(psr_type="msp", accel=100):
             (signal_params.period * 0.95, signal_params.period * 1.1),
         ]
     )
+    if tol is None:
+        tol = signal_params.tol
+    if fold_bins is None:
+        fold_bins = signal_params.fold_bins
+    print(f"Using tolerance: {tol}, fold_bins: {fold_bins}")
     search_params = SearchParams(
         signal_params.nsamps,
         signal_params.dt,
-        signal_params.tol,
-        signal_params.fold_bins,
+        tol,
+        fold_bins,
         param_limits,
     )
     true_params = np.array([accel, signal_params.period])

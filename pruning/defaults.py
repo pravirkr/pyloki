@@ -3,8 +3,8 @@ from numba import njit, types, typed
 from pruning import kernels, utils
 
 
-@njit
-def add(data0, data1):
+@njit(["f4[:, :](f4[:, :], f4[:, :])"], cache=True)
+def add(data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
     return data0 + data1
 
 
@@ -13,7 +13,7 @@ def pack(data, iter_num):
     return data
 
 
-@njit
+@njit(cache=True)
 def shift(data, phase_shift):
     return kernels.nb_roll2d(data, phase_shift)
 
@@ -72,7 +72,7 @@ def ffa_shift_reference(param_set: np.ndarray, t_ref: float) -> tuple[np.ndarray
             expont = i_delay - iparam
             delay_arr[i_delay] += param_set[iparam] * t_ref**expont / kernels.fact(expont)
     param_set_new = delay_arr[:-1]
-    param_set_new[-1] = param_set[-1] * (1 - delay_arr[-2] / utils.c_val)
+    param_set_new[-1] = param_set[-1] * (1 + delay_arr[-2] / utils.c_val)
     offset = delay_arr[-1] / utils.c_val
     return param_set_new, offset
 
@@ -91,7 +91,7 @@ def ffa_resolve(
     Parameters
     ----------
     pset_cur : np.ndarray
-        Parameter set of the current iteration to resolve. 
+        Parameter set of the current iteration to resolve.
     parr_prev : np.ndarray
         Parameter array of the previous iteration.
     ffa_level_cur : int
@@ -107,7 +107,7 @@ def ffa_resolve(
     -------
     tuple[np.ndarray, float]
         The resolved parameter set index and the relative phase shift.
-    """    
+    """
     nparams = len(pset_cur)
     if nparams == 1:
         t_ref_prev = latter * 2 ** (ffa_level_cur - 1) * tchunk_init

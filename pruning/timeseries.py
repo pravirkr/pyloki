@@ -70,6 +70,11 @@ class SignalParams(object):
         print(f"Tol = {self.tol}, fold bins = {self.fold_bins:d}")
 
     @property
+    def freq(self) -> float:
+        """Frequency of the pulsar."""
+        return 1 / self.period
+
+    @property
     def tobs(self) -> float:
         """Total observation time."""
         return self.nsamps * self.dt
@@ -154,40 +159,41 @@ class TSData(object):
         ts_e, ts_v = kernels.resample(self.ts_e, self.ts_v, self.dt, accel)
         return TSData(ts_e, ts_v, self.dt)
 
-    def fold_subints(self, period, nbins, nsubints=None):
-        full_periods = int(self.tobs // period)
-        tbin = period / nbins
-        if full_periods < 1:
-            raise ValueError("Period exceeds total data length")
+    def fold_subints(self, freq, nbins, nsubints=None):
+        cycles_total = int(self.tobs * freq)
+        tbin = 1 / (freq * nbins)
+        if cycles_total < 1:
+            raise ValueError(f"Period ({1/freq}) exceeds total data length ({self.tobs})")
 
         if tbin < self.dt:
             raise ValueError("Bin width is shorter than sampling time")
 
         if nsubints is None:
-            nsubints = full_periods
+            nsubints = cycles_total
         else:
             if nsubints < 1:
                 raise ValueError("subints must be >= 1 or None")
-            if nsubints > full_periods:
+            if nsubints > cycles_total:
                 raise ValueError(
-                    f"subints ({nsubints}) exceeds the number of signal periods that fit in the data ({full_periods})"
+                    f"subints ({nsubints}) exceeds the number of signal cycles that fit in the data ({cycles_total})"
                 )
         proper_time = np.arange(0, self.tobs, self.dt)
-        ind_arr = kernels.get_phase_idx_many(proper_time, period, nbins)
-        fold = kernels.fold_subints(self.ts_e, self.ts_v, ind_arr, nbins, nsubints)
+        ind_arr = kernels.get_phase_idx(proper_time, freq, nbins, 0)
+        ind_arrs = np.array([ind_arr])
+        fold = kernels.fold_ts(self.ts_e, self.ts_v, ind_arrs, nbins, nsubints).squeeze()
         return fold[:, 0, :] / np.sqrt(fold[:, 1, :])
 
     def ephemeris_fold(
-        self, mod_func: simulate.DerivativeModulating, period: float, nbins: float
+        self, mod_func: simulate.DerivativeModulating, freq: float, nbins: float
     ) -> np.ndarray:
         proper_time = mod_func.generate(np.arange(0, self.tobs, self.dt))
-        ind_arr = kernels.get_phase_idx_many(proper_time, period, nbins)
+        ind_arr = kernels.get_phase_idx(proper_time, freq, nbins, 0)
         ephemeris_fold = self.fold(ind_arr, nbins)
         return ephemeris_fold[0] / np.sqrt(ephemeris_fold[1])
 
     def fold(self, proper_ind_arr, nbins):
         ind_arrs = np.array([proper_ind_arr])
-        fold = kernels.fold_ts(self.ts_e, self.ts_v, ind_arrs, nbins)
+        fold = kernels.fold_ts(self.ts_e, self.ts_v, ind_arrs, nbins, 1)
         return fold.squeeze()
 
     def __str__(self):
@@ -204,10 +210,10 @@ class PulsarSignal(object):
         self._params = params
 
         self._ephemeris_fold = ts_data.ephemeris_fold(
-            params.mod_func, params.period, params.fold_bins
+            params.mod_func, params.freq, params.fold_bins
         )
         self._subint_fold = ts_data.fold_subints(
-            params.period, params.fold_bins, nsubints=64
+            params.freq, params.fold_bins, nsubints=64
         )
 
     @property

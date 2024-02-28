@@ -86,32 +86,22 @@ class SearchParams(object):
         return len(self.param_limits)
 
     @property
-    def p_min(self) -> float:
+    def f_min(self) -> float:
         return self.param_limits[-1][0]
 
     @property
-    def p_max(self) -> float:
+    def f_max(self) -> float:
         return self.param_limits[-1][1]
 
     def period_step(self, tobs: float) -> float:
-        return kernels.period_step(tobs, self.dt, self.p_min, self.tol)
+        return kernels.period_step(tobs, self.dt, self.f_min, self.tol)
 
-    def period_step_init(self, tobs: float) -> float:
-        return kernels.period_step(tobs, self.dt, self.p_min, self.tol)
-        # return kernels.period_step_init(tobs, self.nbins, self.p_min, self.tol)
+    def freq_step(self, tobs: float) -> float:
+        return kernels.freq_step(tobs, self.dt, self.f_min, self.tol)
 
     def deriv_step(self, tobs: float, deriv: int) -> float:
         t_ref = tobs / 2
         return kernels.param_step(tobs, self.dt, deriv, self.tol, t_ref=t_ref)
-
-    def ffa_step(self, ffa_level: int) -> types.ListType[types.f8]:
-        tchunk_cur = 2**ffa_level * self.tchunk
-        step_period = self.period_step(tchunk_cur)
-        step_arr = typed.List([step_period])
-        for deriv in range(2, self.nparams + 1):
-            step_param = self.deriv_step(tchunk_cur, deriv)
-            step_arr.insert(0, step_param)
-        return step_arr
 
     def get_updated_param_arr(
         self, param_steps: types.ListType
@@ -140,9 +130,9 @@ class SearchParams(object):
         return dparams
 
     def _init_param_arr(self) -> types.ListType[types.Array]:
-        dp = self.period_step_init(self.tchunk)
-        period_arr = np.arange(self.p_min, self.p_max, dp)
-        param_arr = typed.List([period_arr])
+        df = self.freq_step(self.tchunk)
+        freqs_ar = np.arange(self.f_min, self.f_max, df)
+        param_arr = typed.List([freqs_ar])
         for iparam in range(self.nparams - 1):
             param_val = np.array([sum(self.param_limits[iparam]) / 2], dtype=np.float64)
             param_arr.insert(0, param_val)
@@ -159,7 +149,7 @@ class SearchParams(object):
             init_levels = 1
         else:
             init_levels = 5
-        levels = int(np.log2(self.nsamps * self.dt / self.p_max) - init_levels)
+        levels = int(np.log2(self.nsamps * self.dt * self.f_max) - init_levels)
         return int(self.nsamps / 2**levels)
 
     def _check_params(self):
@@ -173,16 +163,16 @@ class SearchParams(object):
 
 
 @jitclass(spec=[("params", SearchParams.class_type.instance_type)])
-class PeriodSearchDPFunctions(object):
+class FreqSearchDPFunctions(object):
     def __init__(self, params: SearchParams) -> None:
         self.params = params
 
     def init(self, ts_e: np.ndarray, ts_v: np.ndarray) -> np.ndarray:
-        period_arr = self.params.param_arr[-1]
+        freq_arr = self.params.param_arr[-1]
         return kernels.fold_brute_start(
             ts_e,
             ts_v,
-            period_arr,
+            freq_arr,
             self.params.chunk_len,
             self.params.nbins,
             self.params.dt,
@@ -190,8 +180,8 @@ class PeriodSearchDPFunctions(object):
 
     def step(self, ffa_level: int) -> types.ListType[types.f8]:
         tchunk_cur = 2**ffa_level * self.params.tchunk
-        step_period = self.params.period_step(tchunk_cur)
-        return typed.List([step_period])
+        step_freq = self.params.freq_step(tchunk_cur)
+        return typed.List([step_freq])
 
     def resolve(
         self, param_set: np.ndarray, param_arr: np.ndarray, ffa_level: int, latter: int
@@ -218,28 +208,28 @@ class AccelSearchDPFunctions(object):
         self.params = params
 
     def init(self, ts_e: np.ndarray, ts_v: np.ndarray) -> np.ndarray:
-        accel_arr, period_arr = self.params.param_arr
+        accel_arr, freq_arr = self.params.param_arr
         fold = kernels.fold_brute_start(
             ts_e,
             ts_v,
-            period_arr,
+            freq_arr,
             self.params.chunk_len,
             self.params.nbins,
             self.params.dt,
         )
         # rotating the phases to be centered in the middle of the segment
-        for iperiod, period in enumerate(period_arr):
+        for ifreq, freq in enumerate(freq_arr):
             tmiddle = self.params.tchunk / 2
-            n_roll = kernels.get_phase_idx(tmiddle, period, self.params.nbins)
-            fold[:, iperiod] = kernels.nb_roll3d(fold[:, iperiod], -n_roll)
+            n_roll = kernels.get_phase_idx(tmiddle, freq, self.params.nbins, 0)
+            fold[:, ifreq] = kernels.nb_roll3d(fold[:, ifreq], -n_roll)
         # TODO: Correct for the accel in case it is not 0.
         return fold.reshape(fold.shape[:1] + (len(accel_arr),) + fold.shape[1:])
 
     def step(self, ffa_level: int) -> types.ListType[types.f8]:
         tchunk_cur = 2**ffa_level * self.params.tchunk
-        step_period = self.params.period_step(tchunk_cur)
+        step_freq = self.params.freq_step(tchunk_cur)
         step_accel = self.params.deriv_step(tchunk_cur, 2)
-        return typed.List([step_accel, step_period])
+        return typed.List([step_accel, step_freq])
 
     def resolve(
         self, param_set: np.ndarray, param_arr: np.ndarray, ffa_level: int, latter: int
@@ -247,8 +237,8 @@ class AccelSearchDPFunctions(object):
         param_idx_prev, phase_rel = defaults.ffa_resolve(
             param_set, param_arr, ffa_level, latter, self.params.tchunk, self.params.nbins
         )
-        a_idx_prev, p_idx_prev = param_idx_prev
-        return (a_idx_prev, p_idx_prev), phase_rel
+        a_idx_prev, f_idx_prev = param_idx_prev
+        return (a_idx_prev, f_idx_prev), phase_rel
 
     def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
         return defaults.add(data0, data1)
@@ -266,20 +256,20 @@ class JerkSearchDPFunctions(object):
         self.params = params
 
     def init(self, ts_e: np.ndarray, ts_v: np.ndarray) -> np.ndarray:
-        jerk_arr, accel_arr, period_arr = self.params.param_arr
+        jerk_arr, accel_arr, freq_arr = self.params.param_arr
         fold = kernels.fold_brute_start(
             ts_e,
             ts_v,
-            period_arr,
+            freq_arr,
             self.params.chunk_len,
             self.params.nbins,
             self.params.dt,
         )
         # rotating the phases to be centered in the middle of the segment
-        for iperiod, period in enumerate(period_arr):
+        for ifreq, freq in enumerate(freq_arr):
             tmiddle = self.params.tchunk / 2
-            n_roll = kernels.get_phase_idx(tmiddle, period, self.params.nbins)
-            fold[:, iperiod] = kernels.nb_roll3d(fold[:, iperiod], -n_roll)
+            n_roll = kernels.get_phase_idx(tmiddle, freq, self.params.nbins, 0)
+            fold[:, ifreq] = kernels.nb_roll3d(fold[:, ifreq], -n_roll)
         # TODO: Correct for the accel in case it is not 0.
         return fold.reshape(
             fold.shape[:1] + (len(jerk_arr), len(accel_arr)) + fold.shape[1:]
@@ -287,10 +277,10 @@ class JerkSearchDPFunctions(object):
 
     def step(self, ffa_level: int) -> types.ListType[types.f8]:
         tchunk_cur = 2**ffa_level * self.params.tchunk
-        step_period = self.params.period_step(tchunk_cur)
+        step_freq = self.params.freq_step(tchunk_cur)
         step_accel = self.params.deriv_step(tchunk_cur, 2)
         step_jerk = self.params.deriv_step(tchunk_cur, 3)
-        return typed.List([step_jerk, step_accel, step_period])
+        return typed.List([step_jerk, step_accel, step_freq])
 
     def resolve(
         self, param_set: np.ndarray, param_arr: np.ndarray, ffa_level: int, latter: int
@@ -298,8 +288,8 @@ class JerkSearchDPFunctions(object):
         param_idx_prev, phase_rel = defaults.ffa_resolve(
             param_set, param_arr, ffa_level, latter, self.params.tchunk, self.params.nbins
         )
-        j_idx_prev, a_idx_prev, p_idx_prev = param_idx_prev
-        return (j_idx_prev, a_idx_prev, p_idx_prev), phase_rel
+        j_idx_prev, a_idx_prev, f_idx_prev = param_idx_prev
+        return (j_idx_prev, a_idx_prev, f_idx_prev), phase_rel
 
     def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
         return defaults.add(data0, data1)

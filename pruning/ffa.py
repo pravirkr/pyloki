@@ -7,24 +7,23 @@ from pruning import base, utils
 from pruning.timeseries import TSData
 
 
-@njit
+@njit(cache=True)
 def unify_fold(
-    fold: np.ndarray,
-    param_cart_new: np.ndarray,
+    fold_in: np.ndarray,
     param_arr: types.ListType[types.Array],
+    fold_out: np.ndarray,
+    param_cart_new: np.ndarray,
     ffa_level: int,
     dp_funcns: base.PeriodSearchDPFunctions,
 ):
-    nchunks = fold.shape[0]
-    outdata = np.zeros((nchunks // 2, len(param_cart_new), *fold.shape[-2:]), fold.dtype)
-    for iparam_set, param_set in enumerate(param_cart_new):
+    for iparam_set in range(len(param_cart_new)):
+        param_set = param_cart_new[iparam_set]
         param_idx0, phase_shift0 = dp_funcns.resolve(param_set, param_arr, ffa_level, 0)
         param_idx1, phase_shift1 = dp_funcns.resolve(param_set, param_arr, ffa_level, 1)
-        for ipair in range(outdata.shape[0]):
-            fold0 = dp_funcns.shift(fold[ipair * 2][param_idx0], phase_shift0)
-            fold1 = dp_funcns.shift(fold[ipair * 2 + 1][param_idx1], phase_shift1)
-            outdata[ipair][iparam_set] = dp_funcns.add(fold0, fold1)
-    return outdata
+        for ipair in range(fold_out.shape[0]):
+            fold0 = dp_funcns.shift(fold_in[ipair * 2][param_idx0], phase_shift0)
+            fold1 = dp_funcns.shift(fold_in[ipair * 2 + 1][param_idx1], phase_shift1)
+            fold_out[ipair][iparam_set] = dp_funcns.add(fold0, fold1)
 
 
 class DynamicProgramming(object):
@@ -40,6 +39,12 @@ class DynamicProgramming(object):
         self._param_arr = None
         self._dparams = None
         self._chunk_duration = None
+
+        self.time_init = 0
+        self.time_step = 0
+        self.time_cart = 0
+        self.time_fold = 0
+        self.time_total = 0
 
     @property
     def params(self) -> base.SearchParams:
@@ -97,18 +102,34 @@ class DynamicProgramming(object):
         self._param_arr = self.params.param_arr
         self._dparams = self.params.dparams
         self._chunk_duration = self.params.tchunk
-        print(f"initialization time: {time.time() - tstart}")
+        self.time_init += time.time() - tstart
+        print(f"initialization time: {self.time_init}")
 
     def ffa_iter(self):
+        tstart = time.time()
         self._ffa_level += 1
         param_steps = self.dp_funcns.step(self.ffa_level)
         print(f"param steps: {param_steps}")
         param_arr_new = self.params.get_updated_param_arr(param_steps)
         dparams_new = self.params.get_updated_dparams(param_steps)
+        self.time_step += time.time() - tstart
+        tstart = time.time()
         param_cart_new = utils.cartesian_prod_st(param_arr_new)
-        fold_new = unify_fold(
-            self.fold, param_cart_new, self.param_arr, self.ffa_level, self.dp_funcns
+        self.time_cart += time.time() - tstart
+        fold_new = np.zeros(
+            (self.nchunks // 2, len(param_cart_new), *self.fold.shape[-2:]),
+            self.fold.dtype,
         )
+        tstart = time.time()
+        unify_fold(
+            self.fold,
+            self.param_arr,
+            fold_new,
+            param_cart_new,
+            self.ffa_level,
+            self.dp_funcns,
+        )
+        self.time_fold += time.time() - tstart
         self._fold = fold_new.reshape(
             (self.nchunks // 2, *list(map(len, param_arr_new)), *self.fold.shape[-2:])
         )
@@ -141,6 +162,7 @@ class DynamicProgramming(object):
             self.ffa_iter()
             print(f"fold dimensions: {self.fold.shape}")
             print(f"elapsed time: {time.time() - tstart}")
+        self.time_total += time.time() - tstart
 
     def do_iterations_dry(self, n_iters="max"):
         if n_iters == "max":
@@ -155,7 +177,7 @@ class DynamicProgramming(object):
 
     def _set_dp_funcns(self, params):
         nparams_to_dp_funcns = {
-            1: base.PeriodSearchDPFunctions,
+            1: base.FreqSearchDPFunctions,
             2: base.AccelSearchDPFunctions,
             3: base.JerkSearchDPFunctions,
             4: base.SnapSearchDPFunctions,
