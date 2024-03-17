@@ -1,5 +1,11 @@
 from astropy import constants
 import numpy as np
+from numpy.polynomial import chebyshev as cheb
+
+import logging
+from datetime import datetime
+from rich.text import Text
+from rich.logging import RichHandler
 
 from spyden import TemplateBank, snratio
 
@@ -148,3 +154,55 @@ class Spyden(object):
                 self.ref_bin - round(self.best_width),
                 self.ref_bin + round(self.best_width),
             ]
+
+def generate_chebyshev_polys_table_numpy(order, n_derivs):
+    tab = np.zeros((n_derivs + 1, order + 1, order + 1))
+    for ideriv in range(n_derivs + 1):
+        for iorder in range(order + 1):
+            poly_coeffs = cheb.cheb2poly(cheb.Chebyshev.basis(iorder).deriv(ideriv).coef)
+            tab[ideriv, iorder, : poly_coeffs.size] = poly_coeffs
+    return tab
+
+
+def get_logger(
+    name: str, level: int | str = logging.INFO, quiet: bool = False
+) -> logging.Logger:
+    """Get a fancy logging utility using Rich library.
+
+    Parameters
+    ----------
+    name : str
+        logger name
+    level : int or str, optional
+        logging level, by default logging.INFO
+    quiet : bool, optional
+        if True set `level` as logging.WARNING, by default False
+
+    Returns
+    -------
+    logging.Logger
+        a logging object
+    """
+    logger = logging.getLogger(name)
+    if quiet:
+        logger.setLevel(logging.WARNING)
+    else:
+        logger.setLevel(level)
+
+    logformat = "- %(name)s - %(message)s"
+    formatter = logging.Formatter(fmt=logformat)
+
+    if not logger.hasHandlers():
+        handler = RichHandler(
+            show_level=False,
+            show_path=False,
+            rich_tracebacks=True,
+            log_time_format=_time_formatter,
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    return logger
+
+
+def _time_formatter(timestamp: datetime) -> Text:
+    return Text(timestamp.isoformat(sep=" ", timespec="milliseconds"))

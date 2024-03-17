@@ -4,7 +4,7 @@ import numpy as np
 import time
 
 from pruning import base, utils
-from pruning.timeseries import TSData
+from pruning.timeseries import TimeSeries
 
 
 @njit(cache=True)
@@ -27,7 +27,9 @@ def unify_fold(
 
 
 class DynamicProgramming(object):
-    def __init__(self, ts_data: TSData, params: base.SearchParams, data_type=np.float32):
+    def __init__(
+        self, ts_data: TimeSeries, params: base.SearchParams, data_type=np.float32
+    ):
         self.ts_data = ts_data
         self.data_type = data_type
         self._params = params
@@ -174,6 +176,14 @@ class DynamicProgramming(object):
             print(f"performing iteration: {self.ffa_level + 1}")
             complexity.append(self.ffa_iter_dry())
         return complexity
+
+    def get_fold_norm(
+        self, seg_idx: int = 0, param_idx: tuple | None = None
+    ) -> np.ndarray:
+        if param_idx is None:
+            param_idx = ()
+        fold = self.fold[seg_idx][param_idx]
+        return fold[..., 0, :] / np.sqrt(fold[..., 1, :])
 
     def _set_dp_funcns(self, params):
         nparams_to_dp_funcns = {

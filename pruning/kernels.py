@@ -1,8 +1,20 @@
 from __future__ import annotations
 import numpy as np
+import ctypes
 from numba import njit, types, vectorize
 from numba.experimental import jitclass
+from numba.extending import get_cython_function_address
+
 from pruning import utils
+
+addr = get_cython_function_address("scipy.special.cython_special", "binom")
+functype = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double, ctypes.c_double)
+cbinom_func = functype(addr)
+
+
+@vectorize("float64(float64, float64)")
+def nbinom(xx, yy):
+    return cbinom_func(xx, yy)
 
 
 @njit
@@ -525,6 +537,11 @@ def freq_step(tobs: int, tsamp: int, f_min: float, tol: float) -> float:
     m_cycle = tobs * f_min
     delta_f = f_min**2 * tsamp / (m_cycle - 1)
     return tol * delta_f
+
+
+@njit
+def cheb_step(poly_order, tsamp, tol):
+    return np.zeros(poly_order + 1, np.float32) + ((tol * tsamp) * utils.c_val)
 
 
 @njit

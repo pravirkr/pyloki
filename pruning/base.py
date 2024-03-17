@@ -103,6 +103,15 @@ class SearchParams(object):
         t_ref = tobs / 2
         return kernels.param_step(tobs, self.dt, deriv, self.tol, t_ref=t_ref)
 
+    def ffa_step(self, ffa_level: int) -> types.ListType[types.f8]:
+        tchunk_cur = 2**ffa_level * self.tchunk
+        step_period = self.period_step(tchunk_cur)
+        step_arr = typed.List([step_period])
+        for deriv in range(2, self.nparams + 1):
+            step_param = self.deriv_step(tchunk_cur, deriv)
+            step_arr.insert(0, step_param)
+        return step_arr
+
     def get_updated_param_arr(
         self, param_steps: types.ListType
     ) -> types.ListType[types.Array]:

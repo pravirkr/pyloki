@@ -79,6 +79,13 @@ class KeplerianModulating(object):
         return t + delay / utils.c_val
 
 
+type_to_mods = {
+    "derivative": DerivativeModulating,
+    "circular": CircularModulating,
+    "keplerian": KeplerianModulating,
+}
+
+
 def von_mises_pulse_shape(proper_time, dt, period, width, pos=0.5) -> np.ndarray:
     kappa = np.log(2.0) / (2.0 * np.sin(np.pi * width / 2.0) ** 2)
     phase_radians = (proper_time / period - pos) * (2 * np.pi)
