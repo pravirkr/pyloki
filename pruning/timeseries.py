@@ -21,6 +21,7 @@ class SignalParams(object):
         Signal to noise ratio of the folded pulse profile, by default 100
     ducy : float, optional
         Duty cycle of the pulse (FWTM) in fractional phase, by default 0.1
+        For slow pulsars, ducy ~ 0.03, for millisecond pulsars, ducy ~ 0.1 - 0.3
     over_sampling : int, optional
         Over sampling factor for the folded phase bins, by default 1
     mod_type : str, optional
@@ -95,10 +96,8 @@ class SignalParams(object):
     def _check_params(self):
         if self.ducy <= 0 or self.ducy >= 1:
             raise ValueError(f"Duty cycle ({self.ducy}) should be in (0, 1)")
-        if self.tol_bins < 1:
-            print(
-                "Pulse bin width is shorter than sampling time. FWTM should be at least 1 time bin."
-            )
+        # if self.tol_bins < 1:
+            # print("Pulse bin width is shorter than sampling time. FWTM should be at least 1 time bin.")
 
 
 class TimeSeries(object):
@@ -139,7 +138,7 @@ class TimeSeries(object):
     def fold_ephem(
         self,
         freq: float,
-        nbins: float,
+        nbins: int,
         nsubints: int = 1,
         mod_type="derivative",
         mod_kwargs: dict | None = None,
@@ -164,10 +163,10 @@ class TimeSeries(object):
         mod_type="derivative",
         mod_kwargs: dict | None = None,
     ):
-        ephem_fold = self.fold_ephemeris(
+        ephem_fold = self.fold_ephem(
             freq, fold_bins, nsubints=1, mod_type=mod_type, mod_kwargs=mod_kwargs
         )
-        ephem_fold_subints = self.fold_ephemeris(freq, fold_bins, nsubints=nsubints)
+        ephem_fold_subints = self.fold_ephem(freq, fold_bins, nsubints=nsubints)
         return baseplot.fold_ephemeris_plot(
             ephem_fold,
             ephem_fold_subints,

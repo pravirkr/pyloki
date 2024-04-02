@@ -1,5 +1,6 @@
 from __future__ import annotations
 from numba import njit, types
+from typing import Callable
 import numpy as np
 import time
 
@@ -8,22 +9,49 @@ from pruning.timeseries import TimeSeries
 
 
 @njit(cache=True)
+def load_folds_1d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
+    """fold_in shape: (nsegments, nfreqs, 2, nbins)"""
+    return fold_in[iseg, param_idx[0]]
+
+
+@njit(cache=True)
+def load_folds_2d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
+    """fold_in shape: (nsegments, naccels, nfreqs, 2, nbins)"""
+    return fold_in[iseg, param_idx[0], param_idx[1]]
+
+
+@njit(cache=True)
+def load_folds_3d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
+    """fold_in shape: (nsegments, njerks, naccels, nfreqs, 2, nbins)"""
+    return fold_in[iseg, param_idx[0], param_idx[1], param_idx[2]]
+
+
+@njit(cache=True)
+def load_folds_4d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
+    """fold_in shape: (nsegments, nsnap, njerks, naccels, nfreqs, 2, nbins)"""
+    return fold_in[iseg, param_idx[0], param_idx[1], param_idx[2], param_idx[3]]
+
+
+@njit(cache=True)
 def unify_fold(
     fold_in: np.ndarray,
-    param_arr: types.ListType[types.Array],
+    p_arr_prev: types.ListType[types.Array],
     fold_out: np.ndarray,
-    param_cart_new: np.ndarray,
+    p_cart: np.ndarray,
     ffa_level: int,
-    dp_funcns: base.PeriodSearchDPFunctions,
+    dp_funcs: base.FFASearchDPFunctions,
+    load_func: Callable[[np.ndarray, int, np.ndarray], np.ndarray],
 ):
-    for iparam_set in range(len(param_cart_new)):
-        param_set = param_cart_new[iparam_set]
-        param_idx0, phase_shift0 = dp_funcns.resolve(param_set, param_arr, ffa_level, 0)
-        param_idx1, phase_shift1 = dp_funcns.resolve(param_set, param_arr, ffa_level, 1)
+    for iparam_set in range(len(p_cart)):
+        p_set = p_cart[iparam_set]
+        p_idx0, phase_shift0 = dp_funcs.resolve(p_set, p_arr_prev, ffa_level, 0)
+        p_idx1, phase_shift1 = dp_funcs.resolve(p_set, p_arr_prev, ffa_level, 1)
         for ipair in range(fold_out.shape[0]):
-            fold0 = dp_funcns.shift(fold_in[ipair * 2][param_idx0], phase_shift0)
-            fold1 = dp_funcns.shift(fold_in[ipair * 2 + 1][param_idx1], phase_shift1)
-            fold_out[ipair][iparam_set] = dp_funcns.add(fold0, fold1)
+            fold0 = dp_funcs.shift(load_func(fold_in, ipair * 2, p_idx0), phase_shift0)
+            fold1 = dp_funcs.shift(
+                load_func(fold_in, ipair * 2 + 1, p_idx1), phase_shift1
+            )
+            fold_out[ipair, iparam_set] = dp_funcs.add(fold0, fold1)
 
 
 class DynamicProgramming(object):
@@ -33,14 +61,8 @@ class DynamicProgramming(object):
         self.ts_data = ts_data
         self.data_type = data_type
         self._params = params
-        self._dp_funcns = self._set_dp_funcns(params)
-
-        self._fold = None
-        self._ffa_level = None
-        self._param_steps = None
-        self._param_arr = None
-        self._dparams = None
-        self._chunk_duration = None
+        self._dp_funcs = base.FFASearchDPFunctions(params)
+        self._load_func = self._set_load_func(params.nparams)
 
         self.time_init = 0
         self.time_step = 0
@@ -53,8 +75,12 @@ class DynamicProgramming(object):
         return self._params
 
     @property
-    def dp_funcns(self) -> base.PeriodSearchDPFunctions:
-        return self._dp_funcns
+    def dp_funcs(self) -> base.FFASearchDPFunctions:
+        return self._dp_funcs
+
+    @property
+    def load_func(self) -> Callable[[np.ndarray, int, np.ndarray], np.ndarray]:
+        return self._load_func
 
     @property
     def fold(self) -> np.ndarray:
@@ -82,7 +108,9 @@ class DynamicProgramming(object):
 
     @property
     def nparam_vol(self) -> int:
-        return np.prod(list(map(len, self.param_arr)))
+        if self.param_arr is None:
+            return 0
+        return int(np.prod(list(map(len, self.param_arr))))
 
     @property
     def dparams(self) -> np.ndarray:
@@ -96,8 +124,13 @@ class DynamicProgramming(object):
         tstart = time.time()
         self._ffa_level = 0
         print("Initiating data structure...")
-        fold = self.dp_funcns.init(self.ts_data.ts_e, self.ts_data.ts_v)
-        fold = self.dp_funcns.pack(fold, self.ffa_level)
+        # Check if the param_arr is correctly set
+        self._check_param_arr()
+        fold = self.dp_funcs.init(self.ts_data.ts_e, self.ts_data.ts_v)
+        # Reshape fold to have the correct number of dimensions
+        fold = np.expand_dims(fold, axis=list(range(1, self.params.nparams)))
+        # Pack the fold to the correct level
+        fold = self.dp_funcs.pack(fold, self.ffa_level)
         print(f"fold dimensions: {fold.shape}")
 
         self._fold = fold.astype(self.data_type)
@@ -110,7 +143,7 @@ class DynamicProgramming(object):
     def ffa_iter(self):
         tstart = time.time()
         self._ffa_level += 1
-        param_steps = self.dp_funcns.step(self.ffa_level)
+        param_steps = self.dp_funcs.step(self.ffa_level)
         print(f"param steps: {param_steps}")
         param_arr_new = self.params.get_updated_param_arr(param_steps)
         dparams_new = self.params.get_updated_dparams(param_steps)
@@ -129,7 +162,8 @@ class DynamicProgramming(object):
             fold_new,
             param_cart_new,
             self.ffa_level,
-            self.dp_funcns,
+            self.dp_funcs,
+            self.load_func,
         )
         self.time_fold += time.time() - tstart
         self._fold = fold_new.reshape(
@@ -177,19 +211,29 @@ class DynamicProgramming(object):
             complexity.append(self.ffa_iter_dry())
         return complexity
 
-    def get_fold_norm(
-        self, seg_idx: int = 0, param_idx: tuple | None = None
-    ) -> np.ndarray:
+    def get_fold_norm(self, iseg: int = 0, param_idx: tuple | None = None) -> np.ndarray:
         if param_idx is None:
-            param_idx = ()
-        fold = self.fold[seg_idx][param_idx]
+            fold = self.fold[iseg]
+        else:
+            fold = self.load_func(self.fold, iseg, np.array(param_idx))
         return fold[..., 0, :] / np.sqrt(fold[..., 1, :])
 
-    def _set_dp_funcns(self, params):
-        nparams_to_dp_funcns = {
-            1: base.FreqSearchDPFunctions,
-            2: base.AccelSearchDPFunctions,
-            3: base.JerkSearchDPFunctions,
-            4: base.SnapSearchDPFunctions,
+    def _set_load_func(
+        self, nparams: int
+    ) -> Callable[[np.ndarray, int, np.ndarray], np.ndarray]:
+        nparams_to_load_func = {
+            1: load_folds_1d,
+            2: load_folds_2d,
+            3: load_folds_3d,
+            4: load_folds_4d,
         }
-        return nparams_to_dp_funcns[params.nparams](params)
+        return nparams_to_load_func[nparams]
+
+    def _check_param_arr(self):
+        if self.params.nparams > 1:
+            for iparam in range(self.params.nparams - 1):
+                nvals = len(self.params.param_arr[iparam])
+                if nvals > 1:
+                    raise ValueError(
+                        "param_arr must have only one value for all but the last parameter"
+                    )

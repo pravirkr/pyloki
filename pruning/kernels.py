@@ -35,7 +35,7 @@ def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
     """
     idx = np.searchsorted(array, value, side="left")
     if idx > 0:
-        if idx == len(array) or abs(value - array[idx - 1]) < abs(value - array[idx]):
+        if idx == len(array) or abs(value - array[idx - 1]) <= abs(value - array[idx]):
             return idx - 1
     return idx
 
@@ -444,6 +444,7 @@ def numba_bypass_all_close(arr1, arr2, tol=1e-8):
 def fact_factory(n_tab_out=100):
     fact_tab = np.ones(n_tab_out)
 
+    @njit(cache=True)
     def _fact(num, n_tab=n_tab_out):
         if num < n_tab:
             return fact_tab[num]
@@ -454,10 +455,15 @@ def fact_factory(n_tab_out=100):
 
     for ii in range(n_tab_out):
         fact_tab[ii] = _fact(ii, 0)
-    return _fact
+
+    @vectorize(cache=True)
+    def fact_vec(num):
+        return _fact(num)
+
+    return fact_vec
 
 
-fact = njit(fact_factory(120))
+fact = fact_factory(120)
 
 
 @njit
@@ -497,46 +503,22 @@ def param_step(
 
 @njit
 def period_step_init(tobs: float, nbins: int, p_min: float, tol: float) -> float:
-    """Calculate the period step size for polynomial search.
-
-    Parameters
-    ----------
-    tobs : float
-        Total observation time
-    nbins : float
-        Number of bins in the folded time series
-    p_min : float
-        Minimum period to search
-    tol : float
-        Tolerance parameter for the polynomial search
-        (in units of number of time bins across the pulsar ducy)
-
-    Returns
-    -------
-    float
-        Optimal period step size
-
-    Notes
-    -----
-    n_jumps * dp = (dphi * P)
-    """
-    n_jumps = tobs // p_min
-    dphi = tol / nbins
-    return dphi * p_min / n_jumps
+    m_cycle = tobs / p_min
+    tsamp_min = p_min / nbins
+    return tol * tsamp_min / (m_cycle - 1)
 
 
 @njit
 def period_step(tobs: float, tsamp: int, p_min: float, tol: float) -> float:
-    n_jumps = tobs / p_min
-    return tol * tsamp / (n_jumps / 2)
+    m_cycle = tobs / p_min
+    return tol * (tsamp * 2) / (m_cycle - 1)
 
 
 @njit
-def freq_step(tobs: int, tsamp: int, f_min: float, tol: float) -> float:
-    # tol in unit of bins
-    m_cycle = tobs * f_min
-    delta_f = f_min**2 * tsamp / (m_cycle - 1)
-    return tol * delta_f
+def freq_step(tobs: int, nbins: int, f_max: float, tol: float) -> float:
+    m_cycle = tobs * f_max
+    tsamp_min = 1 / (f_max * nbins)
+    return tol * f_max**2 * tsamp_min / (m_cycle - 1)
 
 
 @njit

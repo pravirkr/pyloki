@@ -31,11 +31,12 @@ class DerivativeModulating(object):
         self.snap = snap
 
     def generate(self, t: np.ndarray) -> np.ndarray:
+        t_ref = t[-1] / 2
         delay = (
-            t**4 / 24 * self.snap
-            + t**3 / 6 * self.jerk
-            + t**2 / 2 * self.acc
-            + t * self.vel
+            ((t - t_ref) ** 4 / 24 * self.snap)
+            + ((t - t_ref) ** 3 / 6 * self.jerk)
+            + ((t - t_ref) ** 2 / 2 * self.acc)
+            + ((t - t_ref) * self.vel)
             + self.shift
         )
         return t + delay / utils.c_val

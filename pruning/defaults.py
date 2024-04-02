@@ -3,12 +3,12 @@ from numba import njit, types, typed
 from pruning import kernels, utils
 
 
-@njit(["f4[:, :](f4[:, :], f4[:, :])"], cache=True)
+@njit(cache=True)
 def add(data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
     return data0 + data1
 
 
-@njit
+@njit(cache=True)
 def pack(data, iter_num):
     return data
 
@@ -49,39 +49,34 @@ def prepare_param_validation(*args, **kwargs):
     return False
 
 
-@njit
-def ffa_shift_reference(param_set: np.ndarray, t_ref: float) -> tuple[np.ndarray, float]:
-    """Shift the reference time of the parameter set.
+@njit(cache=True)
+def ffa_shift_ref(param_vec: np.ndarray, t_ref: float) -> np.ndarray:
+    """Shift the parameters to a new reference time.
 
     Parameters
     ----------
-    param_set : np.ndarray
-        Current parameter set (e.g. accel, period)
+    param_vec : np.ndarray
+        Parameter vector [..., a, v, d]
     t_ref : float
-        Reference time of the new parameter set.
+        Reference time to shift the parameters to. t_ref = t_j - t_i
 
     Returns
     -------
-    tuple[np.ndarray, float]
-        Parameter set at the new reference time and the delay.
+    np.ndarray
+        Parameters at the new reference time.
     """
-    nparams = len(param_set)
-    delay_arr = np.zeros(nparams + 1)
-    for i_delay in range(nparams + 1):
-        for iparam in range(nparams - 1):
-            expont = i_delay - iparam
-            delay_arr[i_delay] += param_set[iparam] * t_ref**expont / kernels.fact(expont)
-    param_set_new = delay_arr[:-1]
-    param_set_new[-1] = param_set[-1] * (1 + delay_arr[-2] / utils.c_val)
-    offset = delay_arr[-1] / utils.c_val
-    return param_set_new, offset
+    nparams = len(param_vec)
+    powers = np.tril(np.arange(nparams)[:, np.newaxis] - np.arange(nparams))
+    # Calculate the transformation matrix (taylor coefficients)
+    coeffs = t_ref**powers / kernels.fact(powers) * np.tril(np.ones_like(powers))
+    return np.dot(coeffs, param_vec)
 
 
-@njit
+@njit(cache=True)
 def ffa_resolve(
     pset_cur: np.ndarray,
     parr_prev: np.ndarray,
-    ffa_level_cur: int,
+    ffa_level: int,
     latter: int,
     tchunk_init: float,
     nbins: int,
@@ -94,8 +89,8 @@ def ffa_resolve(
         Parameter set of the current iteration to resolve.
     parr_prev : np.ndarray
         Parameter array of the previous iteration.
-    ffa_level_cur : int
-        FFA level of the current iteration.
+    ffa_level : int
+        Current FFA level.
     latter : int
         Switch for the two halves of the previous iteration segments (0 or 1).
     tchunk_init : float
@@ -110,11 +105,16 @@ def ffa_resolve(
     """
     nparams = len(pset_cur)
     if nparams == 1:
-        t_ref_prev = latter * 2 ** (ffa_level_cur - 1) * tchunk_init
+        t_ref_prev = latter * 2 ** (ffa_level - 1) * tchunk_init
         pset_prev, delay_rel = pset_cur, 0
     else:
-        t_ref_prev = (latter - 0.5) * 2 ** (ffa_level_cur - 1) * tchunk_init
-        pset_prev, delay_rel = ffa_shift_reference(pset_cur, t_ref_prev)
+        kvec_cur = np.zeros(nparams + 1, dtype=np.float64)
+        kvec_cur[:-2] = pset_cur[:-1]  # till acceleration
+        t_ref_prev = (latter - 0.5) * 2 ** (ffa_level - 1) * tchunk_init
+        kvec_prev = ffa_shift_ref(kvec_cur, t_ref_prev)
+        pset_prev = kvec_prev[:-1]
+        pset_prev[-1] = pset_cur[-1] * (1 + kvec_prev[-2] / utils.c_val)
+        delay_rel = -kvec_prev[-1] / utils.c_val
     phase_rel = kernels.get_phase_idx(t_ref_prev, pset_prev[-1], nbins, delay_rel)
     pindex_prev = np.empty(nparams, dtype=np.int64)
     for ip in range(nparams):
@@ -122,18 +122,23 @@ def ffa_resolve(
     return pindex_prev, phase_rel
 
 
-@njit
+@njit(cache=True)
 def ffa_init(
-    ts_e: np.ndarray, ts_v: np.ndarray, param_arr, chunk_len, nbins, dt
+    ts_e: np.ndarray,
+    ts_v: np.ndarray,
+    param_arr: types.ListType,
+    chunk_len: int,
+    nbins: int,
+    dt: float,
 ) -> np.ndarray:
-    period_arr = param_arr[-1]
-    fold = kernels.fold_brute_start(ts_e, ts_v, period_arr, chunk_len, nbins, dt)
+    freq_arr = param_arr[-1]
+    fold = kernels.fold_brute_start(ts_e, ts_v, freq_arr, chunk_len, nbins, dt)
     # rotating the phases to be centered in the middle of the segment
     if len(param_arr) > 1:
-        for iperiod, period in enumerate(period_arr):
+        for ifreq in range(len(freq_arr)):
             tmiddle = chunk_len * dt / 2
-            n_roll = kernels.get_phase_idx(tmiddle, period, nbins)
-            fold[:, iperiod] = kernels.nb_roll3d(fold[:, iperiod], -n_roll)
+            n_roll = kernels.get_phase_idx(tmiddle, freq_arr[ifreq], nbins, 0)
+            fold[:, ifreq] = kernels.nb_roll3d(fold[:, ifreq], -n_roll)
     return fold
 
 

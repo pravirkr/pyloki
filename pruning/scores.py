@@ -11,7 +11,12 @@ def gaussian_template(width: int, size: int) -> np.ndarray:
     xx = np.arange(-xmax, xmax + 1)
     data = np.exp(-(xx**2) / (2 * sigma**2))
     padded_data = np.zeros(size)
-    padded_data[size // 2 - xmax : size // 2 + xmax + 1] = data
+    if size >= 2 * xmax + 1:
+        padded_data[size // 2 - xmax : size // 2 + xmax + 1] = data
+    else:
+        start = xmax - size // 2
+        end = start + size
+        padded_data[:size] = data[start:end]
     return normalise(padded_data)
 
 
@@ -67,6 +72,24 @@ def cpad2len(arr: np.ndarray, size: int) -> np.ndarray:
     padding_needed = size - arr.shape[-1]
     zero_arr = np.zeros(arr.shape[:-1] + (padding_needed,))
     return np.concatenate((arr, zero_arr), axis=-1)
+
+
+def compute_snr(self, data: np.ndarray) -> np.ndarray:
+    nbins = data.shape[-1]
+    folds = data.reshape(-1, nbins).astype(np.float32)
+    nprof, nbins = folds.shape
+
+    xx = cpadpow2(folds)
+    yy = cpad2len(self.templates, xx.shape[-1])
+    fx = np.fft.rfft(xx).reshape(nprof, 1, -1)
+    fy = np.fft.rfft(yy).reshape(1, self.ntemp, -1)
+    snr = np.fft.irfft(fx * fy)
+
+    result = np.empty((nprof, self.ntemp), dtype=np.float32)
+    for iprof in range(nprof):
+        for jtemp in range(self.ntemp):
+            result[iprof, jtemp] = np.max(snr[iprof, jtemp, :nbins])
+    return result.reshape((*data.shape[:-1], self.ntemp))
 
 
 @jitclass(
