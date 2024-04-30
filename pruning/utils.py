@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from rich.text import Text
 from rich.logging import RichHandler
+from rich.console import Console
 
 from spyden import TemplateBank, snratio
 
@@ -76,7 +77,7 @@ def pad_with_inf(param_list: list[np.ndarray]) -> np.ndarray:
     return output
 
 
-def snail_access_scheme(nchunks: int, ref_ind: int) -> np.ndarray:
+def snail_access_scheme(nchunks: int, ref_idx: int) -> np.ndarray:
     """Get an access pattern for the chunks to implement the snail scheme
 
     Parameters
@@ -91,7 +92,7 @@ def snail_access_scheme(nchunks: int, ref_ind: int) -> np.ndarray:
     np.ndarray
         access pattern for the chunks
     """
-    return np.argsort(np.abs(np.arange(nchunks) - ref_ind))
+    return np.argsort(np.abs(np.arange(nchunks) - ref_idx))
 
 
 class Spyden(object):
@@ -198,6 +199,7 @@ def get_logger(
             show_path=False,
             rich_tracebacks=True,
             log_time_format=_time_formatter,
+            console=Console(width=170)
         )
         handler.setFormatter(formatter)
         logger.addHandler(handler)

@@ -5,18 +5,18 @@ import numpy as np
 
 
 @njit
-def gaussian_template(width: int, size: int) -> np.ndarray:
+def gaussian_template(width: int, bins: int) -> np.ndarray:
     sigma = width / (2 * np.sqrt(2 * np.log(2)))
     xmax = int(np.ceil(3.5 * sigma))
     xx = np.arange(-xmax, xmax + 1)
     data = np.exp(-(xx**2) / (2 * sigma**2))
-    padded_data = np.zeros(size)
-    if size >= 2 * xmax + 1:
-        padded_data[size // 2 - xmax : size // 2 + xmax + 1] = data
+    padded_data = np.zeros(bins)
+    if bins >= 2 * xmax + 1:
+        padded_data[bins // 2 - xmax : bins // 2 + xmax + 1] = data
     else:
-        start = xmax - size // 2
-        end = start + size
-        padded_data[:size] = data[start:end]
+        start = xmax - bins // 2
+        end = start + bins
+        padded_data[:bins] = data[start:end]
     return normalise(padded_data)
 
 
@@ -74,91 +74,97 @@ def cpad2len(arr: np.ndarray, size: int) -> np.ndarray:
     return np.concatenate((arr, zero_arr), axis=-1)
 
 
-def compute_snr(self, data: np.ndarray) -> np.ndarray:
+@njit(cache=True, fastmath=True)
+def compute_snr_fft(data: np.ndarray, templates: np.ndarray) -> np.ndarray:
+    ntemp = len(templates)
     nbins = data.shape[-1]
     folds = data.reshape(-1, nbins).astype(np.float32)
     nprof, nbins = folds.shape
 
     xx = cpadpow2(folds)
-    yy = cpad2len(self.templates, xx.shape[-1])
+    yy = cpad2len(templates, xx.shape[-1])
     fx = np.fft.rfft(xx).reshape(nprof, 1, -1)
-    fy = np.fft.rfft(yy).reshape(1, self.ntemp, -1)
+    fy = np.fft.rfft(yy).reshape(1, ntemp, -1)
     snr = np.fft.irfft(fx * fy)
 
-    result = np.empty((nprof, self.ntemp), dtype=np.float32)
+    result = np.empty((nprof, ntemp), dtype=np.float32)
     for iprof in range(nprof):
-        for jtemp in range(self.ntemp):
+        for jtemp in range(ntemp):
             result[iprof, jtemp] = np.max(snr[iprof, jtemp, :nbins])
-    return result.reshape((*data.shape[:-1], self.ntemp))
+    return result.reshape((*data.shape[:-1], ntemp))
 
 
 @jitclass(
     spec=[
         ("widths", types.i8[:]),
-        ("size", types.i8),
+        ("nbins", types.i8),
         ("shape", types.string),
-        ("_templates", types.f8[:, :]),
+        ("_templates", types.f4[:, :]),
+        ("_e_mat", types.f4[:, ::1]),
     ]
 )
 class MatchedFilter(object):
-    def __init__(self, widths: np.ndarray, size: int, shape: str = "boxcar") -> None:
+    def __init__(self, widths: np.ndarray, nbins: int, shape: str = "boxcar") -> None:
         self.widths = widths
         self.shape = shape
-        self._templates = self._init_template_bank(size)
+        self.nbins = nbins
+        self._templates = self._init_template_bank(nbins)
+        self._e_mat = self._int_e_mat()
 
     @property
     def templates(self) -> np.ndarray:
         return self._templates
 
     @property
+    def e_mat(self) -> np.ndarray:
+        return self._e_mat
+
+    @property
     def ntemp(self):
         return len(self.templates)
 
-    def compute_ts(self, ts: np.ndarray) -> np.ndarray:
-        ts_e, ts_v = ts
+    def compute_ts(self, ts_comb: np.ndarray) -> np.ndarray:
+        ts_e, ts_v = ts_comb
         fold = ts_e / np.sqrt(ts_v)
-        return self.compute_snr(fold)
+        return compute_snr_fft(fold, self.templates)
 
-    def compute_snr(self, data: np.ndarray) -> np.ndarray:
-        nbins = data.shape[-1]
-        folds = data.reshape(-1, nbins).astype(np.float32)
-        nprof, nbins = folds.shape
+    def compute_match(self, ts_comb: np.ndarray) -> np.ndarray:
+        ts_e, ts_v = ts_comb
+        fold = ts_e / np.sqrt(ts_v)
+        return np.dot(self.e_mat, fold)
 
-        xx = cpadpow2(folds)
-        yy = cpad2len(self.templates, xx.shape[-1])
-        fx = np.fft.rfft(xx).reshape(nprof, 1, -1)
-        fy = np.fft.rfft(yy).reshape(1, self.ntemp, -1)
-        snr = np.fft.irfft(fx * fy)
-
-        result = np.empty((nprof, self.ntemp), dtype=np.float32)
-        for iprof in range(nprof):
-            for jtemp in range(self.ntemp):
-                result[iprof, jtemp] = np.max(snr[iprof, jtemp, :nbins])
-        return result.reshape((*data.shape[:-1], self.ntemp))
-
-    def _init_template_bank(self, size: int) -> np.ndarray:
-        templates = np.empty((len(self.widths), size), dtype=np.float64)
+    def _init_template_bank(self, nbins: int) -> np.ndarray:
+        templates = np.empty((len(self.widths), nbins), dtype=np.float32)
         if self.shape == "boxcar":
             for iw, width in enumerate(self.widths):
-                templates[iw] = boxcar_template(width, size)
+                templates[iw] = boxcar_template(width, nbins)
         elif self.shape == "gaussian":
             for iw, width in enumerate(self.widths):
-                templates[iw] = gaussian_template(width, size)
+                templates[iw] = gaussian_template(width, nbins)
         else:
             raise ValueError(f"Unknown template shape: {self.shape}")
         return templates
 
+    def _int_e_mat(self) -> np.ndarray:
+        e_mat = np.empty((self.ntemp * self.nbins, self.nbins), dtype=np.float32)
+        for itemp in range(self.ntemp):
+            for jbin in range(self.nbins):
+                e_mat[itemp * self.nbins + jbin] = np.roll(self.templates[itemp], jbin)
+        return e_mat
 
-@njit
-def snr_score_func(combined_res):
+
+@njit(cache=True, fastmath=True)
+def snr_score_func(combined_res: np.ndarray) -> int:
     ts_e, ts_v = combined_res
     fold = ts_e / np.sqrt(ts_v)
     widths = generate_width_trials(len(fold), ducy_max=0.3, wtsp=1.1)
     return np.max(boxcar_snr_1d(fold, widths))
 
 
-@njit
-def generate_width_trials(fold_bins, ducy_max=0.2, wtsp=1.5):
+@njit(cache=True, fastmath=True)
+def generate_width_trials(
+    fold_bins: int, ducy_max: float = 0.2, wtsp: float = 1.5
+) -> np.ndarray:
     widths = []
     ww = 1
     wmax = int(max(1, ducy_max * fold_bins))
@@ -168,7 +174,7 @@ def generate_width_trials(fold_bins, ducy_max=0.2, wtsp=1.5):
     return np.asarray(widths)
 
 
-@njit
+@njit(cache=True, parallel=True, fastmath=True)
 def boxcar_snr(data: np.ndarray, widths: np.ndarray, stdnoise: float = 1.0) -> np.ndarray:
     widths = np.asarray(widths, dtype=np.uint64)
     nbins = data.shape[-1]
@@ -177,7 +183,7 @@ def boxcar_snr(data: np.ndarray, widths: np.ndarray, stdnoise: float = 1.0) -> n
     return snrs.reshape((*data.shape[:-1], widths.size))
 
 
-@njit(parallel=True, fastmath=True)
+@njit(cache=True, parallel=True, fastmath=True)
 def boxcar_snr_2d(
     folds: np.ndarray, widths: np.ndarray, stdnoise: float = 1.0
 ) -> np.ndarray:
@@ -188,7 +194,7 @@ def boxcar_snr_2d(
     return snrs
 
 
-@njit(fastmath=True)
+@njit(cache=True, fastmath=True)
 def boxcar_snr_1d(
     norm_data: np.ndarray, widths: np.ndarray, stdnoise: float = 1.0
 ) -> np.ndarray:

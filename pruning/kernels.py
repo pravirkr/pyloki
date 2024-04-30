@@ -1,23 +1,12 @@
 from __future__ import annotations
 import numpy as np
-import ctypes
 from numba import njit, types, vectorize
 from numba.experimental import jitclass
-from numba.extending import get_cython_function_address
 
-from pruning import utils
-
-addr = get_cython_function_address("scipy.special.cython_special", "binom")
-functype = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double, ctypes.c_double)
-cbinom_func = functype(addr)
+from pruning import utils, math
 
 
-@vectorize("float64(float64, float64)")
-def nbinom(xx, yy):
-    return cbinom_func(xx, yy)
-
-
-@njit
+@njit(cache=True)
 def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
     """Finds the index of the closest value in a sorted array.
 
@@ -33,22 +22,10 @@ def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
     int
         Index of the closest value in the array
     """
-    idx = np.searchsorted(array, value, side="left")
+    idx = int(np.searchsorted(array, value, side="left"))
     if idx > 0:
         if idx == len(array) or abs(value - array[idx - 1]) <= abs(value - array[idx]):
             return idx - 1
-    return idx
-
-
-def find_nearest_sorted_idx_cart(cart_arr: np.ndarray, values: np.ndarray) -> int:
-    idx = find_nearest_sorted_idx(cart_arr[:, 0], values[0])
-    for ival in range(1, len(values)):
-        col = cart_arr[:, ival]
-        rows_to_consider = np.where(
-            (cart_arr[:, :ival] == cart_arr[idx, :ival]).all(axis=1)
-        )[0]
-        nearest_idx = find_nearest_sorted_idx(col[rows_to_consider], values[ival])
-        idx = rows_to_consider[nearest_idx]
     return idx
 
 
@@ -344,44 +321,58 @@ def get_unique_indices_scores(params, scores):
 @jitclass(
     spec=[
         ("param_sets", types.f8[:, :, :]),
-        ("data", types.f4[:, :, :]),
+        ("folds", types.f4[:, :, :]),
         ("scores", types.f8[:]),
         ("backtracks", types.f8[:, :]),
         ("_actual_size", types.int64),
     ]
 )
 class SuggestionStruct(object):
+    """A struct to hold suggestions for pruning.
+
+    Parameters
+    ----------
+    param_sets : np.ndarray
+        Array of parameter sets with shape (nsuggestions, nparams, 2)
+    folds : np.ndarray
+        Array of folded profiles with shape (nsuggestions, ..., 2, nbins)
+    scores : np.ndarray
+        Array of scores for each suggestion (nsuggestions,)
+    backtracks : np.ndarray
+        Array of backtracks for each suggestion (nsuggestions, 2 + nparams)
+    """
+
     def __init__(
         self,
         param_sets: np.ndarray,
-        data: np.ndarray,
+        folds: np.ndarray,
         scores: np.ndarray,
         backtracks: np.ndarray,
     ) -> None:
         self.param_sets = param_sets
-        self.data = data
+        self.folds = folds
         self.scores = scores
         self.backtracks = backtracks
-        self._actual_size = self.scores.size
-
-    @property
-    def size(self):
-        return self.scores.size
+        self._actual_size = self.param_sets.shape[0]
 
     @property
     def actual_size(self):
         return self._actual_size
 
     @property
-    def nparams(self):
-        return len(self.param_sets[0])
+    def size(self):
+        return self.param_sets.shape[0]
 
-    def init_new(self, max_suggestions: int) -> SuggestionStruct:
-        param_sets = np.zeros((max_suggestions, self.nparams, 2))
-        data = np.zeros((max_suggestions, *self.data.shape[1:]), dtype=np.float32)
-        scores = np.zeros(max_suggestions)
-        backtracks = np.zeros((max_suggestions, 2 + self.nparams))
-        return SuggestionStruct(param_sets, data, scores, backtracks)
+    @property
+    def nparams(self):
+        return self.param_sets.shape[1]
+
+    def get_new(self, max_sugg: int) -> SuggestionStruct:
+        param_sets = np.zeros((max_sugg, self.nparams, 2))
+        folds = np.zeros((max_sugg, *self.folds.shape[1:]), dtype=self.folds.dtype)
+        scores = np.zeros(max_sugg)
+        backtracks = np.zeros((max_sugg, 2 + self.nparams))
+        return SuggestionStruct(param_sets, folds, scores, backtracks)
 
     def remove_repetitions(self) -> SuggestionStruct:
         idx = get_unique_indices_scores(self.param_sets, self.scores)
@@ -404,20 +395,58 @@ class SuggestionStruct(object):
     def trim_empty(self, ind_size: int) -> SuggestionStruct:
         return SuggestionStruct(
             self.param_sets[:ind_size],
-            self.data[:ind_size],
+            self.folds[:ind_size],
             self.scores[:ind_size],
             self.backtracks[:ind_size],
         )
 
+    def get_best(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        idx = np.argmax(self.scores)
+        return self.param_sets[idx], self.folds[idx], self.scores[idx]
+
     def _keep(self, indices: np.ndarray) -> SuggestionStruct:
-        ind_size = np.count_nonzero(indices)
-        sug_new = self.init_new(self.size)
+        ind_size = np.sum(indices)
+        sug_new = self.get_new(self.size)
         sug_new.param_sets[:ind_size] = self.param_sets[indices]
-        sug_new.data[:ind_size] = self.data[indices]
+        sug_new.folds[:ind_size] = self.folds[indices]
         sug_new.scores[:ind_size] = self.scores[indices]
         sug_new.backtracks[:ind_size] = self.backtracks[indices]
         sug_new._actual_size = ind_size
         return sug_new
+
+
+@jitclass(
+    spec=[
+        ("n_leaves_tot", types.i8),
+        ("n_leaves_phy", types.i8),
+        ("n_branches", types.i8),
+        ("n_leaves_surv", types.i8),
+    ]
+)
+class PruneStats(object):
+    def __init__(
+        self, n_branches: int, n_leaves_tot: int, n_leaves_phy: int, n_leaves_surv: int
+    ) -> None:
+        self.n_branches = n_branches
+        self.n_leaves_tot = n_leaves_tot
+        self.n_leaves_phy = n_leaves_phy
+        self.n_leaves_surv = n_leaves_surv
+
+    @property
+    def lb_leaves(self) -> float:
+        return np.round(np.log2(self.n_leaves_tot), 2)
+
+    @property
+    def branch_frac_tot(self) -> float:
+        return np.round(self.n_leaves_tot / self.n_branches, 2)
+
+    @property
+    def branch_frac_phy(self) -> float:
+        return np.round(self.n_leaves_phy / self.n_branches, 2)
+
+    @property
+    def surv_frac(self) -> float:
+        return np.round(self.n_leaves_surv / self.n_leaves_tot, 2)
 
 
 @njit
@@ -441,39 +470,15 @@ def numba_bypass_all_close(arr1, arr2, tol=1e-8):
     return np.all(np.abs(arr1 - arr2) < tol)
 
 
-def fact_factory(n_tab_out=100):
-    fact_tab = np.ones(n_tab_out)
-
-    @njit(cache=True)
-    def _fact(num, n_tab=n_tab_out):
-        if num < n_tab:
-            return fact_tab[num]
-        ret = 1
-        for nn in range(1, num + 1):
-            ret *= nn
-        return ret
-
-    for ii in range(n_tab_out):
-        fact_tab[ii] = _fact(ii, 0)
-
-    @vectorize(cache=True)
-    def fact_vec(num):
-        return _fact(num)
-
-    return fact_vec
-
-
-fact = fact_factory(120)
-
-
 @njit
-def param_split_condition(opt_dpar, cur_dpar, duration, tol, dt, deriv=1):
-    return ((cur_dpar - opt_dpar) / 2 * (duration) ** deriv / fact(deriv)) > tol * dt
+def param_split_condition(dparam_opt, dparam_cur, duration, tol_bins, dt, deriv):
+    shift = (dparam_cur - dparam_opt) / 2 * (duration) ** deriv / math.fact(deriv)
+    return shift > tol_bins * dt
 
 
 @njit
 def param_step(
-    tobs: float, tsamp: float, deriv: int, tol: float, t_ref: float = 0
+    tobs: float, tsamp: float, deriv: int, tol_bins: float, t_ref: float = 0
 ) -> float:
     """Calculate the parameter step size for polynomial search.
 
@@ -485,7 +490,7 @@ def param_step(
         Sampling time of the segment in seconds.
     deriv : int
         Derivative of the parameter (2: acceleration, 3: jerk, etc.)
-    tol : float
+    tol_bins : float
         Tolerance parameter for the polynomial search (in units of time bins)
     t_ref : float, optional
         Reference time in segment e.g. start, middle, etc. (default: 0)
@@ -497,8 +502,15 @@ def param_step(
     """
     if deriv < 2:
         raise ValueError("deriv must be >= 2")
-    dparam = tsamp * fact(deriv) * utils.c_val / (tobs - t_ref) ** deriv
-    return tol * dparam
+    dparam = tsamp * math.fact(deriv) * utils.c_val / (tobs - t_ref) ** deriv
+    return tol_bins * dparam
+
+
+@njit
+def freq_step(tobs: int, nbins: int, f_max: float, tol_bins: float) -> float:
+    m_cycle = tobs * f_max
+    tsamp_min = 1 / (f_max * nbins)
+    return tol_bins * f_max**2 * tsamp_min / (m_cycle - 1)
 
 
 @njit
@@ -515,27 +527,22 @@ def period_step(tobs: float, tsamp: int, p_min: float, tol: float) -> float:
 
 
 @njit
-def freq_step(tobs: int, nbins: int, f_max: float, tol: float) -> float:
-    m_cycle = tobs * f_max
-    tsamp_min = 1 / (f_max * nbins)
-    return tol * f_max**2 * tsamp_min / (m_cycle - 1)
-
-
-@njit
 def cheb_step(poly_order, tsamp, tol):
     return np.zeros(poly_order + 1, np.float32) + ((tol * tsamp) * utils.c_val)
 
 
 @njit
-def branch_param(opt_d_par, cur_d_par, cur_val):
-    n = 2 + int(np.ceil(cur_d_par / opt_d_par))
+def branch_param(
+    dparam_opt: float, dparam_cur: float, param_cur: float
+) -> tuple[np.ndarray, float]:
+    n = 2 + int(np.ceil(dparam_cur / dparam_opt))
     confidence_const = 0.5 * (1 + 1 / float(n - 2))
     par_array = np.linspace(
-        cur_val - confidence_const * cur_d_par,
-        cur_val + confidence_const * cur_d_par,
+        param_cur - confidence_const * dparam_cur,
+        param_cur + confidence_const * dparam_cur,
         n,
     )[1:-1]
-    actual_d_par = cur_d_par / (n - 2)
+    actual_d_par = dparam_cur / (n - 2)
     return par_array, actual_d_par
 
 

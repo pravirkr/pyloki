@@ -4,7 +4,8 @@ from typing import Callable
 import numpy as np
 import time
 
-from pruning import base, utils
+from pruning import utils
+from pruning.base import SearchConfig, FFASearchDPFunctions
 from pruning.timeseries import TimeSeries
 
 
@@ -39,7 +40,7 @@ def unify_fold(
     fold_out: np.ndarray,
     p_cart: np.ndarray,
     ffa_level: int,
-    dp_funcs: base.FFASearchDPFunctions,
+    dp_funcs: FFASearchDPFunctions,
     load_func: Callable[[np.ndarray, int, np.ndarray], np.ndarray],
 ):
     for iparam_set in range(len(p_cart)):
@@ -56,26 +57,27 @@ def unify_fold(
 
 class DynamicProgramming(object):
     def __init__(
-        self, ts_data: TimeSeries, params: base.SearchParams, data_type=np.float32
+        self, ts_data: TimeSeries, cfg: SearchConfig, data_type=np.float32
     ):
         self.ts_data = ts_data
         self.data_type = data_type
-        self._params = params
-        self._dp_funcs = base.FFASearchDPFunctions(params)
-        self._load_func = self._set_load_func(params.nparams)
+        self._cfg = cfg
+        self._dp_funcs = FFASearchDPFunctions(cfg)
+        self._load_func = self._set_load_func(cfg.nparams)
 
         self.time_init = 0
         self.time_step = 0
         self.time_cart = 0
         self.time_fold = 0
         self.time_total = 0
+        self.logger = utils.get_logger("FFA_DP")
 
     @property
-    def params(self) -> base.SearchParams:
-        return self._params
+    def cfg(self) -> SearchConfig:
+        return self._cfg
 
     @property
-    def dp_funcs(self) -> base.FFASearchDPFunctions:
+    def dp_funcs(self) -> FFASearchDPFunctions:
         return self._dp_funcs
 
     @property
@@ -123,30 +125,30 @@ class DynamicProgramming(object):
     def initialize(self):
         tstart = time.time()
         self._ffa_level = 0
-        print("Initiating data structure...")
+        self.logger.info("Initializing data structure...")
         # Check if the param_arr is correctly set
         self._check_param_arr()
         fold = self.dp_funcs.init(self.ts_data.ts_e, self.ts_data.ts_v)
         # Reshape fold to have the correct number of dimensions
-        fold = np.expand_dims(fold, axis=list(range(1, self.params.nparams)))
+        fold = np.expand_dims(fold, axis=list(range(1, self.cfg.nparams)))
         # Pack the fold to the correct level
         fold = self.dp_funcs.pack(fold, self.ffa_level)
-        print(f"fold dimensions: {fold.shape}")
+        self.logger.info(f"fold dimensions: {fold.shape}")
 
         self._fold = fold.astype(self.data_type)
-        self._param_arr = self.params.param_arr
-        self._dparams = self.params.dparams
-        self._chunk_duration = self.params.tchunk
+        self._param_arr = self.cfg.param_arr
+        self._dparams = self.cfg.dparams
+        self._chunk_duration = self.cfg.tchunk
         self.time_init += time.time() - tstart
-        print(f"initialization time: {self.time_init}")
+        self.logger.info(f"Initialization time: {self.time_init}")
 
     def ffa_iter(self):
         tstart = time.time()
         self._ffa_level += 1
         param_steps = self.dp_funcs.step(self.ffa_level)
-        print(f"param steps: {param_steps}")
-        param_arr_new = self.params.get_updated_param_arr(param_steps)
-        dparams_new = self.params.get_updated_dparams(param_steps)
+        self.logger.info(f"param steps: {param_steps}")
+        param_arr_new = self.cfg.get_updated_param_arr(param_steps)
+        dparams_new = self.cfg.get_updated_dparams(param_steps)
         self.time_step += time.time() - tstart
         tstart = time.time()
         param_cart_new = utils.cartesian_prod_st(param_arr_new)
@@ -177,9 +179,9 @@ class DynamicProgramming(object):
     def ffa_iter_dry(self):
         self._ffa_level += 1
         param_steps = self.dp_funcns.step(self.ffa_level)
-        print(f"param steps: {param_steps}")
-        param_arr_new = self.params.get_updated_param_arr(param_steps)
-        dparams_new = self.params.get_updated_dparams(param_steps)
+        self.logger.info(f"param steps: {param_steps}")
+        param_arr_new = self.cfg.get_updated_param_arr(param_steps)
+        dparams_new = self.cfg.get_updated_dparams(param_steps)
         complexity = np.prod(list(map(len, param_arr_new)))
         self._param_steps = param_steps
         self._param_arr = param_arr_new
@@ -194,10 +196,8 @@ class DynamicProgramming(object):
         elif n_iters == "prune":
             n_iters = int(np.log2(len(self.fold))) - 7
         for _ in range(n_iters):
-            print(f"performing iteration: {self.ffa_level + 1}")
             self.ffa_iter()
-            print(f"fold dimensions: {self.fold.shape}")
-            print(f"elapsed time: {time.time() - tstart}")
+            self.logger.info(f"iteration: {self.ffa_level}, fold dimensions: {self.fold.shape}")
         self.time_total += time.time() - tstart
 
     def do_iterations_dry(self, n_iters="max"):
@@ -207,7 +207,7 @@ class DynamicProgramming(object):
             n_iters = int(np.log2(len(self.fold))) - 7
         complexity = []
         for _ in range(n_iters):
-            print(f"performing iteration: {self.ffa_level + 1}")
+            self.logger.info(f"performing iteration: {self.ffa_level + 1}")
             complexity.append(self.ffa_iter_dry())
         return complexity
 
@@ -230,9 +230,9 @@ class DynamicProgramming(object):
         return nparams_to_load_func[nparams]
 
     def _check_param_arr(self):
-        if self.params.nparams > 1:
-            for iparam in range(self.params.nparams - 1):
-                nvals = len(self.params.param_arr[iparam])
+        if self.cfg.nparams > 1:
+            for iparam in range(self.cfg.nparams - 1):
+                nvals = len(self.cfg.param_arr[iparam])
                 if nvals > 1:
                     raise ValueError(
                         "param_arr must have only one value for all but the last parameter"

@@ -10,7 +10,7 @@ from pruning import defaults, kernels, scores
     spec=[
         ("nsamps", types.i8),
         ("dt", types.f8),
-        ("tol", types.f8),
+        ("tol_bins", types.f8),
         ("nbins", types.i8),
         ("param_limits", types.ListType(types.Tuple([types.f8, types.f8]))),
         ("chunk_len", types.i8),
@@ -18,8 +18,8 @@ from pruning import defaults, kernels, scores
         ("_dparams", types.f8[:]),
     ]
 )
-class SearchParams(object):
-    """Class to hold the parameters for the polynomial search.
+class SearchConfig(object):
+    """Class to hold the configuration for the polynomial search.
 
     Parameters
     ----------
@@ -27,19 +27,19 @@ class SearchParams(object):
         Number of samples in the time series
     dt : float
         Sampling time of the time series
-    tol : float
+    tol_bins : float
         Tolerance parameter for the polynomial search
         (in units of number of time bins across the pulsar ducy)
     nbins : int
         Number of bins in the folded time series
     param_limits : types.ListType
-        List of tuples with the min and max values for each parameter
+        List of tuples with the min and max values for each search parameter
     chunk_len : int, optional
         Length of the chunks to be used in the search, by default 0
 
     Notes
     ------
-    The parameter limits are assumed to be in the order: acceleration, period.
+    The parameter limits are assumed to be in the order: ..., acceleration, period.
     If chunk_len is not provided i.e = 0, it is calculated automatically to be
     optimal for the search.
     """
@@ -48,14 +48,14 @@ class SearchParams(object):
         self,
         nsamps: int,
         dt: float,
-        tol: float,
+        tol_bins: float,
         nbins: int,
         param_limits: types.ListType[types.Tuple],
         chunk_len: int = 0,
     ) -> None:
         self.nsamps = nsamps
         self.dt = dt
-        self.tol = tol
+        self.tol_bins = tol_bins
         self.nbins = nbins
         self.param_limits = param_limits
         self._check_params()
@@ -82,7 +82,7 @@ class SearchParams(object):
 
     @property
     def nparams(self) -> int:
-        """int: Number of parameters in the search. Assumed to be non-chnaging"""
+        """int: Number of parameters in the search. Assumed to be non-changing."""
         return len(self.param_limits)
 
     @property
@@ -94,11 +94,11 @@ class SearchParams(object):
         return self.param_limits[-1][1]
 
     def freq_step(self, tobs: float) -> float:
-        return kernels.freq_step(tobs, self.nbins, self.f_max, self.tol)
+        return kernels.freq_step(tobs, self.nbins, self.f_max, self.tol_bins)
 
     def deriv_step(self, tobs: float, deriv: int) -> float:
         t_ref = tobs / 2
-        return kernels.param_step(tobs, self.dt, deriv, self.tol, t_ref=t_ref)
+        return kernels.param_step(tobs, self.dt, deriv, self.tol_bins, t_ref=t_ref)
 
     def ffa_step(self, ffa_level: int) -> types.ListType[types.f8]:
         tchunk_cur = 2**ffa_level * self.tchunk
@@ -168,29 +168,29 @@ class SearchParams(object):
                 )
 
 
-@jitclass(spec=[("params", SearchParams.class_type.instance_type)])
+@jitclass(spec=[("cfg", SearchConfig.class_type.instance_type)])
 class FFASearchDPFunctions(object):
-    def __init__(self, params: SearchParams) -> None:
-        self.params = params
+    def __init__(self, cfg: SearchConfig) -> None:
+        self.cfg = cfg
 
     def init(self, ts_e: np.ndarray, ts_v: np.ndarray) -> np.ndarray:
         return defaults.ffa_init(
             ts_e,
             ts_v,
-            self.params.param_arr,
-            self.params.chunk_len,
-            self.params.nbins,
-            self.params.dt,
+            self.cfg.param_arr,
+            self.cfg.chunk_len,
+            self.cfg.nbins,
+            self.cfg.dt,
         )
 
     def step(self, ffa_level: int) -> types.ListType[types.f8]:
-        return self.params.ffa_step(ffa_level)
+        return self.cfg.ffa_step(ffa_level)
 
     def resolve(
-        self, param_set: np.ndarray, param_arr: np.ndarray, ffa_level: int, latter: int
+        self, pset_cur: np.ndarray, parr_prev: np.ndarray, ffa_level: int, latter: int
     ) -> tuple[np.ndarray, int]:
         return defaults.ffa_resolve(
-            param_set, param_arr, ffa_level, latter, self.params.tchunk, self.params.nbins
+            pset_cur, parr_prev, ffa_level, latter, self.cfg.tchunk, self.cfg.nbins
         )
 
     def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
@@ -205,46 +205,38 @@ class FFASearchDPFunctions(object):
 
 @jitclass(
     spec=[
-        ("params", SearchParams.class_type.instance_type),
+        ("cfg", SearchConfig.class_type.instance_type),
         ("param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
         ("dparams", types.f8[:]),
-        ("tchunk_current", types.f8),
+        ("tchunk_ffa", types.f8),
     ]
 )
-class PruningAccelDPFunctions(object):
+class PruningDPFunctions(object):
     def __init__(
         self,
-        params: SearchParams,
-        param_arr: types.ListType,
+        cfg: SearchConfig,
+        param_arr: types.ListType[types.Array],
         dparams: np.ndarray,
-        tchunk_current: float,
+        tchunk_ffa: float,
     ) -> None:
-        self.params = params
+        self.cfg = cfg
         self.param_arr = param_arr
         self.dparams = dparams
-        self.tchunk_current = tchunk_current
+        self.tchunk_ffa = tchunk_ffa
 
     def load(self, fold, index) -> np.ndarray:
         return fold[index]
 
-    def resolve(
-        self, param_set: np.ndarray, idx_distance: int
-    ) -> tuple[tuple[int, int], float]:
-        return defaults.prune_resolve_accel(
-            param_set,
-            idx_distance,
-            self.param_arr,
-            self.tchunk_current,
-            self.params.nbins,
+    def resolve(self, param_set: np.ndarray, idx_dist: int) -> tuple[np.ndarray, int]:
+        t_ref_prev = idx_dist * self.tchunk_ffa
+        return defaults.prune_resolve(
+            param_set, self.param_arr, t_ref_prev, self.cfg.nbins
         )
 
-    def branch(self, sug_params_cur: np.ndarray, idx_distance: int) -> np.ndarray:
+    def branch(self, param_set: np.ndarray, prune_level: int) -> np.ndarray:
+        tchunk_curr = self.tchunk_ffa * (prune_level + 1)
         return defaults.branch2leaves(
-            sug_params_cur,
-            idx_distance,
-            self.tchunk_current,
-            self.params.tol,
-            self.params.dt,
+            param_set, tchunk_curr, self.cfg.tol_bins, self.cfg.dt, self.cfg.nbins
         )
 
     def suggest(self, fold_segment: np.ndarray) -> kernels.SuggestionStruct:
@@ -281,157 +273,3 @@ class PruningAccelDPFunctions(object):
 
     def get_phase(self, sug_params):
         return defaults.get_phase(sug_params)
-
-
-@jitclass(
-    spec=[
-        ("params", SearchParams.class_type.instance_type),
-        ("param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
-        ("dparams", types.f8[:]),
-        ("tchunk_current", types.f8),
-    ]
-)
-class PruningJerkDPFunctions(object):
-    def __init__(
-        self,
-        params: SearchParams,
-        param_arr: types.ListType,
-        dparams: np.ndarray,
-        tchunk_current: float,
-    ) -> None:
-        self.params = params
-        self.param_arr = param_arr
-        self.dparams = dparams
-        self.tchunk_current = tchunk_current
-
-    def load(self, fold, index) -> np.ndarray:
-        return fold[index]
-
-    def resolve(
-        self, param_set: np.ndarray, idx_distance: int
-    ) -> tuple[tuple[int, int], float]:
-        return defaults.prune_resolve_jerk(
-            param_set,
-            idx_distance,
-            self.param_arr,
-            self.tchunk_current,
-            self.params.nbins,
-        )
-
-    def branch(self, sug_params_cur: np.ndarray, idx_distance: int) -> np.ndarray:
-        return defaults.branch2leaves(
-            sug_params_cur,
-            idx_distance,
-            self.tchunk_current,
-            self.params.tol,
-            self.params.dt,
-        )
-
-    def suggest(self, fold_segment: np.ndarray) -> kernels.SuggestionStruct:
-        return defaults.suggestion_struct(
-            fold_segment, self.param_arr, self.dparams, self.score_func
-        )
-
-    def score_func(self, combined_res):
-        return scores.snr_score_func(combined_res)
-
-    def physical_validation(self):
-        return defaults.identity_func
-
-    def validation_params(self, params):
-        return defaults.prepare_param_validation(params)
-
-    def add(self, data0, data1):
-        return defaults.add(data0, data1)
-
-    def pack(self, x):
-        return defaults.pack(x)
-
-    def shift(self, data, phase_shift):
-        return defaults.shift(data, phase_shift)
-
-    def aggregate_stats(self, scores):
-        return defaults.aggregate_stats(scores)
-
-    def coord_transform(self, a, b, c):
-        return defaults.coord_trans_params(a, b, c)
-
-    def coord_transform_matrix(self, data_access_scheme):
-        return defaults.prepare_coordinate_trans(data_access_scheme)
-
-    def get_phase(self, sug_params):
-        return defaults.get_phase(sug_params)
-
-
-@jitclass(
-    spec=[
-        ("params", SearchParams.class_type.instance_type),
-        ("param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
-        ("dparams", types.f8[:]),
-        ("tchunk_current", types.f8),
-    ]
-)
-class PruningSnapDPFunctions(object):
-    def __init__(
-        self,
-        params: SearchParams,
-        param_arr: types.ListType,
-        dparams: np.ndarray,
-        tchunk_current: float,
-    ) -> None:
-        self.params = params
-        self.param_arr = param_arr
-        self.dparams = dparams
-        self.tchunk_current = tchunk_current
-
-    def load(self, fold, index) -> np.ndarray:
-        return fold[index]
-
-    def resolve(
-        self, param_set: np.ndarray, idx_distance: int
-    ) -> tuple[tuple[int, int], float]:
-        return defaults.prune_resolve_snap(
-            param_set,
-            idx_distance,
-            self.param_arr,
-            self.tchunk_current,
-            self.params.nbins,
-        )
-
-    def branch(self, sug_params_cur: np.ndarray, idx_distance: int) -> np.ndarray:
-        return defaults.branch2leaves(
-            sug_params_cur,
-            idx_distance,
-            self.tchunk_current,
-            self.params.tol,
-            self.params.dt,
-        )
-
-    def suggest(self, fold_segment: np.ndarray) -> kernels.SuggestionStruct:
-        return defaults.suggestion_struct(
-            fold_segment, self.param_arr, self.dparams, self.score_func
-        )
-
-    def score_func(self, combined_res):
-        return scores.snr_score_func(combined_res)
-
-    def physical_validation(self):
-        return defaults.identity_func
-
-    def validation_params(self, params):
-        return defaults.prepare_param_validation(params)
-
-    def add(self, data0, data1):
-        return defaults.add(data0, data1)
-
-    def pack(self, x):
-        return defaults.pack(x)
-
-    def shift(self, data, phase_shift):
-        return defaults.shift(data, phase_shift)
-
-    def aggregate_stats(self, scores):
-        return defaults.aggregate_stats(scores)
-
-    def coord_transform(self, a, b, c):
-        return

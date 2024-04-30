@@ -30,16 +30,15 @@ class DerivativeModulating(object):
         self.jerk = jerk
         self.snap = snap
 
-    def generate(self, t: np.ndarray) -> np.ndarray:
-        t_ref = t[-1] / 2
+    def generate(self, t_arr: np.ndarray, t_ref: float = 0) -> np.ndarray:
         delay = (
-            ((t - t_ref) ** 4 / 24 * self.snap)
-            + ((t - t_ref) ** 3 / 6 * self.jerk)
-            + ((t - t_ref) ** 2 / 2 * self.acc)
-            + ((t - t_ref) * self.vel)
+            ((t_arr - t_ref) ** 4 / 24 * self.snap)
+            + ((t_arr - t_ref) ** 3 / 6 * self.jerk)
+            + ((t_arr - t_ref) ** 2 / 2 * self.acc)
+            + ((t_arr - t_ref) * self.vel)
             + self.shift
         )
-        return t + delay / utils.c_val
+        return t_arr + delay / utils.c_val
 
 
 @jitclass(spec=[("amplitude", types.f8), ("period", types.f8), ("phi", types.f8)])

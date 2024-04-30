@@ -6,8 +6,8 @@ from pruning import kernels, simulate, baseplot
 
 
 @attrs.define(auto_attribs=True, kw_only=True)
-class SignalParams(object):
-    """A pulsar signal generator.
+class SignalConfig(object):
+    """A pulsar signal generator configuration.
 
     Parameters
     ----------
@@ -42,7 +42,7 @@ class SignalParams(object):
 
     def __attrs_post_init__(self) -> None:
         self._set_mod_func(self.mod_type, self.mod_kwargs)
-        self._check_params()
+        self._check()
 
     @property
     def freq(self) -> float:
@@ -77,27 +77,27 @@ class SignalParams(object):
     @property
     def proper_time(self) -> np.ndarray:
         """Proper time array."""
-        return self.mod_func.generate(np.arange(0, self.tobs, self.dt))
+        return self.mod_func.generate(np.arange(0, self.tobs, self.dt), self.tobs / 2)
 
-    def get_updated(self, update_dict: dict) -> SignalParams:
+    def get_updated(self, update_dict: dict) -> SignalConfig:
         new = attrs.asdict(self, filter=attrs.filters.exclude("_mod_func"))
         if update_dict is not None:
             new.update(update_dict)
         new_checked = {
             key: value for key, value in new.items() if key in attrs.asdict(self).keys()
         }
-        return SignalParams(**new_checked)
+        return SignalConfig(**new_checked)
 
     def _set_mod_func(self, mod_type="derivative", mod_kwargs: dict | None = None):
         if mod_kwargs is None:
             mod_kwargs = {}
         self._mod_func = simulate.type_to_mods[mod_type](**mod_kwargs)
 
-    def _check_params(self):
+    def _check(self):
         if self.ducy <= 0 or self.ducy >= 1:
             raise ValueError(f"Duty cycle ({self.ducy}) should be in (0, 1)")
         # if self.tol_bins < 1:
-            # print("Pulse bin width is shorter than sampling time. FWTM should be at least 1 time bin.")
+        # print("Pulse bin width is shorter than sampling time. FWTM should be at least 1 time bin.")
 
 
 class TimeSeries(object):
@@ -151,7 +151,7 @@ class TimeSeries(object):
         if mod_kwargs is None:
             mod_kwargs = {}
         mod_func = simulate.type_to_mods[mod_type](**mod_kwargs)
-        proper_time = mod_func.generate(np.arange(0, self.tobs, self.dt))
+        proper_time = mod_func.generate(np.arange(0, self.tobs, self.dt), self.tobs / 2)
         ind_arr = kernels.get_phase_idx(proper_time, freq, nbins, 0)
         return self.fold(ind_arr, nbins, nsubints)
 
@@ -194,18 +194,13 @@ class TimeSeries(object):
 
     @classmethod
     def generate_signal(
-        cls, params: SignalParams, shape: str = "gaussian", phi0: float = 0.5
+        cls, cfg: SignalConfig, shape: str = "gaussian", phi0: float = 0.5
     ):
         pulse = simulate.PulseShape(
-            params.proper_time,
-            params.dt,
-            params.period,
-            shape=shape,
-            width=params.ducy,
-            pos=phi0,
+            cfg.proper_time, cfg.dt, cfg.period, shape=shape, width=cfg.ducy, pos=phi0
         )
         signal = pulse.generate()
-        stdnoise = np.sqrt(params.nsamps * params.ducy) / params.snr / params.tol_bins
-        signal += np.random.normal(0, stdnoise, params.nsamps)
-        signal_v = np.ones(params.nsamps) * stdnoise**2
-        return TimeSeries(signal, signal_v, params.dt)
+        stdnoise = np.sqrt(cfg.nsamps * cfg.ducy) / cfg.snr / cfg.tol_bins
+        signal += np.random.normal(0, stdnoise, cfg.nsamps)
+        signal_v = np.ones(cfg.nsamps) * stdnoise**2
+        return TimeSeries(signal, signal_v, cfg.dt)
