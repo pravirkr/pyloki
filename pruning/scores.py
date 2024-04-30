@@ -1,7 +1,8 @@
 from __future__ import annotations
-from numba import njit, types, prange
-from numba.experimental import jitclass
+
 import numpy as np
+from numba import njit, prange, types
+from numba.experimental import jitclass
 
 
 @njit
@@ -47,8 +48,7 @@ def normalise(arr: np.ndarray) -> np.ndarray:
 
 @njit
 def cpadpow2(arr: np.ndarray) -> np.ndarray:
-    """Circularly pad the last dimension of 'arr' to a length that
-    is a power of 2.
+    """Circularly pad the last dimension to power of 2.
 
     Parameters
     ----------
@@ -101,9 +101,9 @@ def compute_snr_fft(data: np.ndarray, templates: np.ndarray) -> np.ndarray:
         ("shape", types.string),
         ("_templates", types.f4[:, :]),
         ("_e_mat", types.f4[:, ::1]),
-    ]
+    ],
 )
-class MatchedFilter(object):
+class MatchedFilter:
     def __init__(self, widths: np.ndarray, nbins: int, shape: str = "boxcar") -> None:
         self.widths = widths
         self.shape = shape
@@ -120,7 +120,7 @@ class MatchedFilter(object):
         return self._e_mat
 
     @property
-    def ntemp(self):
+    def ntemp(self) -> int:
         return len(self.templates)
 
     def compute_ts(self, ts_comb: np.ndarray) -> np.ndarray:
@@ -142,7 +142,8 @@ class MatchedFilter(object):
             for iw, width in enumerate(self.widths):
                 templates[iw] = gaussian_template(width, nbins)
         else:
-            raise ValueError(f"Unknown template shape: {self.shape}")
+            msg = f"Unknown template shape: {self.shape}"
+            raise ValueError(msg)
         return templates
 
     def _int_e_mat(self) -> np.ndarray:
@@ -163,7 +164,9 @@ def snr_score_func(combined_res: np.ndarray) -> int:
 
 @njit(cache=True, fastmath=True)
 def generate_width_trials(
-    fold_bins: int, ducy_max: float = 0.2, wtsp: float = 1.5
+    fold_bins: int,
+    ducy_max: float = 0.2,
+    wtsp: float = 1.5,
 ) -> np.ndarray:
     widths = []
     ww = 1
@@ -175,7 +178,11 @@ def generate_width_trials(
 
 
 @njit(cache=True, parallel=True, fastmath=True)
-def boxcar_snr(data: np.ndarray, widths: np.ndarray, stdnoise: float = 1.0) -> np.ndarray:
+def boxcar_snr(
+    data: np.ndarray,
+    widths: np.ndarray,
+    stdnoise: float = 1.0,
+) -> np.ndarray:
     widths = np.asarray(widths, dtype=np.uint64)
     nbins = data.shape[-1]
     folds = data.reshape(-1, nbins).astype(np.float32)
@@ -185,7 +192,9 @@ def boxcar_snr(data: np.ndarray, widths: np.ndarray, stdnoise: float = 1.0) -> n
 
 @njit(cache=True, parallel=True, fastmath=True)
 def boxcar_snr_2d(
-    folds: np.ndarray, widths: np.ndarray, stdnoise: float = 1.0
+    folds: np.ndarray,
+    widths: np.ndarray,
+    stdnoise: float = 1.0,
 ) -> np.ndarray:
     nfolds = len(folds)
     snrs = np.zeros(shape=(nfolds, widths.size), dtype=np.float32)
@@ -196,13 +205,15 @@ def boxcar_snr_2d(
 
 @njit(cache=True, fastmath=True)
 def boxcar_snr_1d(
-    norm_data: np.ndarray, widths: np.ndarray, stdnoise: float = 1.0
+    norm_data: np.ndarray,
+    widths: np.ndarray,
+    stdnoise: float = 1.0,
 ) -> np.ndarray:
     size = len(norm_data)
     data_cumsum = np.cumsum(norm_data)
     total_sum = data_cumsum[-1]
     prefix_sum = np.concatenate(
-        (data_cumsum, total_sum + np.cumsum(norm_data[: max(widths)]))
+        (data_cumsum, total_sum + np.cumsum(norm_data[: max(widths)])),
     )
     snr = np.zeros(len(widths), dtype=np.float32)
     for iw, width in enumerate(widths):

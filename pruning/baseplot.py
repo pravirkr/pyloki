@@ -1,12 +1,21 @@
-import numpy as np
-from pruning.utils import Spyden
-from pruning.scores import boxcar_snr_1d
+from __future__ import annotations
 
+import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.offsetbox import AnchoredText
 
+from pruning.scores import boxcar_snr_1d
+from pruning.utils import Spyden
 
-def plot_text(text, ax, xv, yv, horizontalalignment="left", fontsize=15):
+
+def plot_text(
+    text: str,
+    ax: plt.Axes,
+    xv: float,
+    yv: float,
+    horizontalalignment: str = "left",
+    fontsize: int = 15,
+) -> None:
     ax.text(
         xv,
         yv,
@@ -19,12 +28,10 @@ def plot_text(text, ax, xv, yv, horizontalalignment="left", fontsize=15):
     )
 
 
-class Table(object):
-    """ """
-
+class Table:
     def __init__(
         self,
-        col_off: None,
+        col_off: list[float],
         top_margin: float = 0.1,
         line_height: float = 0.1,
         **kwargs,
@@ -32,20 +39,22 @@ class Table(object):
         self.col_off = col_off
         if self.col_off is None:
             self.col_off = [0.2, 0.5, 0.75, 0.95]
-        self.rows = []
+        self.rows: list[list[str | float | int] | None] = []
         self.num_col = len(self.col_off)
         self.top_margin = top_margin
         self.line_height = line_height
         self.plot_kwargs = kwargs
 
-    def add_row(self, row):
-        assert len(row) == self.num_col, "row length should be equal to number of columns"
+    def add_row(self, row: list[str | float | int]) -> None:
+        if len(row) != self.num_col:
+            msg = f"row length should be equal to number of columns: {self.num_col}"
+            raise ValueError(msg)
         self.rows.append(row)
 
     def skip_row(self) -> None:
         self.rows.append(None)
 
-    def plot(self, ax):
+    def plot(self, ax: plt.Axes) -> None:
         ax.axis("off")
         yv = 1.0 - self.top_margin
         for row in self.rows:
@@ -53,7 +62,7 @@ class Table(object):
                 continue
             for icol in range(self.num_col):
                 plot_text(
-                    row[icol],
+                    str(row[icol]),
                     ax,
                     self.col_off[icol],
                     yv,
@@ -64,16 +73,16 @@ class Table(object):
 
 
 def fold_ephemeris_plot(
-    ephemeris_fold,
-    ephemeris_fold_subints,
-    freq,
-    dt,
-    tobs,
+    ephemeris_fold: np.ndarray,
+    ephemeris_fold_subints: np.ndarray,
+    freq: float,
+    dt: float,
+    tobs: float,
     mod_kwargs: dict | None = None,
-    figsize=(10, 6.5),
-    dpi=100,
-    cmap="magma_r",
-):
+    figsize: tuple[float, float] = (10, 6.5),
+    dpi: int = 100,
+    cmap: str = "magma_r",
+) -> plt.Figure:
     fold_bins = len(ephemeris_fold)
     spyden_boxcar = Spyden(
         ephemeris_fold,
@@ -86,7 +95,10 @@ def fold_ephemeris_plot(
 
     figure = plt.figure(figsize=figsize, dpi=dpi)
     grid = figure.add_gridspec(
-        nrows=2, ncols=2, height_ratios=(1.5, 1), width_ratios=(1, 1.5)
+        nrows=2,
+        ncols=2,
+        height_ratios=(1.5, 1),
+        width_ratios=(1, 1.5),
     )
     grid.update(left=0.1, right=0.98, bottom=0.08, top=0.95, hspace=0.2)
     axtable = plt.subplot(grid[0, 0])
@@ -108,14 +120,17 @@ def fold_ephemeris_plot(
         ephemeris_fold_subints,
         aspect="auto",
         interpolation="none",
-        extent=[0, fold_bins, 0, tobs],
+        extent=(0, fold_bins, 0, tobs),
         cmap=plt.get_cmap(cmap),
         origin="lower",
     )
     axsubints.set_ylabel("Time (seconds)")
     axsubints.set_xlabel("Phase bin")
     axprofile.plot(
-        range(fold_bins), ephemeris_fold, color="#404040", label="Folded Profile"
+        range(fold_bins),
+        ephemeris_fold,
+        color="#404040",
+        label="Folded Profile",
     )
     axprofile.plot(
         range(fold_bins),

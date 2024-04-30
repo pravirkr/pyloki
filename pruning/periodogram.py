@@ -1,22 +1,37 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from matplotlib import pyplot as plt
 
+if TYPE_CHECKING:
+    import numpy as np
 
-class Periodogram(object):
-    def __init__(self, widths, periods, snrs, tobs):
+
+class Periodogram:
+    def __init__(
+        self,
+        widths: np.ndarray,
+        periods: np.ndarray,
+        snrs: np.ndarray,
+        tobs: float,
+    ) -> None:
         self.widths = widths
         self.periods = periods
         self.snrs = snrs
         self.tobs = tobs
 
     @property
-    def freqs(self):
+    def freqs(self) -> np.ndarray:
         return 1.0 / self.periods
 
-    def plot(self, iwidth=None, figsize=(10, 5), dpi=100):
-        if iwidth is None:
-            snr = self.snrs.max(axis=1)
-        else:
-            snr = self.snrs[:, iwidth]
+    def plot(
+        self,
+        iwidth: int | None = None,
+        figsize: tuple[float, float] = (10, 5),
+        dpi: int = 100,
+    ) -> plt.Figure:
+        snr = self.snrs.max(axis=1) if iwidth is None else self.snrs[:, iwidth]
 
         figure, ax = plt.subplots(figsize=figsize, dpi=dpi)
         ax.plot(self.periods, snr, marker="o", markersize=2, alpha=0.5)

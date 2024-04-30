@@ -1,6 +1,7 @@
 import numpy as np
-from numba import njit, types, typed
-from pruning import kernels, utils, math
+from numba import njit, typed, types
+
+from pruning import kernels, math, utils
 
 
 @njit(cache=True)
@@ -9,38 +10,13 @@ def add(data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
 
 
 @njit(cache=True)
-def pack(data: np.ndarray, iter_num: int) -> np.ndarray:
+def pack(data: np.ndarray) -> np.ndarray:
     return data
 
 
 @njit(cache=True)
 def shift(data: np.ndarray, phase_shift: int) -> np.ndarray:
     return kernels.nb_roll2d(data, phase_shift)
-
-
-@njit
-def aggregate_stats(scores_arr):
-    """Detect changes in the score behavior, pointing to something going wrong."""
-    return NotImplementedError
-
-
-@njit
-def coord_trans_params(coord_trans_matrix, coord_params, sug_params):
-    return sug_params, 0
-
-
-@njit
-def get_phase(sug_params):
-    return 0
-
-
-@njit
-def prepare_coordinate_trans(data_access_scheme):
-    return False, False
-
-
-def prepare_param_validation(*args, **kwargs):
-    return False
 
 
 @njit(cache=True)
@@ -75,7 +51,7 @@ def ffa_resolve(
     tchunk_init: float,
     nbins: int,
 ) -> tuple[np.ndarray, float]:
-    """Resolve the parameters of the current iteration among the previous iteration parameters.
+    """Resolve the parameters of the current iter among the previous iter parameters.
 
     Parameters
     ----------
@@ -138,7 +114,10 @@ def ffa_init(
 
 @njit(cache=True)
 def prune_resolve(
-    pset_cur: np.ndarray, parr_prev: np.ndarray, t_ref_prev: float, nbins: int
+    pset_cur: np.ndarray,
+    parr_prev: np.ndarray,
+    t_ref_prev: float,
+    nbins: int,
 ) -> tuple[np.ndarray, float]:
     nparams = len(pset_cur)
     kvec_cur = np.zeros(nparams + 1, dtype=np.float64)
@@ -156,7 +135,11 @@ def prune_resolve(
 
 @njit
 def branch2leaves(
-    param_set: np.ndarray, tchunk_cur: float, tol_bins: float, tsamp: float, nbins: int
+    param_set: np.ndarray,
+    tchunk_cur: float,
+    tol_bins: float,
+    tsamp: float,
+    nbins: int,
 ) -> np.ndarray:
     """Branch a parameter set to leaves.
 
@@ -191,11 +174,18 @@ def branch2leaves(
         else:
             dparam_opt = kernels.param_step(tchunk_cur, tsamp, deriv, tol_bins, t_ref=0)
         split_param = kernels.param_split_condition(
-            dparam_opt, dparam_cur, tchunk_cur, tol_bins, tsamp, deriv
+            dparam_opt,
+            dparam_cur,
+            tchunk_cur,
+            tol_bins,
+            tsamp,
+            deriv,
         )
         if split_param:
             leaf_params, dparam_act = kernels.branch_param(
-                dparam_opt, dparam_cur, param_cur
+                dparam_opt,
+                dparam_cur,
+                param_cur,
             )
         else:
             leaf_params, dparam_act = np.array([param_cur]), dparam_cur
@@ -209,7 +199,7 @@ def suggestion_struct(
     fold_segment: np.ndarray,
     param_arr: types.ListType,
     dparams: np.ndarray,
-    score_func,
+    score_func: types.FunctionType,
 ) -> kernels.SuggestionStruct:
     """Generate a suggestion struct from a fold segment.
 
@@ -249,7 +239,7 @@ def generate_branching_pattern(
     n_iters: int,
     tol_bins: float,
     dt: float,
-):
+) -> np.ndarray:
     leaf_params = kernels.get_leaves(param_arr, dparams)[0]
     branching_pattern = []
     for ii in range(1, n_iters + 1):

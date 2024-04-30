@@ -1,35 +1,43 @@
 from __future__ import annotations
-from numba import njit, types
-from typing import Callable
-import numpy as np
+
 import time
+from typing import TYPE_CHECKING
+
+import numpy as np
+from numba import njit, types
 
 from pruning import utils
-from pruning.base import SearchConfig, FFASearchDPFunctions
-from pruning.timeseries import TimeSeries
+from pruning.base import FFASearchDPFunctions, SearchConfig
+
+if TYPE_CHECKING:
+    from typing import Callable
+
+    from numpy import typing as npt
+
+    from pruning.timeseries import TimeSeries
 
 
 @njit(cache=True)
 def load_folds_1d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (nsegments, nfreqs, 2, nbins)"""
+    """fold_in shape: (nsegments, nfreqs, 2, nbins)."""
     return fold_in[iseg, param_idx[0]]
 
 
 @njit(cache=True)
 def load_folds_2d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (nsegments, naccels, nfreqs, 2, nbins)"""
+    """fold_in shape: (nsegments, naccels, nfreqs, 2, nbins)."""
     return fold_in[iseg, param_idx[0], param_idx[1]]
 
 
 @njit(cache=True)
 def load_folds_3d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (nsegments, njerks, naccels, nfreqs, 2, nbins)"""
+    """fold_in shape: (nsegments, njerks, naccels, nfreqs, 2, nbins)."""
     return fold_in[iseg, param_idx[0], param_idx[1], param_idx[2]]
 
 
 @njit(cache=True)
 def load_folds_4d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (nsegments, nsnap, njerks, naccels, nfreqs, 2, nbins)"""
+    """fold_in shape: (nsegments, nsnap, njerks, naccels, nfreqs, 2, nbins)."""
     return fold_in[iseg, param_idx[0], param_idx[1], param_idx[2], param_idx[3]]
 
 
@@ -42,7 +50,7 @@ def unify_fold(
     ffa_level: int,
     dp_funcs: FFASearchDPFunctions,
     load_func: Callable[[np.ndarray, int, np.ndarray], np.ndarray],
-):
+) -> None:
     for iparam_set in range(len(p_cart)):
         p_set = p_cart[iparam_set]
         p_idx0, phase_shift0 = dp_funcs.resolve(p_set, p_arr_prev, ffa_level, 0)
@@ -50,26 +58,30 @@ def unify_fold(
         for ipair in range(fold_out.shape[0]):
             fold0 = dp_funcs.shift(load_func(fold_in, ipair * 2, p_idx0), phase_shift0)
             fold1 = dp_funcs.shift(
-                load_func(fold_in, ipair * 2 + 1, p_idx1), phase_shift1
+                load_func(fold_in, ipair * 2 + 1, p_idx1),
+                phase_shift1,
             )
             fold_out[ipair, iparam_set] = dp_funcs.add(fold0, fold1)
 
 
-class DynamicProgramming(object):
+class DynamicProgramming:
     def __init__(
-        self, ts_data: TimeSeries, cfg: SearchConfig, data_type=np.float32
-    ):
+        self,
+        ts_data: TimeSeries,
+        cfg: SearchConfig,
+        data_type: npt.DTypeLike = np.float32,
+    ) -> None:
         self.ts_data = ts_data
         self.data_type = data_type
         self._cfg = cfg
         self._dp_funcs = FFASearchDPFunctions(cfg)
         self._load_func = self._set_load_func(cfg.nparams)
 
-        self.time_init = 0
-        self.time_step = 0
-        self.time_cart = 0
-        self.time_fold = 0
-        self.time_total = 0
+        self.time_init = 0.0
+        self.time_step = 0.0
+        self.time_cart = 0.0
+        self.time_fold = 0.0
+        self.time_total = 0.0
         self.logger = utils.get_logger("FFA_DP")
 
     @property
@@ -119,10 +131,10 @@ class DynamicProgramming(object):
         return self._dparams
 
     @property
-    def chunk_duration(self):
+    def chunk_duration(self) -> float:
         return self._chunk_duration
 
-    def initialize(self):
+    def initialize(self) -> None:
         tstart = time.time()
         self._ffa_level = 0
         self.logger.info("Initializing data structure...")
@@ -142,7 +154,7 @@ class DynamicProgramming(object):
         self.time_init += time.time() - tstart
         self.logger.info(f"Initialization time: {self.time_init}")
 
-    def ffa_iter(self):
+    def ffa_iter(self) -> None:
         tstart = time.time()
         self._ffa_level += 1
         param_steps = self.dp_funcs.step(self.ffa_level)
@@ -169,49 +181,55 @@ class DynamicProgramming(object):
         )
         self.time_fold += time.time() - tstart
         self._fold = fold_new.reshape(
-            (self.nchunks // 2, *list(map(len, param_arr_new)), *self.fold.shape[-2:])
+            (self.nchunks // 2, *list(map(len, param_arr_new)), *self.fold.shape[-2:]),
         )
         self._param_steps = param_steps
         self._param_arr = param_arr_new
         self._dparams = dparams_new
         self._chunk_duration *= 2
 
-    def ffa_iter_dry(self):
+    def ffa_iter_dry(self) -> int:
         self._ffa_level += 1
         param_steps = self.dp_funcns.step(self.ffa_level)
         self.logger.info(f"param steps: {param_steps}")
         param_arr_new = self.cfg.get_updated_param_arr(param_steps)
         dparams_new = self.cfg.get_updated_dparams(param_steps)
-        complexity = np.prod(list(map(len, param_arr_new)))
+        complexity = int(np.prod(list(map(len, param_arr_new))))
         self._param_steps = param_steps
         self._param_arr = param_arr_new
         self._dparams = dparams_new
         self._chunk_duration *= 2
         return complexity
 
-    def do_iterations(self, n_iters="max"):
+    def do_iterations(self, n_iters: str | int = "max") -> None:
         tstart = time.time()
         if n_iters == "max":
             n_iters = int(np.log2(len(self.fold)))
         elif n_iters == "prune":
             n_iters = int(np.log2(len(self.fold))) - 7
-        for _ in range(n_iters):
+        for _ in range(int(n_iters)):
             self.ffa_iter()
-            self.logger.info(f"iteration: {self.ffa_level}, fold dimensions: {self.fold.shape}")
+            self.logger.info(
+                f"iteration: {self.ffa_level}, fold dimensions: {self.fold.shape}",
+            )
         self.time_total += time.time() - tstart
 
-    def do_iterations_dry(self, n_iters="max"):
+    def do_iterations_dry(self, n_iters: str | int = "max") -> list[int]:
         if n_iters == "max":
             n_iters = int(np.log2(len(self.fold)))
         elif n_iters == "prune":
             n_iters = int(np.log2(len(self.fold))) - 7
         complexity = []
-        for _ in range(n_iters):
+        for _ in range(int(n_iters)):
             self.logger.info(f"performing iteration: {self.ffa_level + 1}")
             complexity.append(self.ffa_iter_dry())
         return complexity
 
-    def get_fold_norm(self, iseg: int = 0, param_idx: tuple | None = None) -> np.ndarray:
+    def get_fold_norm(
+        self,
+        iseg: int = 0,
+        param_idx: tuple | None = None,
+    ) -> np.ndarray:
         if param_idx is None:
             fold = self.fold[iseg]
         else:
@@ -219,7 +237,8 @@ class DynamicProgramming(object):
         return fold[..., 0, :] / np.sqrt(fold[..., 1, :])
 
     def _set_load_func(
-        self, nparams: int
+        self,
+        nparams: int,
     ) -> Callable[[np.ndarray, int, np.ndarray], np.ndarray]:
         nparams_to_load_func = {
             1: load_folds_1d,
@@ -229,11 +248,10 @@ class DynamicProgramming(object):
         }
         return nparams_to_load_func[nparams]
 
-    def _check_param_arr(self):
+    def _check_param_arr(self) -> None:
         if self.cfg.nparams > 1:
             for iparam in range(self.cfg.nparams - 1):
                 nvals = len(self.cfg.param_arr[iparam])
                 if nvals > 1:
-                    raise ValueError(
-                        "param_arr must have only one value for all but the last parameter"
-                    )
+                    msg = f"param_arr has {nvals} values, should have only one"
+                    raise ValueError(msg)

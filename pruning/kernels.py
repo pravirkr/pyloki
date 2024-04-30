@@ -1,14 +1,17 @@
 from __future__ import annotations
+
+from typing import Callable
+
 import numpy as np
 from numba import njit, types, vectorize
 from numba.experimental import jitclass
 
-from pruning import utils, math
+from pruning import math, utils
 
 
 @njit(cache=True)
 def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
-    """Finds the index of the closest value in a sorted array.
+    """Find the index of the closest value in a sorted array.
 
     Parameters
     ----------
@@ -23,9 +26,10 @@ def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
         Index of the closest value in the array
     """
     idx = int(np.searchsorted(array, value, side="left"))
-    if idx > 0:
-        if idx == len(array) or abs(value - array[idx - 1]) <= abs(value - array[idx]):
-            return idx - 1
+    if idx > 0 and (
+        idx == len(array) or abs(value - array[idx - 1]) <= abs(value - array[idx])
+    ):
+        return idx - 1
     return idx
 
 
@@ -129,7 +133,11 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
 
 @njit
 def fold_ts(
-    ts_e: np.ndarray, ts_v: np.ndarray, ind_arrs: np.ndarray, nbins: int, nsubints: int
+    ts_e: np.ndarray,
+    ts_v: np.ndarray,
+    ind_arrs: np.ndarray,
+    nbins: int,
+    nsubints: int,
 ) -> np.ndarray:
     """Fold a time series for given phase bin indices.
 
@@ -193,11 +201,8 @@ def fold_brute_start(
 
 
 @njit
-def resample(ts_e: np.ndarray, ts_v: np.ndarray, tsamp, accel):
-    if accel > 0:
-        nsamps = len(ts_e) - 1
-    else:
-        nsamps = len(ts_e)
+def resample(ts_e: np.ndarray, ts_v: np.ndarray, tsamp: float, accel: float) -> tuple:
+    nsamps = len(ts_e) - 1 if accel > 0 else len(ts_e)
     ts_e_resamp = np.zeros_like(ts_e)
     ts_v_resamp = np.zeros_like(ts_v)
 
@@ -216,7 +221,13 @@ def resample(ts_e: np.ndarray, ts_v: np.ndarray, tsamp, accel):
 
 
 @njit
-def get_init_period_arr(tobs, p_min, p_max, nbins, tol_bins):
+def get_init_period_arr(
+    tobs: float,
+    p_min: float,
+    p_max: float,
+    nbins: int,
+    tol_bins: int,
+) -> np.ndarray:
     n_jumps = int(tobs / p_min)
     dphi = tol_bins / nbins
     dp = dphi * p_min / n_jumps
@@ -224,9 +235,13 @@ def get_init_period_arr(tobs, p_min, p_max, nbins, tol_bins):
 
 
 @njit
-def np_apply_along_axis(func1d, axis, arr):
-    assert arr.ndim == 2
-    assert axis in {0, 1}
+def np_apply_along_axis(func1d: Callable, axis: int, arr: np.ndarray) -> np.ndarray:
+    if arr.ndim != 2:
+        msg = "arr must be 2D"
+        raise ValueError(msg)
+    if axis not in {0, 1}:
+        msg = "axis must be 0 or 1"
+        raise ValueError(msg)
     if axis == 0:
         res_len = arr.shape[1]
         result = np.empty(res_len)
@@ -241,17 +256,17 @@ def np_apply_along_axis(func1d, axis, arr):
 
 
 @njit
-def nb_max(array, axis):
+def nb_max(array: np.ndarray, axis: int) -> np.ndarray:
     return np_apply_along_axis(np.max, axis, array)
 
 
 @njit
-def np_mean(array, axis):
+def np_mean(array: np.ndarray, axis: int) -> np.ndarray:
     return np_apply_along_axis(np.mean, axis, array)
 
 
 @njit
-def downsample_1d(array, factor):
+def downsample_1d(array: np.ndarray, factor: int) -> np.ndarray:
     reshaped_ar = np.reshape(array, (array.size // factor, factor))
     return np_mean(reshaped_ar, 1)
 
@@ -279,7 +294,7 @@ def get_leaves(param_arr: types.ListType, dparams: np.ndarray) -> np.ndarray:
 
 
 @njit
-def get_unique_indices(params):
+def get_unique_indices(params: np.ndarray) -> np.ndarray:
     nparams = params.shape[0]
     unique_dict = {}
     unique_indices = np.empty(nparams, dtype=np.int64)
@@ -295,11 +310,11 @@ def get_unique_indices(params):
 
 
 @njit
-def get_unique_indices_scores(params, scores):
+def get_unique_indices_scores(params: np.ndarray, scores: np.ndarray) -> np.ndarray:
     nparams = params.shape[0]
-    unique_dict = {}
-    scores_dict = {}
-    count_dict = {}
+    unique_dict: dict[int, bool] = {}
+    scores_dict: dict[int, float] = {}
+    count_dict: dict[int, int] = {}
     unique_indices = np.empty(nparams, dtype=np.int64)
     count = 0
     for ii in range(nparams):
@@ -325,9 +340,9 @@ def get_unique_indices_scores(params, scores):
         ("scores", types.f8[:]),
         ("backtracks", types.f8[:, :]),
         ("_actual_size", types.int64),
-    ]
+    ],
 )
-class SuggestionStruct(object):
+class SuggestionStruct:
     """A struct to hold suggestions for pruning.
 
     Parameters
@@ -356,15 +371,15 @@ class SuggestionStruct(object):
         self._actual_size = self.param_sets.shape[0]
 
     @property
-    def actual_size(self):
+    def actual_size(self) -> int:
         return self._actual_size
 
     @property
-    def size(self):
+    def size(self) -> int:
         return self.param_sets.shape[0]
 
     @property
-    def nparams(self):
+    def nparams(self) -> int:
         return self.param_sets.shape[1]
 
     def get_new(self, max_sugg: int) -> SuggestionStruct:
@@ -411,7 +426,7 @@ class SuggestionStruct(object):
         sug_new.folds[:ind_size] = self.folds[indices]
         sug_new.scores[:ind_size] = self.scores[indices]
         sug_new.backtracks[:ind_size] = self.backtracks[indices]
-        sug_new._actual_size = ind_size
+        sug_new._actual_size = ind_size  # noqa: SLF001
         return sug_new
 
 
@@ -421,11 +436,15 @@ class SuggestionStruct(object):
         ("n_leaves_phy", types.i8),
         ("n_branches", types.i8),
         ("n_leaves_surv", types.i8),
-    ]
+    ],
 )
-class PruneStats(object):
+class PruneStats:
     def __init__(
-        self, n_branches: int, n_leaves_tot: int, n_leaves_phy: int, n_leaves_surv: int
+        self,
+        n_branches: int,
+        n_leaves_tot: int,
+        n_leaves_phy: int,
+        n_leaves_surv: int,
     ) -> None:
         self.n_branches = n_branches
         self.n_leaves_tot = n_leaves_tot
@@ -450,7 +469,7 @@ class PruneStats(object):
 
 
 @njit
-def numba_bf_row_vector_unique(arr):
+def numba_bf_row_vector_unique(arr: np.ndarray) -> np.ndarray:
     ret = np.zeros(arr.shape, arr.dtype)
     ret[0] = arr[0]
     ind = 1
@@ -466,19 +485,34 @@ def numba_bf_row_vector_unique(arr):
 
 
 @njit
-def numba_bypass_all_close(arr1, arr2, tol=1e-8):
-    return np.all(np.abs(arr1 - arr2) < tol)
+def numba_bypass_all_close(
+    arr1: np.ndarray,
+    arr2: np.ndarray,
+    tol: float = 1e-8,
+) -> bool:
+    return bool(np.all(np.abs(arr1 - arr2) < tol))
 
 
 @njit
-def param_split_condition(dparam_opt, dparam_cur, duration, tol_bins, dt, deriv):
+def param_split_condition(
+    dparam_opt: float,
+    dparam_cur: float,
+    duration: float,
+    tol_bins: int,
+    dt: float,
+    deriv: int,
+) -> bool:
     shift = (dparam_cur - dparam_opt) / 2 * (duration) ** deriv / math.fact(deriv)
     return shift > tol_bins * dt
 
 
 @njit
 def param_step(
-    tobs: float, tsamp: float, deriv: int, tol_bins: float, t_ref: float = 0
+    tobs: float,
+    tsamp: float,
+    deriv: int,
+    tol_bins: float,
+    t_ref: float = 0,
 ) -> float:
     """Calculate the parameter step size for polynomial search.
 
@@ -501,7 +535,8 @@ def param_step(
         Optimal parameter step size
     """
     if deriv < 2:
-        raise ValueError("deriv must be >= 2")
+        msg = "deriv must be >= 2"
+        raise ValueError(msg)
     dparam = tsamp * math.fact(deriv) * utils.c_val / (tobs - t_ref) ** deriv
     return tol_bins * dparam
 
@@ -527,13 +562,15 @@ def period_step(tobs: float, tsamp: int, p_min: float, tol: float) -> float:
 
 
 @njit
-def cheb_step(poly_order, tsamp, tol):
+def cheb_step(poly_order: int, tsamp: float, tol: int) -> np.ndarray:
     return np.zeros(poly_order + 1, np.float32) + ((tol * tsamp) * utils.c_val)
 
 
 @njit
 def branch_param(
-    dparam_opt: float, dparam_cur: float, param_cur: float
+    dparam_opt: float,
+    dparam_cur: float,
+    param_cur: float,
 ) -> tuple[np.ndarray, float]:
     n = 2 + int(np.ceil(dparam_cur / dparam_opt))
     confidence_const = 0.5 * (1 + 1 / float(n - 2))

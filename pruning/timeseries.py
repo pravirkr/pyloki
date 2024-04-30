@@ -1,12 +1,18 @@
 from __future__ import annotations
-import numpy as np
-import attrs
 
-from pruning import kernels, simulate, baseplot
+from typing import TYPE_CHECKING
+
+import attrs
+import numpy as np
+
+from pruning import baseplot, kernels, simulate
+
+if TYPE_CHECKING:
+    from matplotlib import pyplot as plt
 
 
 @attrs.define(auto_attribs=True, kw_only=True)
-class SignalConfig(object):
+class SignalConfig:
     """A pulsar signal generator configuration.
 
     Parameters
@@ -84,23 +90,26 @@ class SignalConfig(object):
         if update_dict is not None:
             new.update(update_dict)
         new_checked = {
-            key: value for key, value in new.items() if key in attrs.asdict(self).keys()
+            key: value for key, value in new.items() if key in attrs.asdict(self)
         }
         return SignalConfig(**new_checked)
 
-    def _set_mod_func(self, mod_type="derivative", mod_kwargs: dict | None = None):
+    def _set_mod_func(
+        self,
+        mod_type: str = "derivative",
+        mod_kwargs: dict | None = None,
+    ) -> None:
         if mod_kwargs is None:
             mod_kwargs = {}
         self._mod_func = simulate.type_to_mods[mod_type](**mod_kwargs)
 
-    def _check(self):
+    def _check(self) -> None:
         if self.ducy <= 0 or self.ducy >= 1:
-            raise ValueError(f"Duty cycle ({self.ducy}) should be in (0, 1)")
-        # if self.tol_bins < 1:
-        # print("Pulse bin width is shorter than sampling time. FWTM should be at least 1 time bin.")
+            msg = f"Duty cycle ({self.ducy}) should be in (0, 1)"
+            raise ValueError(msg)
 
 
-class TimeSeries(object):
+class TimeSeries:
     def __init__(self, ts_e: np.ndarray, ts_v: np.ndarray, dt: float) -> None:
         self._ts_e = np.asarray(ts_e, dtype=np.float32)
         self._ts_v = np.asarray(ts_v, dtype=np.float32)
@@ -131,7 +140,7 @@ class TimeSeries(object):
         ts_v = kernels.downsample_1d(self.ts_v, factor)
         return TimeSeries(ts_e, ts_v, self.dt)
 
-    def resample(self, accel) -> TimeSeries:
+    def resample(self, accel: float) -> TimeSeries:
         ts_e, ts_v = kernels.resample(self.ts_e, self.ts_v, self.dt, accel)
         return TimeSeries(ts_e, ts_v, self.dt)
 
@@ -140,14 +149,16 @@ class TimeSeries(object):
         freq: float,
         nbins: int,
         nsubints: int = 1,
-        mod_type="derivative",
+        mod_type: str = "derivative",
         mod_kwargs: dict | None = None,
     ) -> np.ndarray:
         cycles = int(self.tobs * freq)
         if cycles < 1:
-            raise ValueError(f"Period ({1/freq}) exceeds total data length ({self.tobs})")
+            msg = f"Period ({1/freq}) is less than the total data length ({self.tobs})"
+            raise ValueError(msg)
         if nsubints < 1 or nsubints > cycles:
-            raise ValueError(f"subints must be >= 1 and <= {cycles}")
+            msg = f"subints must be >= 1 and <= {cycles}"
+            raise ValueError(msg)
         if mod_kwargs is None:
             mod_kwargs = {}
         mod_func = simulate.type_to_mods[mod_type](**mod_kwargs)
@@ -159,12 +170,16 @@ class TimeSeries(object):
         self,
         freq: float,
         fold_bins: int,
-        nsubints=64,
-        mod_type="derivative",
+        nsubints: int = 64,
+        mod_type: str = "derivative",
         mod_kwargs: dict | None = None,
-    ):
+    ) -> plt.Figure:
         ephem_fold = self.fold_ephem(
-            freq, fold_bins, nsubints=1, mod_type=mod_type, mod_kwargs=mod_kwargs
+            freq,
+            fold_bins,
+            nsubints=1,
+            mod_type=mod_type,
+            mod_kwargs=mod_kwargs,
         )
         ephem_fold_subints = self.fold_ephem(freq, fold_bins, nsubints=nsubints)
         return baseplot.fold_ephemeris_plot(
@@ -177,30 +192,53 @@ class TimeSeries(object):
         )
 
     def fold(
-        self, ind_arr: np.ndarray, nbins: int, nsubints: int = 1, normalize: bool = True
+        self,
+        ind_arr: np.ndarray,
+        nbins: int,
+        nsubints: int = 1,
+        *,
+        normalize: bool = True,
     ) -> np.ndarray:
         ind_arrs = np.array([ind_arr])
-        fold = kernels.fold_ts(self.ts_e, self.ts_v, ind_arrs, nbins, nsubints).squeeze()
+        fold = kernels.fold_ts(
+            self.ts_e,
+            self.ts_v,
+            ind_arrs,
+            nbins,
+            nsubints,
+        ).squeeze()
         if normalize:
             return fold[..., 0, :] / np.sqrt(fold[..., 1, :])
         return fold
 
-    def __str__(self):
+    def __str__(self) -> str:
         name = type(self).__name__
-        return f"{name} {{nsamps = {self.nsamps:d}, tsamp = {self.dt:.4e}, tobs = {self.tobs:.3f}}}"
+        return (
+            f"{name} {{nsamps = {self.nsamps:d}, tsamp = {self.dt:.4e}, "
+            f"tobs = {self.tobs:.3f}}}"
+        )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return str(self)
 
     @classmethod
     def generate_signal(
-        cls, cfg: SignalConfig, shape: str = "gaussian", phi0: float = 0.5
-    ):
+        cls,
+        cfg: SignalConfig,
+        shape: str = "gaussian",
+        phi0: float = 0.5,
+    ) -> TimeSeries:
         pulse = simulate.PulseShape(
-            cfg.proper_time, cfg.dt, cfg.period, shape=shape, width=cfg.ducy, pos=phi0
+            cfg.proper_time,
+            cfg.dt,
+            cfg.period,
+            shape=shape,
+            width=cfg.ducy,
+            pos=phi0,
         )
         signal = pulse.generate()
         stdnoise = np.sqrt(cfg.nsamps * cfg.ducy) / cfg.snr / cfg.tol_bins
-        signal += np.random.normal(0, stdnoise, cfg.nsamps)
+        rng = np.random.default_rng()
+        signal += rng.normal(0, stdnoise, cfg.nsamps)
         signal_v = np.ones(cfg.nsamps) * stdnoise**2
         return TimeSeries(signal, signal_v, cfg.dt)

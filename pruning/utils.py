@@ -1,13 +1,11 @@
-from astropy import constants
-import numpy as np
-from numpy.polynomial import chebyshev as cheb
+from __future__ import annotations
 
 import logging
-from datetime import datetime
-from rich.text import Text
-from rich.logging import RichHandler
-from rich.console import Console
 
+import numpy as np
+from astropy import constants
+from numpy.polynomial import chebyshev as cheb
+from rich.logging import RichHandler
 from spyden import TemplateBank, snratio
 
 c_val = constants.c.value
@@ -30,9 +28,11 @@ def cartesian_prod_st(arr_list: list[np.ndarray]) -> np.ndarray:
 
 
 def get_indices(
-    proper_time: np.ndarray, periods: float | list | np.ndarray, nbins: int
+    proper_time: np.ndarray,
+    periods: float | list | np.ndarray,
+    nbins: int,
 ) -> np.ndarray:
-    """Calculates the indices of the folded time series.
+    """Calculate the indices of the folded time series.
 
     Parameters
     ----------
@@ -78,7 +78,7 @@ def pad_with_inf(param_list: list[np.ndarray]) -> np.ndarray:
 
 
 def snail_access_scheme(nchunks: int, ref_idx: int) -> np.ndarray:
-    """Get an access pattern for the chunks to implement the snail scheme
+    """Get an access pattern for the chunks.
 
     Parameters
     ----------
@@ -95,8 +95,13 @@ def snail_access_scheme(nchunks: int, ref_idx: int) -> np.ndarray:
     return np.argsort(np.abs(np.arange(nchunks) - ref_idx))
 
 
-class Spyden(object):
-    def __init__(self, profile, tempwidth_max=None, template_kind="boxcar"):
+class Spyden:
+    def __init__(
+        self,
+        profile: np.ndarray,
+        tempwidth_max: int | None = None,
+        template_kind: str = "boxcar",
+    ) -> None:
         self._profile = profile
         self._template_kind = template_kind
 
@@ -112,7 +117,8 @@ class Spyden(object):
                 tempwidth_max = int(((len(profile) - 1) / 2) * 2.35 / 3.5) - 1
             bank = TemplateBank.gaussians(np.logspace(0, np.log10(tempwidth_max), 50))
         else:
-            raise ValueError(f"template {template_kind} not implemented in spyden")
+            msg = f"template {template_kind} not implemented in spyden"
+            raise ValueError(msg)
 
         snrmap, mu, sigma, models = snratio(profile, bank, mu=0.0, sigma=1.0)
         self.bank = bank
@@ -126,49 +132,54 @@ class Spyden(object):
         ]
 
     @property
-    def template_kind(self):
+    def template_kind(self) -> str:
         return self._template_kind
 
     @property
-    def snr(self):
+    def snr(self) -> float:
         return self.snrmap[np.unravel_index(self.snrmap.argmax(), self.snrmap.shape)]
 
     @property
-    def best_width(self):
+    def best_width(self) -> int:
         # in bins
         return self._best_temp.shape_params["w"]
 
     @property
-    def ref_bin(self):
-        """
-        For Gaussian, return peak bin.
-        For boxcar, return start bin.
-        """
+    def ref_bin(self) -> int:
+        """Return peak bin (Gaussian) or start bin (boxcar)."""
         return np.unravel_index(self.snrmap.argmax(), self.snrmap.shape)[1]
 
     @property
-    def on_pulse(self):
+    def on_pulse(self) -> list[int]:
         if self.template_kind == "boxcar":
-            return [self.ref_bin, self.ref_bin + self.best_width]
-        elif self.template_kind == "gaussian":
-            return [
+            on_pulse_idx = [self.ref_bin, self.ref_bin + self.best_width]
+        else:
+            on_pulse_idx = [
                 self.ref_bin - round(self.best_width),
                 self.ref_bin + round(self.best_width),
             ]
+        return on_pulse_idx
 
-def generate_chebyshev_polys_table_numpy(order, n_derivs):
+
+def generate_chebyshev_polys_table_numpy(order: int, n_derivs: int) -> np.ndarray:
     tab = np.zeros((n_derivs + 1, order + 1, order + 1))
     for ideriv in range(n_derivs + 1):
         for iorder in range(order + 1):
-            poly_coeffs = cheb.cheb2poly(cheb.Chebyshev.basis(iorder).deriv(ideriv).coef)
+            poly_coeffs = cheb.cheb2poly(
+                cheb.Chebyshev.basis(iorder).deriv(ideriv).coef,
+            )
             tab[ideriv, iorder, : poly_coeffs.size] = poly_coeffs
     return tab
 
 
 def get_logger(
-    name: str, level: int | str = logging.INFO, quiet: bool = False
+    name: str,
+    *,
+    level: int | str = logging.INFO,
+    quiet: bool = False,
+    log_file: str | None = None,
 ) -> logging.Logger:
-    """Get a fancy logging utility using Rich library.
+    """Get a fancy configured logger.
 
     Parameters
     ----------
@@ -178,6 +189,8 @@ def get_logger(
         logging level, by default logging.INFO
     quiet : bool, optional
         if True set `level` as logging.WARNING, by default False
+    log_file : str, optional
+        path to log file, by default None
 
     Returns
     -------
@@ -185,26 +198,19 @@ def get_logger(
         a logging object
     """
     logger = logging.getLogger(name)
-    if quiet:
-        logger.setLevel(logging.WARNING)
-    else:
-        logger.setLevel(level)
-
+    logger.setLevel(logging.WARNING if quiet else level)
     logformat = "- %(name)s - %(message)s"
     formatter = logging.Formatter(fmt=logformat)
-
     if not logger.hasHandlers():
         handler = RichHandler(
-            show_level=False,
             show_path=False,
             rich_tracebacks=True,
-            log_time_format=_time_formatter,
-            console=Console(width=170)
+            log_time_format="%Y-%m-%d %H:%M:%S",
         )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
     return logger
-
-
-def _time_formatter(timestamp: datetime) -> Text:
-    return Text(timestamp.isoformat(sep=" ", timespec="milliseconds"))

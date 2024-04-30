@@ -1,36 +1,42 @@
 from __future__ import annotations
-from rich.progress import track
-from typing import Callable
-from numba import njit
-import numpy as np
+
 import time
+from typing import TYPE_CHECKING
+
+import numpy as np
+from numba import njit
+from rich.progress import track
 
 from pruning import kernels, utils
 from pruning.base import PruningDPFunctions
-from pruning.ffa import DynamicProgramming
+
+if TYPE_CHECKING:
+    from typing import Callable
+
+    from pruning.ffa import DynamicProgramming
 
 
 @njit(cache=True)
 def load_folds_seg_1d(fold_in: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (nfreqs, 2, nbins)"""
+    """fold_in shape: (nfreqs, 2, nbins)."""
     return fold_in[param_idx[0]]
 
 
 @njit(cache=True)
 def load_folds_seg_2d(fold_in: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (naccels, nfreqs, 2, nbins)"""
+    """fold_in shape: (naccels, nfreqs, 2, nbins)."""
     return fold_in[param_idx[0], param_idx[1]]
 
 
 @njit(cache=True)
 def load_folds_seg_3d(fold_in: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (njerks, naccels, nfreqs, 2, nbins)"""
+    """fold_in shape: (njerks, naccels, nfreqs, 2, nbins)."""
     return fold_in[param_idx[0], param_idx[1], param_idx[2]]
 
 
 @njit(cache=True)
 def load_folds_seg_4d(fold_in: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (nsnap, njerks, naccels, nfreqs, 2, nbins)"""
+    """fold_in shape: (nsnap, njerks, naccels, nfreqs, 2, nbins)."""
     return fold_in[param_idx[0], param_idx[1], param_idx[2], param_idx[3]]
 
 
@@ -57,7 +63,8 @@ def pruning_iteration(
             leaf_param_set = leaves_arr[ileaf]
             param_idx, phase_shift = prune_funcs.resolve(leaf_param_set, idx_distance)
             partial_res = prune_funcs.shift(
-                load_func(fold_segment, param_idx), phase_shift
+                load_func(fold_segment, param_idx),
+                phase_shift,
             )
             combined_res = prune_funcs.add(suggestion.folds[isuggest], partial_res)
             score = prune_funcs.score_func(combined_res)
@@ -67,7 +74,7 @@ def pruning_iteration(
                 suggestion_new.folds[iparam] = combined_res
                 suggestion_new.scores[iparam] = score
                 suggestion_new.backtracks[iparam] = np.array(
-                    [isuggest] + list(param_idx) + [phase_shift]
+                    [isuggest, *list(param_idx), phase_shift],
                 )
 
                 iparam += 1
@@ -79,12 +86,15 @@ def pruning_iteration(
 
     suggestion_new = suggestion_new.trim_empty(iparam)
     stats = kernels.PruneStats(
-        suggestion.size, n_leaves_total, n_leaves_total, suggestion_new.size
+        suggestion.size,
+        n_leaves_total,
+        n_leaves_total,
+        suggestion_new.size,
     )
     return suggestion_new, stats
 
 
-class Pruning(object):
+class Pruning:
     def __init__(
         self,
         dyp: DynamicProgramming,
@@ -93,7 +103,10 @@ class Pruning(object):
     ) -> None:
         self._dyp = dyp
         self._prune_funcs = PruningDPFunctions(
-            dyp.cfg, dyp.param_arr, dyp.dparams, dyp.chunk_duration
+            dyp.cfg,
+            dyp.param_arr,
+            dyp.dparams,
+            dyp.chunk_duration,
         )
         self._load_func = self._set_load_func(dyp.cfg.nparams)
         self._threshold_scheme = threshold_scheme
@@ -167,7 +180,8 @@ class Pruning(object):
         """
         tstart = time.time()
         self._segment_scheme = utils.snail_access_scheme(
-            self.dyp.nchunks, ref_idx=seg_ref
+            self.dyp.nchunks,
+            ref_idx=seg_ref,
         )
         self._complete = False
         self._prune_level = 0
@@ -177,20 +191,27 @@ class Pruning(object):
         self._suggestion = self.prune_funcs.suggest(fold_segment)
         self._t_ref = (self.seg_ref + 0.5) * self.prune_funcs.tchunk_ffa
         self._backtrack_arr = np.zeros(
-            (self.dyp.fold.shape[0], self.max_sugg, len(self.dyp.fold.shape[1:]))
+            (self.dyp.fold.shape[0], self.max_sugg, len(self.dyp.fold.shape[1:])),
         )
-        self._best_intermediate_arr = np.empty((self.dyp.fold.shape[0], 3), dtype=object)
+        self._best_intermediate_arr = np.empty(
+            (self.dyp.fold.shape[0], 3),
+            dtype=object,
+        )
         self.logger.info(f"Initialization time: {time.time() - tstart}")
 
     def prune_enumeration(
-        self, snr_lim: float, seg_ref_list: np.ndarray | None = None, lazy: bool = True
+        self,
+        snr_lim: float,
+        seg_ref_list: np.ndarray | None = None,
+        *,
+        lazy: bool = True,
     ) -> list[tuple[int, kernels.SuggestionStruct]]:
         res = []
         if seg_ref_list is None:
             seg_ref_list = np.arange(0, self.dyp.nchunks, self.dyp.nchunks // 16)
         for seg_ref in seg_ref_list:
             self.initialize(seg_ref=seg_ref)
-            for _ in range(self.dyp.nchunks - 1):
+            for _ in track(range(self.dyp.nchunks - 1), description="Pruning"):
                 self.prune_iter()
             if self.suggestion.size > 0 and np.max(self.suggestion.scores) > snr_lim:
                 res.append((seg_ref, self.suggestion))
@@ -217,7 +238,8 @@ class Pruning(object):
             self.max_sugg,
         )
         log_str = (
-            f"level: {self.prune_level}, seg_cur: {seg_cur}, lb_leaves= {pstats.lb_leaves:.2f}, "
+            f"level: {self.prune_level}, seg_cur: {seg_cur}, "
+            f"lb_leaves= {pstats.lb_leaves:.2f}, "
             f"branch_frac= {pstats.branch_frac_tot:.2f}, "
         )
         if suggestion.size == 0:
@@ -226,7 +248,7 @@ class Pruning(object):
             self.logger.info(log_str)
             self.logger.info(f"Pruning complete at level: {self.prune_level}")
             return
-        
+
         log_str += (
             f"score thresh: {threshold:.2f}, max: {suggestion.scores.max():.2f}, "
             f"min: {suggestion.scores.min():.2f}, P(surv): {pstats.surv_frac:.2f}"
@@ -247,7 +269,8 @@ class Pruning(object):
         return np.array(branching_pattern)
 
     def _set_load_func(
-        self, nparams: int
+        self,
+        nparams: int,
     ) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
         nparams_to_load_func = {
             1: load_folds_seg_1d,

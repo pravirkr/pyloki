@@ -1,12 +1,95 @@
 [build-system]
-requires = [
-    "setuptools>=47",
-    "wheel",
-]
-
+requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[project]
+name = "pruning"
+version = "0.3.0"
+description = "Detecting Pulsars"
+readme = "README.md"
+authors = [
+    { name = "Pravir Kumar", email = "pravirka@gmail.com" },
+    { name = "Barak Zackay", email = "bzackay@gmail.com" },
+]
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "License :: OSI Approved :: MIT License",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = [
+    "numpy",
+    "numba",
+    "astropy",
+    "attrs",
+    "click",
+    "rich",
+    "matplotlib",
+    "rocket-fft",
+]
 
-[tool.black]
-line-length = 90
-target_version = ['py37', 'py38', 'py39', 'py310', 'py311']
+[project.urls]
+Repository = "https://github.com/pravirkr/pruning"
+
+[project.optional-dependencies]
+tests = [
+    "pytest",
+    "pytest-cov",
+    "pytest-randomly",
+    "pytest-sugar",
+    "pytest-benchmark",
+    "mypy",
+]
+docs = ["sphinx", "sphinx-book-theme", "sphinx-click", "myst-nb"]
+develop = ["ruff"]
+
+[tool.ruff]
+include = ["pyproject.toml", "pruning/**/*.py"]
+line-length = 88
+indent-width = 4
+target-version = "py39"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["D1", "ANN1", "ANN003", "PLR2004", "PD901", "G004"]
+
+[tool.ruff.lint.pylint]
+max-args = 10
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = "tests"
+
+[tool.coverage.paths]
+source = ["./pruning/"]
+
+[tool.coverage.run]
+omit = ["tests/*", "*__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+#fail_under = 85
+ignore_errors = true
+exclude_lines = ['raise AssertionError', 'raise NotImplementedError']
+
+[tool.mypy]
+plugins = ["numpy.typing.mypy_plugin"]
+ignore_missing_imports = true
+disable_error_code = "attr-defined"

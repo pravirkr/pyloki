@@ -1,19 +1,32 @@
+from __future__ import annotations
+
 import numpy as np
 from numba import typed
-from pruning.periodogram import Periodogram
-from pruning import prune, thresholds, ffa, scores
+
+from pruning import ffa, prune, scores, thresholds
 from pruning.base import SearchConfig
+from pruning.periodogram import Periodogram
 from pruning.timeseries import SignalConfig, TimeSeries
+from pruning.utils import get_logger
+
+logger = get_logger(__name__)
 
 
-def search_pulsar(tim_data, search_cfg, true_params):
+def search_pulsar(
+    tim_data: TimeSeries,
+    search_cfg: SearchConfig,
+    true_params: np.ndarray,
+) -> tuple:
     dyp = ffa.DynamicProgramming(tim_data, search_cfg)
     dyp.initialize()
     dyp.do_iterations()
     folds = dyp.fold[0][..., 0, :] / np.sqrt(dyp.fold[0][..., 1, :])
 
     true_period_idx, _ = dyp.dp_funcns.resolve(
-        true_params, dyp.param_arr, dyp.ffa_level, 0
+        true_params,
+        dyp.param_arr,
+        dyp.ffa_level,
+        0,
     )
 
     widths = scores.generate_width_trials(search_cfg.nbins, ducy_max=0.1, wtsp=1)
@@ -21,15 +34,15 @@ def search_pulsar(tim_data, search_cfg, true_params):
     periods = dyp.param_arr[-1]
     best_indices = np.unravel_index(np.nanargmax(snrs), snrs.shape)
 
-    print("\n*** Search results ***")
-    print(f"True period index: {true_period_idx}")
-    print(f"Search best index: {best_indices}")
+    logger.info("\n*** Search results ***")
+    logger.info(f"True period index: {true_period_idx}")
+    logger.info(f"Search best index: {best_indices}")
     if len(best_indices) > 2:
         accels = dyp.param_arr[-2]
-        print(f"Best acceleration = {accels[best_indices[-3]]}")
-    print(f"Best period = {periods[best_indices[-2]]}")
-    print(f"Best width = {widths[best_indices[-1]]}")
-    print(f"Best S/N = {np.nanmax(snrs)}")
+        logger.info(f"Best acceleration = {accels[best_indices[-3]]}")
+    logger.info(f"Best period = {periods[best_indices[-2]]}")
+    logger.info(f"Best width = {widths[best_indices[-1]]}")
+    logger.info(f"Best S/N = {np.nanmax(snrs)}")
 
     if len(best_indices) > 2:
         snrs = snrs[best_indices[-3]]
@@ -37,8 +50,16 @@ def search_pulsar(tim_data, search_cfg, true_params):
     return dyp, pgram
 
 
-def pruning_search(dyp: ffa.DynamicProgramming, target_snr: float, snr_margin: float):
-    bound_scheme = thresholds.threshold_scheme_bound(dyp.nchunks, target_snr, snr_margin)
+def pruning_search(
+    dyp: ffa.DynamicProgramming,
+    target_snr: float,
+    snr_margin: float,
+) -> prune.Pruning:
+    bound_scheme = thresholds.threshold_scheme_bound(
+        dyp.nchunks,
+        target_snr,
+        snr_margin,
+    )
     trials_scheme = thresholds.threshold_scheme_trials(dyp.nchunks, dyp.nparams)
     threshold_scheme = np.minimum(bound_scheme, trials_scheme)
     prn = prune.Pruning(dyp, threshold_scheme, max_sugg=131072)
@@ -46,38 +67,49 @@ def pruning_search(dyp: ffa.DynamicProgramming, target_snr: float, snr_margin: f
     return prn
 
 
-def search_pulsar_pruning(ts_data, params, true_params):
-    dyp = ffa.DynamicProgramming(ts_data, params)
+def search_pulsar_pruning(
+    tim_data: TimeSeries,
+    search_cfg: SearchConfig,
+    true_params: np.ndarray,
+) -> tuple:
+    dyp = ffa.DynamicProgramming(tim_data, search_cfg)
     dyp.initialize()
     dyp.do_iterations("prune")
     folds = dyp.fold[0][..., 0, :] / np.sqrt(dyp.fold[0][..., 1, :])
 
     true_period_idx, _ = dyp.dp_funcns.resolve(
-        true_params, dyp.param_arr, dyp.ffa_level, 0
+        true_params,
+        dyp.param_arr,
+        dyp.ffa_level,
+        0,
     )
 
-    widths = scores.generate_width_trials(params.nbins, ducy_max=0.1, wtsp=1)
+    widths = scores.generate_width_trials(search_cfg.nbins, ducy_max=0.1, wtsp=1)
     snrs = scores.boxcar_snr(folds, widths)
     periods = dyp.param_arr[-1]
     best_indices = np.unravel_index(np.nanargmax(snrs), snrs.shape)
 
-    print("\n*** Search results ***")
-    print(f"True period index: {true_period_idx}")
-    print(f"Search best index: {best_indices}")
+    logger.info("\n*** Search results ***")
+    logger.info(f"True period index: {true_period_idx}")
+    logger.info(f"Search best index: {best_indices}")
     if len(best_indices) > 2:
         accels = dyp.param_arr[-2]
-        print(f"Best acceleration = {accels[best_indices[-3]]}")
-    print(f"Best period = {periods[best_indices[-2]]}")
-    print(f"Best width = {widths[best_indices[-1]]}")
-    print(f"Best S/N = {np.nanmax(snrs)}")
+        logger.info(f"Best acceleration = {accels[best_indices[-3]]}")
+    logger.info(f"Best period = {periods[best_indices[-2]]}")
+    logger.info(f"Best width = {widths[best_indices[-1]]}")
+    logger.info(f"Best S/N = {np.nanmax(snrs)}")
 
     if len(best_indices) > 2:
         snrs = snrs[best_indices[-3]]
-    pgram = Periodogram(widths, periods, snrs, ts_data.tobs)
+    pgram = Periodogram(widths, periods, snrs, tim_data.tobs)
     return dyp, pgram
 
 
-def test_pulsar_search_periodicity(psr_type="msp", tol=None, fold_bins=None):
+def test_pulsar_search_periodicity(
+    psr_type: str = "msp",
+    tol: float | None = None,
+    fold_bins: int | None = None,
+) -> ffa.DynamicProgramming:
     if psr_type == "msp":
         period = 1.012345678910111213 * 1e-2  # (s)
         dt = 8.192e-5
@@ -92,7 +124,7 @@ def test_pulsar_search_periodicity(psr_type="msp", tol=None, fold_bins=None):
         tol = cfg.tol
     if fold_bins is None:
         fold_bins = cfg.fold_bins
-    print(f"Using tolerance: {tol}, fold_bins: {fold_bins}")
+    logger.info(f"Using tolerance: {tol}, fold_bins: {fold_bins}")
     search_cfg = SearchConfig(cfg.nsamps, cfg.dt, tol, fold_bins, param_limits)
     true_params = np.array([cfg.period])
     dyp, pgram = search_pulsar(tim_data, search_cfg, true_params)
@@ -104,7 +136,12 @@ def test_pulsar_search_periodicity(psr_type="msp", tol=None, fold_bins=None):
     return dyp
 
 
-def test_pulsar_search_accn(psr_type="msp", accel=100, tol=None, fold_bins=None):
+def test_pulsar_search_accn(
+    psr_type: str = "msp",
+    accel: float = 100,
+    tol: float | None = None,
+    fold_bins: int | None = None,
+) -> ffa.DynamicProgramming:
     if psr_type == "msp":
         period = 1.012345678910111213 * 1e-2  # (s)
         dt = 8.192e-5
@@ -118,13 +155,13 @@ def test_pulsar_search_accn(psr_type="msp", accel=100, tol=None, fold_bins=None)
         [
             (-3.1 * abs(accel), 3.1 * abs(accel)),
             (cfg.period * 0.95, cfg.period * 1.1),
-        ]
+        ],
     )
     if tol is None:
         tol = cfg.tol
     if fold_bins is None:
         fold_bins = cfg.fold_bins
-    print(f"Using tolerance: {tol}, fold_bins: {fold_bins}")
+    logger.info(f"Using tolerance: {tol}, fold_bins: {fold_bins}")
     search_cfg = SearchConfig(cfg.nsamps, cfg.dt, tol, fold_bins, param_limits)
     true_params = np.array([accel, cfg.period])
     dyp, pgram = search_pulsar(tim_data, search_cfg, true_params)

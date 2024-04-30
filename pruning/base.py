@@ -1,7 +1,8 @@
 from __future__ import annotations
-from numba import types, typed
-from numba.experimental import jitclass
+
 import numpy as np
+from numba import typed, types
+from numba.experimental import jitclass
 
 from pruning import defaults, kernels, scores
 
@@ -16,9 +17,9 @@ from pruning import defaults, kernels, scores
         ("chunk_len", types.i8),
         ("_param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
         ("_dparams", types.f8[:]),
-    ]
+    ],
 )
-class SearchConfig(object):
+class SearchConfig:
     """Class to hold the configuration for the polynomial search.
 
     Parameters
@@ -38,7 +39,7 @@ class SearchConfig(object):
         Length of the chunks to be used in the search, by default 0
 
     Notes
-    ------
+    -----
     The parameter limits are assumed to be in the order: ..., acceleration, period.
     If chunk_len is not provided i.e = 0, it is calculated automatically to be
     optimal for the search.
@@ -110,24 +111,23 @@ class SearchConfig(object):
         return step_list
 
     def get_updated_param_arr(
-        self, param_steps: types.ListType[types.f8]
+        self,
+        param_steps: types.ListType[types.f8],
     ) -> types.ListType[types.Array]:
         if len(param_steps) != self.nparams:
-            raise ValueError(
-                f"param_steps must have length {self.nparams}, got {len(param_steps)}"
-            )
+            msg = f"param_steps must have length {self.nparams}, got {len(param_steps)}"
+            raise ValueError(msg)
         return typed.List(
             [
                 kernels.range_param(*self.param_limits[iparam], param_steps[iparam])
                 for iparam in range(self.nparams)
-            ]
+            ],
         )
 
     def get_updated_dparams(self, param_steps: types.ListType[types.f8]) -> np.ndarray:
         if len(param_steps) != self.nparams:
-            raise ValueError(
-                f"param_steps must have length {self.nparams}, got {len(param_steps)}"
-            )
+            msg = f"param_steps must have length {self.nparams}, got {len(param_steps)}"
+            raise ValueError(msg)
         dparams = np.zeros_like(self.dparams)
         for iparam in range(self.nparams):
             if iparam == self.nparams - 1:
@@ -147,29 +147,28 @@ class SearchConfig(object):
     def _init_dparams(self) -> np.ndarray:
         dparams = np.zeros(self.nparams, dtype=np.float64)
         for iparam in range(self.nparams):
-            dparams[iparam] = self.param_limits[iparam][1] - self.param_limits[iparam][0]
+            dparams[iparam] = (
+                self.param_limits[iparam][1] - self.param_limits[iparam][0]
+            )
         return dparams
 
     def _optimal_chunk_len(self) -> int:
-        if self.nparams == 1:
-            init_levels = 1
-        else:
-            init_levels = 5
+        init_levels = 1 if self.nparams == 1 else 5
         levels = int(np.log2(self.nsamps * self.dt * self.f_max) - init_levels)
         return int(self.nsamps / 2**levels)
 
-    def _check_params(self):
+    def _check_params(self) -> None:
         if self.nparams > 4:
-            raise ValueError(f"param_limits with len > {self.nparams} not supported yet.")
-        for ival, (val_min, val_max) in enumerate(self.param_limits):
+            msg = f"Number of parameters > 4 not supported yet, got {self.nparams}"
+            raise ValueError(msg)
+        for _, (val_min, val_max) in enumerate(self.param_limits):
             if val_min >= val_max:
-                raise ValueError(
-                    f"param_limits[{ival}] must have min < max, got {self.param_limits}"
-                )
+                msg = f"param_limits must have min < max, got {self.param_limits}"
+                raise ValueError(msg)
 
 
-@jitclass(spec=[("cfg", SearchConfig.class_type.instance_type)])
-class FFASearchDPFunctions(object):
+@jitclass(spec=[("cfg", SearchConfig.class_type.instance_type)])  # type: ignore [attr-defined]
+class FFASearchDPFunctions:
     def __init__(self, cfg: SearchConfig) -> None:
         self.cfg = cfg
 
@@ -187,10 +186,19 @@ class FFASearchDPFunctions(object):
         return self.cfg.ffa_step(ffa_level)
 
     def resolve(
-        self, pset_cur: np.ndarray, parr_prev: np.ndarray, ffa_level: int, latter: int
+        self,
+        pset_cur: np.ndarray,
+        parr_prev: np.ndarray,
+        ffa_level: int,
+        latter: int,
     ) -> tuple[np.ndarray, int]:
         return defaults.ffa_resolve(
-            pset_cur, parr_prev, ffa_level, latter, self.cfg.tchunk, self.cfg.nbins
+            pset_cur,
+            parr_prev,
+            ffa_level,
+            latter,
+            self.cfg.tchunk,
+            self.cfg.nbins,
         )
 
     def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
@@ -205,13 +213,13 @@ class FFASearchDPFunctions(object):
 
 @jitclass(
     spec=[
-        ("cfg", SearchConfig.class_type.instance_type),
+        ("cfg", SearchConfig.class_type.instance_type),  # type: ignore [attr-defined]
         ("param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
         ("dparams", types.f8[:]),
         ("tchunk_ffa", types.f8),
-    ]
+    ],
 )
-class PruningDPFunctions(object):
+class PruningDPFunctions:
     def __init__(
         self,
         cfg: SearchConfig,
@@ -224,52 +232,44 @@ class PruningDPFunctions(object):
         self.dparams = dparams
         self.tchunk_ffa = tchunk_ffa
 
-    def load(self, fold, index) -> np.ndarray:
+    def load(self, fold: np.ndarray, index: int) -> np.ndarray:
         return fold[index]
 
     def resolve(self, param_set: np.ndarray, idx_dist: int) -> tuple[np.ndarray, int]:
         t_ref_prev = idx_dist * self.tchunk_ffa
         return defaults.prune_resolve(
-            param_set, self.param_arr, t_ref_prev, self.cfg.nbins
+            param_set,
+            self.param_arr,
+            t_ref_prev,
+            self.cfg.nbins,
         )
 
     def branch(self, param_set: np.ndarray, prune_level: int) -> np.ndarray:
         tchunk_curr = self.tchunk_ffa * (prune_level + 1)
         return defaults.branch2leaves(
-            param_set, tchunk_curr, self.cfg.tol_bins, self.cfg.dt, self.cfg.nbins
+            param_set,
+            tchunk_curr,
+            self.cfg.tol_bins,
+            self.cfg.dt,
+            self.cfg.nbins,
         )
 
     def suggest(self, fold_segment: np.ndarray) -> kernels.SuggestionStruct:
         return defaults.suggestion_struct(
-            fold_segment, self.param_arr, self.dparams, self.score_func
+            fold_segment,
+            self.param_arr,
+            self.dparams,
+            self.score_func,
         )
 
-    def score_func(self, combined_res):
+    def score_func(self, combined_res: np.ndarray) -> float:
         return scores.snr_score_func(combined_res)
 
-    def physical_validation(self):
-        return defaults.identity_func
-
-    def validation_params(self, params):
-        return defaults.prepare_param_validation(params)
-
-    def add(self, data0, data1):
+    def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
         return defaults.add(data0, data1)
 
-    def pack(self, x):
+    def pack(self, x: np.ndarray) -> np.ndarray:
         return defaults.pack(x)
 
-    def shift(self, data, phase_shift):
+    def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
         return defaults.shift(data, phase_shift)
-
-    def aggregate_stats(self, scores):
-        return defaults.aggregate_stats(scores)
-
-    def coord_transform(self, a, b, c):
-        return defaults.coord_trans_params(a, b, c)
-
-    def coord_transform_matrix(self, data_access_scheme):
-        return defaults.prepare_coordinate_trans(data_access_scheme)
-
-    def get_phase(self, sug_params):
-        return defaults.get_phase(sug_params)

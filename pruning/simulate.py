@@ -3,7 +3,7 @@ from numba import types
 from numba.experimental import jitclass
 from scipy import stats
 
-from pruning import utils
+from pruning import kepler, utils
 
 
 @jitclass(
@@ -13,9 +13,9 @@ from pruning import utils
         ("acc", types.f8),
         ("jerk", types.f8),
         ("snap", types.f8),
-    ]
+    ],
 )
-class DerivativeModulating(object):
+class DerivativeModulating:
     def __init__(
         self,
         shift: float = 0,
@@ -42,7 +42,7 @@ class DerivativeModulating(object):
 
 
 @jitclass(spec=[("amplitude", types.f8), ("period", types.f8), ("phi", types.f8)])
-class CircularModulating(object):
+class CircularModulating:
     def __init__(self, amplitude: float, period: float, phi: float) -> None:
         self.amplitude = amplitude
         self.period = period
@@ -58,23 +58,37 @@ class CircularModulating(object):
         ("p_orb", types.f8),
         ("ecc", types.f8),
         ("phi", types.f8),
-        ("a", types.f8),
+        ("amp", types.f8),
         ("om", types.f8),
         ("inc", types.f8),
-    ]
+    ],
 )
-class KeplerianModulating(object):
-    def __init__(self, p_orb, ecc, phi, a, om, inc):
+class KeplerianModulating:
+    def __init__(
+        self,
+        p_orb: float,
+        ecc: float,
+        phi: float,
+        amp: float,
+        om: float,
+        inc: float,
+    ) -> None:
         self.p_orb = p_orb
         self.ecc = ecc
         self.phi = phi
-        self.a = a
+        self.amp = amp
         self.om = om
         self.inc = inc
 
     def generate(self, t: np.ndarray) -> np.ndarray:
         delay = kepler.KeplerianZ(
-            t, self.p_orb, self.ecc, self.phi, self.a, self.om, self.inc
+            t,
+            self.p_orb,
+            self.ecc,
+            self.phi,
+            self.a,
+            self.om,
+            self.inc,
         )
         return t + delay / utils.c_val
 
@@ -86,14 +100,20 @@ type_to_mods = {
 }
 
 
-def von_mises_pulse_shape(proper_time, dt, period, width, pos=0.5) -> np.ndarray:
+def von_mises_pulse_shape(
+    proper_time: np.ndarray,
+    dt: float, # noqa: ARG001
+    period: float,
+    width: float,
+    pos: float = 0.5,
+) -> np.ndarray:
     kappa = np.log(2.0) / (2.0 * np.sin(np.pi * width / 2.0) ** 2)
     phase_radians = (proper_time / period - pos) * (2 * np.pi)
     return np.exp(kappa * (np.cos(phase_radians) - 1.0))
 
 
-class PulseShape(object):
-    """_summary_
+class PulseShape:
+    """Generate a pulse shape.
 
     Parameters
     ----------
@@ -130,7 +150,7 @@ class PulseShape(object):
         self._rv = self._set_rv()
 
     @property
-    def rv(self):
+    def rv(self) -> stats.rv_continuous:
         return self._rv
 
     def generate(self) -> np.ndarray:
@@ -138,7 +158,7 @@ class PulseShape(object):
         x1 = ((self.proper_time + self.dt) % self.period) / self.period
         return (x0 < x1) * (self.rv.cdf(x1) - self.rv.cdf(x0))
 
-    def _set_rv(self):
+    def _set_rv(self) -> stats.rv_continuous:
         if self.shape == "boxcar":
             rv = stats.uniform(loc=self.pos, scale=self.width)
         elif self.shape == "gaussian":
@@ -148,5 +168,6 @@ class PulseShape(object):
             kappa = np.log(2.0) / (2.0 * np.sin(np.pi * self.width / 2.0) ** 2)
             rv = stats.vonmises(loc=self.pos, kappa=kappa)
         else:
-            raise ValueError(f"Unknown pulse shape: {self.shape}")
+            msg = f"Unknown pulse shape: {self.shape}"
+            raise ValueError(msg)
         return rv
