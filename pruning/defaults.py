@@ -10,7 +10,7 @@ def add(data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
 
 
 @njit(cache=True)
-def pack(data: np.ndarray) -> np.ndarray:
+def pack(data: np.ndarray, ffa_level: int) -> np.ndarray:
     return data
 
 

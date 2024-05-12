@@ -177,7 +177,7 @@ def generate_width_trials(
     return np.asarray(widths)
 
 
-@njit(cache=True, parallel=True, fastmath=True)
+@njit(cache=True, fastmath=True)
 def boxcar_snr(
     data: np.ndarray,
     widths: np.ndarray,

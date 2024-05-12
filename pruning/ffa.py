@@ -4,7 +4,7 @@ import time
 from typing import TYPE_CHECKING
 
 import numpy as np
-from numba import njit, types
+from numba import njit, prange, types
 
 from pruning import utils
 from pruning.base import FFASearchDPFunctions, SearchConfig
@@ -41,7 +41,7 @@ def load_folds_4d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.n
     return fold_in[iseg, param_idx[0], param_idx[1], param_idx[2], param_idx[3]]
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True, parallel=True)
 def unify_fold(
     fold_in: np.ndarray,
     p_arr_prev: types.ListType[types.Array],
@@ -51,7 +51,7 @@ def unify_fold(
     dp_funcs: FFASearchDPFunctions,
     load_func: Callable[[np.ndarray, int, np.ndarray], np.ndarray],
 ) -> None:
-    for iparam_set in range(len(p_cart)):
+    for iparam_set in prange(len(p_cart)):
         p_set = p_cart[iparam_set]
         p_idx0, phase_shift0 = dp_funcs.resolve(p_set, p_arr_prev, ffa_level, 0)
         p_idx1, phase_shift1 = dp_funcs.resolve(p_set, p_arr_prev, ffa_level, 1)
