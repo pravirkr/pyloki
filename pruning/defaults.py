@@ -74,18 +74,22 @@ def ffa_resolve(
         The resolved parameter set index and the relative phase shift.
     """
     nparams = len(pset_cur)
+    t_ref_prev = (latter - 0.5) * 2 ** (ffa_level - 1) * tchunk_init
     if nparams == 1:
-        t_ref_prev = latter * 2 ** (ffa_level - 1) * tchunk_init
         pset_prev, delay_rel = pset_cur, 0
     else:
         kvec_cur = np.zeros(nparams + 1, dtype=np.float64)
         kvec_cur[:-2] = pset_cur[:-1]  # till acceleration
-        t_ref_prev = (latter - 0.5) * 2 ** (ffa_level - 1) * tchunk_init
         kvec_prev = ffa_shift_ref(kvec_cur, t_ref_prev)
         pset_prev = kvec_prev[:-1]
         pset_prev[-1] = pset_cur[-1] * (1 + kvec_prev[-2] / utils.c_val)
-        delay_rel = -kvec_prev[-1] / utils.c_val
-    phase_rel = kernels.get_phase_idx(t_ref_prev, pset_prev[-1], nbins, delay_rel)
+        delay_rel = kvec_prev[-1] / utils.c_val
+    phase_rel = kernels.get_phase_idx_helper(
+        t_ref_prev,
+        pset_prev[-1],
+        nbins,
+        delay_rel,
+    )
     pindex_prev = np.empty(nparams, dtype=np.int64)
     for ip in range(nparams):
         pindex_prev[ip] = kernels.find_nearest_sorted_idx(parr_prev[ip], pset_prev[ip])
@@ -102,14 +106,16 @@ def ffa_init(
     dt: float,
 ) -> np.ndarray:
     freq_arr = param_arr[-1]
-    fold = kernels.fold_brute_start(ts_e, ts_v, freq_arr, chunk_len, nbins, dt)
-    # rotating the phases to be centered in the middle of the segment
-    if len(param_arr) > 1:
-        for ifreq in range(len(freq_arr)):
-            tmiddle = chunk_len * dt / 2
-            n_roll = kernels.get_phase_idx(tmiddle, freq_arr[ifreq], nbins, 0)
-            fold[:, ifreq] = kernels.nb_roll3d(fold[:, ifreq], -n_roll)
-    return fold
+    t_ref = chunk_len * dt / 2
+    return kernels.fold_brute_start(
+        ts_e,
+        ts_v,
+        freq_arr,
+        chunk_len,
+        nbins,
+        dt,
+        t_ref=t_ref,
+    )
 
 
 @njit(cache=True)
@@ -140,6 +146,7 @@ def branch2leaves(
     tol_bins: float,
     tsamp: float,
     nbins: int,
+    t_ref: float,
 ) -> np.ndarray:
     """Branch a parameter set to leaves.
 
@@ -172,7 +179,13 @@ def branch2leaves(
             # for param_cur = freq, tchunk is number of period jumps
             tchunk_cur *= param_cur
         else:
-            dparam_opt = kernels.param_step(tchunk_cur, tsamp, deriv, tol_bins, t_ref=0)
+            dparam_opt = kernels.param_step(
+                tchunk_cur,
+                tsamp,
+                deriv,
+                tol_bins,
+                t_ref=t_ref,
+            )
         split_param = kernels.param_split_condition(
             dparam_opt,
             dparam_cur,
@@ -235,15 +248,25 @@ def suggestion_struct(
 def generate_branching_pattern(
     param_arr: types.ListType,
     dparams: np.ndarray,
-    tchunk_cur: float,
-    n_iters: int,
+    tchunk_ffa: float,
+    nsegments: int,
     tol_bins: float,
-    dt: float,
+    tsamp: float,
+    nbins: int,
+    isuggest: int,
 ) -> np.ndarray:
-    leaf_params = kernels.get_leaves(param_arr, dparams)[0]
+    leaf_param_sets = kernels.get_leaves(param_arr, dparams)
     branching_pattern = []
-    for ii in range(1, n_iters + 1):
-        leaves_arr = branch2leaves(leaf_params, ii, tchunk_cur, tol_bins, dt)
+    for prune_level in range(1, nsegments):
+        tchunk_cur = tchunk_ffa * (prune_level + 1)
+        leaves_arr = branch2leaves(
+            leaf_param_sets[isuggest],
+            tchunk_cur,
+            tol_bins,
+            tsamp,
+            nbins,
+            tchunk_cur / 2,
+        )
         branching_pattern.append(len(leaves_arr))
-        leaf_params = leaves_arr[0]
+        leaf_param_sets = leaves_arr
     return np.array(branching_pattern)

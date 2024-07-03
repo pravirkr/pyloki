@@ -108,7 +108,7 @@ def cartesian_prod(arrays: np.ndarray) -> np.ndarray:
 
 @vectorize(cache=True)
 def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> int:
-    """Calculate the phase index of the folded profile.
+    """Calculate the phase index of the proper time in the folded profile.
 
     Parameters
     ----------
@@ -129,6 +129,33 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
     phase = ((proper_time + delay) * freq) % 1
     phase_idx = int(np.round(phase * nbins))
     return phase_idx % nbins
+
+
+@njit(cache=True)
+def get_phase_idx_period(
+    proper_time: float,
+    period: float,
+    nbins: int,
+    delay: float = 0,
+) -> int:
+    factor = nbins / period
+    index = np.round(((proper_time % period) + delay) * factor) % nbins
+    return int(index)
+
+
+@njit(cache=True)
+def get_phase_idx_helper(
+    proper_time: float,
+    freq: float,
+    nbins: int,
+    delay: float,
+) -> int:
+    if proper_time >= 0:
+        return get_phase_idx_period(proper_time, 1 / freq, nbins, delay)
+    phase_abs = get_phase_idx_period(abs(proper_time), 1 / freq, nbins, delay)
+    phase_dist = get_phase_idx_period(2 * abs(proper_time), 1 / freq, nbins, delay)
+    phase_neg = phase_abs - phase_dist
+    return phase_neg + nbins if phase_neg < 0 else phase_neg
 
 
 @njit
@@ -175,6 +202,25 @@ def fold_ts(
     return res
 
 
+@njit(cache=True)
+def interpolate_missing(profile: np.ndarray, count: np.ndarray) -> np.ndarray:
+    """Interpolate missing values in a profile.
+
+    Parameters
+    ----------
+    profile : np.ndarray
+        Profile to interpolate missing values
+    count : np.ndarray
+        Array of bin counts
+
+    """
+    empty_idx = np.where(count == 0)[0]
+    non_empty_idx = np.where(count > 0)[0]
+    if len(non_empty_idx) != 0:
+        profile[empty_idx] = np.interp(empty_idx, non_empty_idx, profile[non_empty_idx])
+    return profile
+
+
 @njit
 def fold_brute_start(
     ts_e: np.ndarray,
@@ -183,13 +229,14 @@ def fold_brute_start(
     chunk_len: int,
     nbins: int,
     dt: float,
+    t_ref: float = 0,
 ) -> np.ndarray:
     nsamples = len(ts_e)
     chunk_idxs = np.arange(0, nsamples, chunk_len)
     proper_time = np.arange(chunk_len) * dt
     phase_idx_arrs = np.empty((len(freq_arr), chunk_len), dtype=np.int64)
     for ifreq, freq in enumerate(freq_arr):
-        phase_idx_arrs[ifreq] = get_phase_idx(proper_time, freq, nbins, 0)
+        phase_idx_arrs[ifreq] = get_phase_idx(proper_time - t_ref, freq, nbins, 0)
     nchunks = int(np.ceil(nsamples / chunk_len))
     fold = np.zeros((nchunks, len(freq_arr), 2, nbins))
 
@@ -559,11 +606,6 @@ def period_step_init(tobs: float, nbins: int, p_min: float, tol: float) -> float
 def period_step(tobs: float, tsamp: int, p_min: float, tol: float) -> float:
     m_cycle = tobs / p_min
     return tol * (tsamp * 2) / (m_cycle - 1)
-
-
-@njit
-def cheb_step(poly_order: int, tsamp: float, tol: int) -> np.ndarray:
-    return np.zeros(poly_order + 1, np.float32) + ((tol * tsamp) * utils.c_val)
 
 
 @njit

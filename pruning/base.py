@@ -273,3 +273,17 @@ class PruningDPFunctions:
 
     def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
         return defaults.shift(data, phase_shift)
+
+    def validate_physical(self, leaves_arr: np.ndarray) -> np.ndarray:
+        return defaults.validate_physical(leaves_arr)
+
+    def get_trans_matrix(self, leaf_param_set: np.ndarray) -> np.ndarray:
+        return defaults.get
+
+    def transform_coords(
+        self,
+        leaf_param_set: np.ndarray,
+        trans_matrix: np.ndarray,
+        coord_ref: np.ndarray,
+    ) -> np.ndarray:
+        return defaults.transform_coords

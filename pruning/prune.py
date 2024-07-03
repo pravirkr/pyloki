@@ -4,7 +4,7 @@ import time
 from typing import TYPE_CHECKING
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 from rich.progress import track
 
 from pruning import kernels, utils
@@ -40,7 +40,7 @@ def load_folds_seg_4d(fold_in: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
     return fold_in[param_idx[0], param_idx[1], param_idx[2], param_idx[3]]
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def pruning_iteration(
     suggestion: kernels.SuggestionStruct,
     fold_segment: np.ndarray,
@@ -53,13 +53,20 @@ def pruning_iteration(
 ) -> tuple[kernels.SuggestionStruct, kernels.PruneStats]:
     suggestion_new = suggestion.get_new(max_sugg)
     n_leaves_total = 0
+    n_leaves_physical = 0
+    n_branches = suggestion.size
     iparam = 0
 
-    for isuggest in range(suggestion.size):
-        leaves_arr = prune_funcs.branch(suggestion.param_sets[isuggest], prune_level)
-        n_leaves = len(leaves_arr)
+    trans_matrix, coord_ref = prune_funcs.get_trans_matrix(idx_distance)
 
-        for ileaf in range(n_leaves):
+    for isuggest in range(n_branches):
+        leaves_arr = prune_funcs.branch(suggestion.param_sets[isuggest], prune_level)
+        n_leaves_total += len(leaves_arr)
+        if physical_validation_iter:
+            leaves_arr = prune_funcs.validate_physical(leaves_arr)
+            n_leaves_physical += len(leaves_arr)
+
+        for ileaf in range(len(leaves_arr)):
             leaf_param_set = leaves_arr[ileaf]
             param_idx, phase_shift = prune_funcs.resolve(leaf_param_set, idx_distance)
             partial_res = prune_funcs.shift(
@@ -70,7 +77,11 @@ def pruning_iteration(
             score = prune_funcs.score_func(combined_res)
 
             if score >= threshold:
-                suggestion_new.param_sets[iparam] = leaf_param_set
+                suggestion_new.param_sets[iparam] = prune_funcs.transform_coords(
+                    leaf_param_set,
+                    trans_matrix,
+                    coord_ref,
+                )
                 suggestion_new.folds[iparam] = combined_res
                 suggestion_new.scores[iparam] = score
                 suggestion_new.backtracks[iparam] = np.array(
@@ -82,19 +93,34 @@ def pruning_iteration(
                     threshold = np.median(suggestion_new.scores)
                     suggestion_new = suggestion_new.apply_threshold(threshold)
                     iparam = suggestion_new.actual_size
-        n_leaves_total += n_leaves
 
     suggestion_new = suggestion_new.trim_empty(iparam)
     stats = kernels.PruneStats(
-        suggestion.size,
+        n_branches,
         n_leaves_total,
-        n_leaves_total,
+        n_leaves_physical,
         suggestion_new.size,
     )
     return suggestion_new, stats
 
 
 class Pruning:
+    """Pruning algorithm for the dynamic programming algorithm.
+
+    Time is linearly advancing. The algorithm starts with a reference segment
+    and iteratively prunes the parameter space based on the scores of the
+    suggestions.
+
+    Parameters
+    ----------
+    dyp : DynamicProgramming
+        _description_
+    threshold_scheme : np.ndarray
+        _description_
+    max_sugg : int, optional
+        _description_, by default 2**17
+    """
+
     def __init__(
         self,
         dyp: DynamicProgramming,

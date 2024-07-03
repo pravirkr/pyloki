@@ -208,7 +208,13 @@ class TimeSeries:
             nsubints,
         ).squeeze()
         if normalize:
-            return fold[..., 0, :] / np.sqrt(fold[..., 1, :])
+            return np.divide(
+                fold[..., 0, :],
+                np.sqrt(fold[..., 1, :]),
+                out=np.full_like(fold[..., 0, :], np.nan),
+                where=~np.isclose(fold[..., 1, :], 0, atol=1e-5),
+            )
+
         return fold
 
     def __str__(self) -> str:
