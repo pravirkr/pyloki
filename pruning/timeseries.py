@@ -149,6 +149,8 @@ class TimeSeries:
         freq: float,
         nbins: int,
         nsubints: int = 1,
+        *,
+        normalize: bool = True,
         mod_type: str = "derivative",
         mod_kwargs: dict | None = None,
     ) -> np.ndarray:
@@ -163,8 +165,22 @@ class TimeSeries:
             mod_kwargs = {}
         mod_func = simulate.type_to_mods[mod_type](**mod_kwargs)
         proper_time = mod_func.generate(np.arange(0, self.tobs, self.dt), self.tobs / 2)
-        ind_arr = kernels.get_phase_idx(proper_time, freq, nbins, 0)
-        return self.fold(ind_arr, nbins, nsubints)
+        fold = kernels.brutefold(
+            self.ts_e,
+            self.ts_v,
+            proper_time,
+            freq,
+            nsubints,
+            nbins,
+        ).squeeze()
+        if normalize:
+            return np.divide(
+                fold[..., 0, :],
+                np.sqrt(fold[..., 1, :]),
+                out=np.full_like(fold[..., 0, :], np.nan),
+                where=~np.isclose(fold[..., 1, :], 0, atol=1e-5),
+            )
+        return fold
 
     def plot_fold(
         self,
@@ -190,32 +206,6 @@ class TimeSeries:
             self.tobs,
             mod_kwargs=mod_kwargs,
         )
-
-    def fold(
-        self,
-        ind_arr: np.ndarray,
-        nbins: int,
-        nsubints: int = 1,
-        *,
-        normalize: bool = True,
-    ) -> np.ndarray:
-        ind_arrs = np.array([ind_arr])
-        fold = kernels.fold_ts(
-            self.ts_e,
-            self.ts_v,
-            ind_arrs,
-            nbins,
-            nsubints,
-        ).squeeze()
-        if normalize:
-            return np.divide(
-                fold[..., 0, :],
-                np.sqrt(fold[..., 1, :]),
-                out=np.full_like(fold[..., 0, :], np.nan),
-                where=~np.isclose(fold[..., 1, :], 0, atol=1e-5),
-            )
-
-        return fold
 
     def __str__(self) -> str:
         name = type(self).__name__

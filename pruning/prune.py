@@ -58,13 +58,23 @@ def pruning_iteration(
     iparam = 0
 
     trans_matrix, coord_ref = prune_funcs.get_trans_matrix(idx_distance)
+    physical_validation_iter = (prune_level % 4 == 1) and (prune_level > 16)
+    physical_validation_iter = False
+    if physical_validation_iter:
+        validation_params = prune_funcs.get_validation_params(
+            data_access_scheme[:iter_num]
+        )
 
     for isuggest in range(n_branches):
         leaves_arr = prune_funcs.branch(suggestion.param_sets[isuggest], prune_level)
         n_leaves_total += len(leaves_arr)
         if physical_validation_iter:
-            leaves_arr = prune_funcs.validate_physical(leaves_arr)
-            n_leaves_physical += len(leaves_arr)
+            leaves_arr = prune_funcs.validate_physical(
+                leaves_arr,
+                data_access_scheme[:iter_num],
+                validation_params,
+            )
+        n_leaves_physical += len(leaves_arr)
 
         for ileaf in range(len(leaves_arr)):
             leaf_param_set = leaves_arr[ileaf]
@@ -74,13 +84,13 @@ def pruning_iteration(
                 phase_shift,
             )
             combined_res = prune_funcs.add(suggestion.folds[isuggest], partial_res)
-            score = prune_funcs.score_func(combined_res)
+            score = prune_funcs.score(combined_res)
 
             if score >= threshold:
                 suggestion_new.param_sets[iparam] = prune_funcs.transform_coords(
                     leaf_param_set,
-                    trans_matrix,
                     coord_ref,
+                    trans_matrix,
                 )
                 suggestion_new.folds[iparam] = combined_res
                 suggestion_new.scores[iparam] = score
@@ -128,6 +138,9 @@ class Pruning:
         max_sugg: int = 2**17,
     ) -> None:
         self._dyp = dyp
+        if dyp.fold.ndim > 5:
+            msg = "Pruning only supports initial data with up to 2D parameter."
+            raise ValueError(msg)
         self._prune_funcs = PruningDPFunctions(
             dyp.cfg,
             dyp.param_arr,

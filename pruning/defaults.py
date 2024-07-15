@@ -10,13 +10,27 @@ def add(data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
 
 
 @njit(cache=True)
-def pack(data: np.ndarray, ffa_level: int) -> np.ndarray:
+def pack(data: np.ndarray) -> np.ndarray:
     return data
 
 
 @njit(cache=True)
 def shift(data: np.ndarray, phase_shift: int) -> np.ndarray:
-    return kernels.nb_roll2d(data, phase_shift)
+    return math.nb_roll2d(data, phase_shift)
+
+
+@njit(cache=True)
+def get_trans_matrix(scheme_till_now: np.ndarray) -> np.ndarray:
+    return np.ones((len(scheme_till_now), len(scheme_till_now)))
+
+
+@njit(cache=True)
+def coordinate_transform(
+    leaf: np.ndarray,
+    coord_ref: np.ndarray,  # noqa: ARG001
+    trans_matrix: np.ndarray,  # noqa: ARG001
+) -> np.ndarray:
+    return leaf
 
 
 @njit(cache=True)
@@ -92,7 +106,7 @@ def ffa_resolve(
     )
     pindex_prev = np.empty(nparams, dtype=np.int64)
     for ip in range(nparams):
-        pindex_prev[ip] = kernels.find_nearest_sorted_idx(parr_prev[ip], pset_prev[ip])
+        pindex_prev[ip] = math.find_nearest_sorted_idx(parr_prev[ip], pset_prev[ip])
     return pindex_prev, phase_rel
 
 
@@ -101,30 +115,30 @@ def ffa_init(
     ts_e: np.ndarray,
     ts_v: np.ndarray,
     param_arr: types.ListType,
-    chunk_len: int,
+    segment_len: int,
     nbins: int,
-    dt: float,
+    tsamp: float,
 ) -> np.ndarray:
     freq_arr = param_arr[-1]
-    t_ref = chunk_len * dt / 2
-    return kernels.fold_brute_start(
+    t_ref = segment_len * tsamp / 2
+    return kernels.brutefold_start(
         ts_e,
         ts_v,
         freq_arr,
-        chunk_len,
+        segment_len,
         nbins,
-        dt,
-        t_ref=t_ref,
+        tsamp,
+        t_ref,
     )
 
 
 @njit(cache=True)
 def prune_resolve(
     pset_cur: np.ndarray,
-    parr_prev: np.ndarray,
+    parr_prev: types.ListType,
     t_ref_prev: float,
     nbins: int,
-) -> tuple[np.ndarray, float]:
+) -> tuple[tuple[int, int], float]:
     nparams = len(pset_cur)
     kvec_cur = np.zeros(nparams + 1, dtype=np.float64)
     kvec_cur[:-2] = pset_cur[:-1, 0]  # till acceleration
@@ -133,17 +147,16 @@ def prune_resolve(
     pset_prev[-1] = pset_cur[-1, 0] * (1 + kvec_prev[-2] / utils.c_val)  # new frequency
     delay_rel = -kvec_prev[-1] / utils.c_val
     phase_rel = kernels.get_phase_idx(t_ref_prev, pset_prev[-1], nbins, delay_rel)
-    pindex_prev = np.empty(nparams, dtype=np.int64)
-    for ip in range(nparams):
-        pindex_prev[ip] = kernels.find_nearest_sorted_idx(parr_prev[ip], pset_prev[ip])
-    return pindex_prev, phase_rel
+    prev_index_a = math.find_nearest_sorted_idx(parr_prev[-2], pset_prev[-2])
+    prev_index_f = math.find_nearest_sorted_idx(parr_prev[-1], pset_prev[-1])
+    return (prev_index_a, prev_index_f), phase_rel
 
 
 @njit
 def branch2leaves(
     param_set: np.ndarray,
     tchunk_cur: float,
-    tol_bins: float,
+    tolerance: float,
     tsamp: float,
     nbins: int,
     t_ref: float,
@@ -156,7 +169,7 @@ def branch2leaves(
         Parameter set to branch. Shape: (nparams, 2)
     tchunk_cur : float
         Total chunk duration at the current pruning level.
-    tol_bins : float
+    tolerance : float
         Tolerance for the parameter step size in bins.
     tsamp : float
         Sampling time.
@@ -169,42 +182,63 @@ def branch2leaves(
         Array of leaf parameter sets.
     """
     nparams, _ = param_set.shape
-    dparams = np.empty(nparams, dtype=np.float64)
-    param_branch = typed.List.empty_list(types.float64[:])
+    param_cur = param_set[:, 0]
+    dparam_cur = param_set[:, 1]
+    dparam_opt = np.zeros(nparams)
     for iparam in range(nparams):
         deriv = nparams - iparam
-        param_cur, dparam_cur = param_set[iparam]
         if deriv == 1:
-            dparam_opt = kernels.freq_step(tchunk_cur, nbins, param_cur, tol_bins)
+            dparam_opt_p = kernels.freq_step(
+                tchunk_cur,
+                nbins,
+                param_cur[iparam],
+                tolerance,
+            )
             # for param_cur = freq, tchunk is number of period jumps
-            tchunk_cur *= param_cur
+            tchunk_cur *= param_cur[iparam]
         else:
-            dparam_opt = kernels.param_step(
+            dparam_opt_p = kernels.param_step(
                 tchunk_cur,
                 tsamp,
                 deriv,
-                tol_bins,
+                tolerance,
                 t_ref=t_ref,
             )
-        split_param = kernels.param_split_condition(
-            dparam_opt,
-            dparam_cur,
-            tchunk_cur,
-            tol_bins,
-            tsamp,
-            deriv,
+        dparam_opt[iparam] = dparam_opt_p
+    tol_time = tolerance * tsamp
+    return split_params(param_cur, dparam_cur, dparam_opt, tol_time, tchunk_cur)
+
+
+@njit
+def split_params(
+    param_cur: np.ndarray,
+    dparam_cur: np.ndarray,
+    dparam_opt: np.ndarray,
+    tol_time: float,
+    tchunk_cur: float,
+) -> np.ndarray:
+    nparams = len(param_cur)
+    leaf_params = typed.List.empty_list(types.float64[:])
+    leaf_dparams = np.empty(nparams, dtype=np.float64)
+    for iparam in range(nparams):
+        deriv = nparams - iparam
+        shift = (
+            (dparam_cur[iparam] - dparam_opt[iparam])
+            / 2
+            * (tchunk_cur) ** deriv
+            / math.fact(deriv)
         )
-        if split_param:
+        if shift > tol_time:
             leaf_params, dparam_act = kernels.branch_param(
-                dparam_opt,
-                dparam_cur,
-                param_cur,
+                dparam_opt[iparam],
+                dparam_cur[iparam],
+                param_cur[iparam],
             )
         else:
-            leaf_params, dparam_act = np.array([param_cur]), dparam_cur
-        dparams[iparam] = dparam_act
-        param_branch.append(leaf_params)
-    return kernels.get_leaves(param_branch, dparams)
+            leaf_params, dparam_act = np.array([param_cur[iparam]]), dparam_cur[iparam]
+        leaf_dparams[iparam] = dparam_act
+        leaf_params.append(leaf_params)
+    return kernels.get_leaves(leaf_params, leaf_dparams)
 
 
 @njit
@@ -219,9 +253,8 @@ def suggestion_struct(
     Parameters
     ----------
     fold_segment : np.ndarray
-        N+2-dimensional array containing the data segment with first
-        N dimensions corresponding to the parameter space and the last
-        two dimensions corresponding to the folded data.
+        The fold segment to generate suggestions for. The shape of the array is
+        (n_accel, n_period, 2, n_bins). Parameter dimensions are first two.
     param_arr : types.ListType
         Parameter array containing the parameter values for each dimension.
     dparams : np.ndarray
@@ -235,6 +268,8 @@ def suggestion_struct(
         Suggestion struct
     """
     n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
+    # \n_param_sets = n_accel * n_period
+    # \param_sets_shape = [n_param_sets, 2]
     param_sets = kernels.get_leaves(param_arr, dparams)
     data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
     scores = np.zeros(n_param_sets)

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Callable
-
 import numpy as np
 from numba import njit, types, vectorize
 from numba.experimental import jitclass
@@ -9,104 +7,7 @@ from numba.experimental import jitclass
 from pruning import math, utils
 
 
-@njit(cache=True)
-def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
-    """Find the index of the closest value in a sorted array.
-
-    Parameters
-    ----------
-    array : np.ndarray
-        Sorted array
-    value : float
-        Value to search for
-
-    Returns
-    -------
-    int
-        Index of the closest value in the array
-    """
-    idx = int(np.searchsorted(array, value, side="left"))
-    if idx > 0 and (
-        idx == len(array) or abs(value - array[idx - 1]) <= abs(value - array[idx])
-    ):
-        return idx - 1
-    return idx
-
-
-@njit
-def nb_roll2d(arr: np.ndarray, shift: int) -> np.ndarray:
-    """Roll the 2D array along the second axis (axis=1).
-
-    Parameters
-    ----------
-    arr : np.ndarray
-        2D array to roll
-    shift : int
-        Number of bins to shift
-
-    Returns
-    -------
-    np.ndarray
-        Rolled array
-    """
-    axis = 1
-    res = np.empty_like(arr)
-    arr_size = arr.shape[axis]
-    shift %= arr_size
-    for irow in range(arr.shape[0]):
-        res[irow, shift:] = arr[irow, : arr_size - shift]
-        res[irow, :shift] = arr[irow, arr_size - shift :]
-    return res
-
-
-@njit
-def nb_roll3d(arr: np.ndarray, shift: int) -> np.ndarray:
-    """Roll the 3D array along the last axis (axis=-1).
-
-    Parameters
-    ----------
-    arr : np.ndarray
-        3D array to roll
-    shift : int
-        Number of bins to shift
-
-    Returns
-    -------
-    np.ndarray
-        Rolled array
-    """
-    axis = -1
-    res = np.empty_like(arr)
-    arr_size = arr.shape[axis]
-    shift %= arr_size
-    for irow in range(arr.shape[0]):
-        res[irow, :, shift:] = arr[irow, :, : arr_size - shift]
-        res[irow, :, :shift] = arr[irow, :, arr_size - shift :]
-    return res
-
-
-@njit
-def cartesian_prod(arrays: np.ndarray) -> np.ndarray:
-    nn = 1
-    for array in arrays:
-        nn *= array.size
-    out = np.zeros((nn, len(arrays)))
-
-    for iarr, arr in enumerate(arrays):
-        mm = nn // arr.size
-        out[:nn, iarr] = np.repeat(arr, mm)
-        nn //= arr.size
-
-    nn = arrays[-1].size
-    for kk in range(len(arrays) - 2, -1, -1):
-        nn *= arrays[kk].size
-        mm = nn // arrays[kk].size
-        for jj in range(1, arrays[kk].size):
-            out[jj * mm : (jj + 1) * mm, kk + 1 :] = out[0:mm, kk + 1 :]
-    return out
-
-
-@vectorize(cache=True)
+@vectorize(nopython=True, cache=True)
 def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> int:
     """Calculate the phase index of the proper time in the folded profile.
 
@@ -127,20 +28,7 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
         Phase bin index of the proper time in the folded profile.
     """
     phase = ((proper_time + delay) * freq) % 1
-    phase_idx = int(np.round(phase * nbins))
-    return phase_idx % nbins
-
-
-@njit(cache=True)
-def get_phase_idx_period(
-    proper_time: float,
-    period: float,
-    nbins: int,
-    delay: float = 0,
-) -> int:
-    factor = nbins / period
-    index = np.round(((proper_time % period) + delay) * factor) % nbins
-    return int(index)
+    return int(np.round(phase * nbins)) % nbins
 
 
 @njit(cache=True)
@@ -151,55 +39,135 @@ def get_phase_idx_helper(
     delay: float,
 ) -> int:
     if proper_time >= 0:
-        return get_phase_idx_period(proper_time, 1 / freq, nbins, delay)
-    phase_abs = get_phase_idx_period(abs(proper_time), 1 / freq, nbins, delay)
-    phase_dist = get_phase_idx_period(2 * abs(proper_time), 1 / freq, nbins, delay)
+        return get_phase_idx(proper_time, freq, nbins, delay)
+    phase_abs = get_phase_idx(abs(proper_time), freq, nbins, delay)
+    phase_dist = get_phase_idx(2 * abs(proper_time), freq, nbins, delay)
     phase_neg = phase_abs - phase_dist
     return phase_neg + nbins if phase_neg < 0 else phase_neg
 
 
 @njit
-def fold_ts(
-    ts_e: np.ndarray,
-    ts_v: np.ndarray,
-    ind_arrs: np.ndarray,
-    nbins: int,
-    nsubints: int,
-) -> np.ndarray:
-    """Fold a time series for given phase bin indices.
+def param_step(
+    tobs: float,
+    tsamp: float,
+    deriv: int,
+    tol: float,
+    t_ref: float = 0,
+) -> float:
+    """Calculate the parameter step size for polynomial search.
 
     Parameters
     ----------
-    ts_e : np.ndarray
-        Time series signal
-    ts_v : np.ndarray
-        Time series variance
-    ind_arrs : np.ndarray
-        Phase bin indices of each time sample for each period
-    nbins : int
-        Number of bins in the folded profile
-    nsubints : int
-        Number of sub-integrations in time.
+    tobs : float
+        Total observation time of the segment in seconds.
+    tsamp : float
+        Sampling time of the segment in seconds.
+    deriv : int
+        Derivative of the parameter (2: acceleration, 3: jerk, etc.)
+    tol : float
+        Tolerance parameter for the polynomial search (in bins).
+    t_ref : float, optional
+        Reference time in segment e.g. start, middle, etc. (default: 0)
+
+    Returns
+    -------
+    float
+        Optimal parameter step size
+    """
+    if deriv < 2:
+        msg = "deriv must be >= 2"
+        raise ValueError(msg)
+    dparam = tsamp * math.fact(deriv) * utils.c_val / (tobs - t_ref) ** deriv
+    return tol * dparam
+
+
+@njit
+def freq_step(tobs: int, nbins: int, f_max: float, tol: float) -> float:
+    m_cycle = tobs * f_max
+    tsamp_min = 1 / (f_max * nbins)
+    return tol * f_max**2 * tsamp_min / (m_cycle - 1)
+
+
+@njit
+def period_step_init(tobs: float, nbins: int, p_min: float, tol: float) -> float:
+    m_cycle = tobs / p_min
+    tsamp_min = p_min / nbins
+    return tol * tsamp_min / (m_cycle - 1)
+
+
+@njit
+def period_step(tobs: float, tsamp: int, p_min: float, tol: float) -> float:
+    m_cycle = tobs / p_min
+    return tol * (tsamp * 2) / (m_cycle - 1)
+
+
+@njit(cache=True, fastmath=True)
+def branch_param(
+    param_cur: float,
+    dparam_cur: float,
+    dparam_new: float,
+) -> tuple[np.ndarray, float]:
+    """Refine a parameter range around a current value with a new step size.
+
+    Parameters
+    ----------
+    param_cur : float
+        current parameter value (center of the range)
+    dparam_cur : float
+        current parameter step size (half-width of the range)
+    dparam_new : float
+        new parameter step size (half-width of the new range)
+
+    Returns
+    -------
+    tuple[np.ndarray, float]
+        Array of new parameter values and the actual new parameter step size
+    """
+    if not (dparam_cur > 0 and dparam_new > 0):
+        msg = "dparam_cur and dparam_new must be positive."
+        raise ValueError(msg)
+    n = 2 + int(np.ceil(dparam_cur / dparam_new))
+    if n < 3:
+        msg = "Invalid input: ensure dparam_cur > dparam_new."
+        raise ValueError(msg)
+    # 0.5 < confidence_const < 1
+    confidence_const = 0.5 * (1 + 1 / (n - 2))
+    half_range = confidence_const * dparam_cur
+    param_arr_new = np.linspace(param_cur - half_range, param_cur + half_range, n)[1:-1]
+    dparam_new_actual = dparam_cur / (n - 2)
+    return param_arr_new, dparam_new_actual
+
+
+@njit(cache=True, fastmath=True)
+def range_param(vmin: float, vmax: float, dv: float) -> np.ndarray:
+    """Return a range of parameters with a given step size.
+
+    Parameters
+    ----------
+    vmin : float
+        Minimum value of the parameter range.
+    vmax : float
+        Maximum value of the parameter range.
+    dv : float
+        Step size of the parameter range.
 
     Returns
     -------
     np.ndarray
-        Folded time series with shape (nperiods, nsubints, 2, nbins)
+        Array of parameter values.
+
+    Notes
+    -----
+    Correctly stepping a parameter is a non-trivial ugly question.
+    Make sure this is right another time.
     """
-    nsamps = len(ts_e)
-    nperiod = len(ind_arrs)
-    samp_per_subint = nsamps // nsubints
-    samps_final = nsubints * samp_per_subint
-    subint_idxs = np.arange(samps_final) // samp_per_subint
-    res = np.zeros(shape=(nperiod, nsubints, 2, nbins), dtype=ts_e.dtype)
-    for iperiod in range(nperiod):
-        ind_arr = ind_arrs[iperiod]
-        for isamp in range(samps_final):
-            isubint = subint_idxs[isamp]
-            iphase = ind_arr[isamp]
-            res[iperiod, isubint, 0, iphase] += ts_e[isamp]
-            res[iperiod, isubint, 1, iphase] += ts_v[isamp]
-    return res
+    if not (vmin < vmax and dv > 0):
+        msg = "Invalid input: ensure vmin < vmax and dv > 0."
+        raise ValueError(msg)
+    if dv > (vmax - vmin) / 2:
+        return np.array([(vmax + vmin) / 2])
+    npoints = int((vmax - vmin) / dv)
+    return np.linspace(vmin, vmax, npoints + 2)[1:-1]
 
 
 @njit(cache=True)
@@ -221,29 +189,55 @@ def interpolate_missing(profile: np.ndarray, count: np.ndarray) -> np.ndarray:
     return profile
 
 
-@njit
-def fold_brute_start(
+@njit(["f4[:,:,:](f4[:],f4[:],f8[:],f8,i8,i8)"], cache=True, fastmath=True)
+def brutefold(
     ts_e: np.ndarray,
     ts_v: np.ndarray,
-    freq_arr: np.ndarray,
-    chunk_len: int,
+    proper_time: np.ndarray,
+    freq: float,
+    nsegments: int,
     nbins: int,
-    dt: float,
-    t_ref: float = 0,
 ) -> np.ndarray:
-    nsamples = len(ts_e)
-    chunk_idxs = np.arange(0, nsamples, chunk_len)
-    proper_time = np.arange(chunk_len) * dt
-    phase_idx_arrs = np.empty((len(freq_arr), chunk_len), dtype=np.int64)
-    for ifreq, freq in enumerate(freq_arr):
-        phase_idx_arrs[ifreq] = get_phase_idx(proper_time - t_ref, freq, nbins, 0)
-    nchunks = int(np.ceil(nsamples / chunk_len))
-    fold = np.zeros((nchunks, len(freq_arr), 2, nbins))
+    """Fold a time series for a given set of frequencies.
 
-    for isig_ind, chunk_ind in enumerate(chunk_idxs):
-        ts_e_chunk = ts_e[chunk_ind : chunk_ind + chunk_len]
-        ts_v_chunk = ts_v[chunk_ind : chunk_ind + chunk_len]
-        fold[isig_ind] = fold_ts(ts_e_chunk, ts_v_chunk, phase_idx_arrs, nbins, 1)[:, 0]
+    Parameters
+    ----------
+    ts_e : np.ndarray
+        Time series signal (intensity)
+    ts_v : np.ndarray
+        Time series variance
+    proper_time : np.ndarray
+        Proper time of the signal in time units
+    freq : float
+        Frequency to fold the time series
+    nsegments : int
+        Number of segments to fold
+    nbins : int
+        Number of bins in the folded profile
+
+    Returns
+    -------
+    np.ndarray
+        Folded time series with shape (nsegments, nfreqs, 2, nbins)
+
+    Raises
+    ------
+    ValueError
+        if freq_arr is empty or if the nsamples is not a multiple of segment_len
+    """
+    nsamples = len(ts_e)
+    if len(ts_v) != nsamples or len(proper_time) != nsamples:
+        msg = "ts_e, ts_v, and proper_time must have the same length."
+        raise ValueError(msg)
+    phase_map = get_phase_idx(proper_time, freq, nbins, 0)
+    segment_len = nsamples // nsegments
+    nsamps_fold = nsegments * segment_len
+    segments_idxs = np.arange(nsamps_fold) // segment_len
+
+    fold = np.zeros((nsegments, 2, nbins), dtype=np.float32)
+    for isamp in range(nsamps_fold):
+        fold[segments_idxs[isamp], 0, phase_map[isamp]] += ts_e[isamp]
+        fold[segments_idxs[isamp], 1, phase_map[isamp]] += ts_v[isamp]
     return fold
 
 
@@ -267,58 +261,62 @@ def resample(ts_e: np.ndarray, ts_v: np.ndarray, tsamp: float, accel: float) -> 
     return ts_e_resamp, ts_v_resamp
 
 
-@njit
-def get_init_period_arr(
-    tobs: float,
-    p_min: float,
-    p_max: float,
+@njit(["f4[:,:,:,:](f4[:],f4[:],f8[:],i8,i8,f8,f8)"], cache=True, fastmath=True)
+def brutefold_start(
+    ts_e: np.ndarray,
+    ts_v: np.ndarray,
+    freq_arr: np.ndarray,
+    segment_len: int,
     nbins: int,
-    tol_bins: int,
+    tsamp: float,
+    t_ref: float = 0,
 ) -> np.ndarray:
-    n_jumps = int(tobs / p_min)
-    dphi = tol_bins / nbins
-    dp = dphi * p_min / n_jumps
-    return np.arange(p_min, p_max, dp)
+    """Fold a time series for a given set of frequencies.
+
+    Parameters
+    ----------
+    ts_e : np.ndarray
+        Time series signal (intensity)
+    ts_v : np.ndarray
+        Time series variance
+    freq_arr : np.ndarray
+        Frequency array to fold the time series
+    segment_len : int
+        Length of each folded segment
+    nbins : int
+        Number of bins in the folded profile
+    tsamp : float
+        Sampling time of the time series
+    t_ref : float, optional
+        Reference time in segment e.g. start, middle, etc. (default: 0)
+
+    Returns
+    -------
+    np.ndarray
+        Folded time series with shape (nsegments, nfreqs, 2, nbins)
+    """
+    nfreqs = len(freq_arr)
+    nsamples = len(ts_e)
+    nsegments = int(np.ceil(nsamples / segment_len))
+    proper_time = np.arange(segment_len) * tsamp - t_ref
+    phase_map = np.zeros((nfreqs, segment_len), dtype=np.int32)
+    for ifreq in range(nfreqs):
+        phase_map[ifreq] = get_phase_idx(proper_time, freq_arr[ifreq], nbins, 0)
+
+    fold = np.zeros((nsegments, nfreqs, 2, nbins), dtype=np.float32)
+    for iseg in range(nsegments):
+        segment_start = iseg * segment_len
+        ts_e_seg = ts_e[segment_start : segment_start + segment_len]
+        ts_v_seg = ts_v[segment_start : segment_start + segment_len]
+        for ifreq in range(nfreqs):
+            for isamp in range(segment_len):
+                iphase = phase_map[ifreq, isamp]
+                fold[iseg, ifreq, 0, iphase] += ts_e_seg[isamp]
+                fold[iseg, ifreq, 1, iphase] += ts_v_seg[isamp]
+    return fold
 
 
-@njit
-def np_apply_along_axis(func1d: Callable, axis: int, arr: np.ndarray) -> np.ndarray:
-    if arr.ndim != 2:
-        msg = "arr must be 2D"
-        raise ValueError(msg)
-    if axis not in {0, 1}:
-        msg = "axis must be 0 or 1"
-        raise ValueError(msg)
-    if axis == 0:
-        res_len = arr.shape[1]
-        result = np.empty(res_len)
-        for ii in range(res_len):
-            result[ii] = func1d(arr[:, ii])
-    else:
-        res_len = arr.shape[0]
-        result = np.empty(res_len)
-        for jj in range(res_len):
-            result[jj] = func1d(arr[jj, :])
-    return result
-
-
-@njit
-def nb_max(array: np.ndarray, axis: int) -> np.ndarray:
-    return np_apply_along_axis(np.max, axis, array)
-
-
-@njit
-def np_mean(array: np.ndarray, axis: int) -> np.ndarray:
-    return np_apply_along_axis(np.mean, axis, array)
-
-
-@njit
-def downsample_1d(array: np.ndarray, factor: int) -> np.ndarray:
-    reshaped_ar = np.reshape(array, (array.size // factor, factor))
-    return np_mean(reshaped_ar, 1)
-
-
-@njit
+@njit(cache=True, fastmath=True)
 def get_leaves(param_arr: types.ListType, dparams: np.ndarray) -> np.ndarray:
     """Get the leaf parameter sets for pruning.
 
@@ -334,7 +332,7 @@ def get_leaves(param_arr: types.ListType, dparams: np.ndarray) -> np.ndarray:
     np.ndarray
         Array of leaf parameter sets.
     """
-    param_cart = cartesian_prod(param_arr)
+    param_cart = math.cartesian_prod(param_arr)
     param_mat = np.expand_dims(param_cart, axis=2)
     dparams_set = np.broadcast_to(np.expand_dims(dparams, 1), param_mat.shape)
     return np.concatenate((param_mat, dparams_set), axis=2)
@@ -513,142 +511,3 @@ class PruneStats:
     @property
     def surv_frac(self) -> float:
         return np.round(self.n_leaves_surv / self.n_leaves_tot, 2)
-
-
-@njit
-def numba_bf_row_vector_unique(arr: np.ndarray) -> np.ndarray:
-    ret = np.zeros(arr.shape, arr.dtype)
-    ret[0] = arr[0]
-    ind = 1
-    for ii in range(1, len(arr)):
-        good = True
-        for ind_vec in range(ind):
-            if numba_bypass_all_close(ret[ind_vec], arr[ii]):
-                good = False
-        if good:
-            ret[ind] = arr[ii]
-            ind += 1
-    return ret[:ind]
-
-
-@njit
-def numba_bypass_all_close(
-    arr1: np.ndarray,
-    arr2: np.ndarray,
-    tol: float = 1e-8,
-) -> bool:
-    return bool(np.all(np.abs(arr1 - arr2) < tol))
-
-
-@njit
-def param_split_condition(
-    dparam_opt: float,
-    dparam_cur: float,
-    duration: float,
-    tol_bins: int,
-    dt: float,
-    deriv: int,
-) -> bool:
-    shift = (dparam_cur - dparam_opt) / 2 * (duration) ** deriv / math.fact(deriv)
-    return shift > tol_bins * dt
-
-
-@njit
-def param_step(
-    tobs: float,
-    tsamp: float,
-    deriv: int,
-    tol_bins: float,
-    t_ref: float = 0,
-) -> float:
-    """Calculate the parameter step size for polynomial search.
-
-    Parameters
-    ----------
-    tobs : float
-        Total observation time of the segment in seconds.
-    tsamp : float
-        Sampling time of the segment in seconds.
-    deriv : int
-        Derivative of the parameter (2: acceleration, 3: jerk, etc.)
-    tol_bins : float
-        Tolerance parameter for the polynomial search (in units of time bins)
-    t_ref : float, optional
-        Reference time in segment e.g. start, middle, etc. (default: 0)
-
-    Returns
-    -------
-    float
-        Optimal parameter step size
-    """
-    if deriv < 2:
-        msg = "deriv must be >= 2"
-        raise ValueError(msg)
-    dparam = tsamp * math.fact(deriv) * utils.c_val / (tobs - t_ref) ** deriv
-    return tol_bins * dparam
-
-
-@njit
-def freq_step(tobs: int, nbins: int, f_max: float, tol_bins: float) -> float:
-    m_cycle = tobs * f_max
-    tsamp_min = 1 / (f_max * nbins)
-    return tol_bins * f_max**2 * tsamp_min / (m_cycle - 1)
-
-
-@njit
-def period_step_init(tobs: float, nbins: int, p_min: float, tol: float) -> float:
-    m_cycle = tobs / p_min
-    tsamp_min = p_min / nbins
-    return tol * tsamp_min / (m_cycle - 1)
-
-
-@njit
-def period_step(tobs: float, tsamp: int, p_min: float, tol: float) -> float:
-    m_cycle = tobs / p_min
-    return tol * (tsamp * 2) / (m_cycle - 1)
-
-
-@njit
-def branch_param(
-    dparam_opt: float,
-    dparam_cur: float,
-    param_cur: float,
-) -> tuple[np.ndarray, float]:
-    n = 2 + int(np.ceil(dparam_cur / dparam_opt))
-    confidence_const = 0.5 * (1 + 1 / float(n - 2))
-    par_array = np.linspace(
-        param_cur - confidence_const * dparam_cur,
-        param_cur + confidence_const * dparam_cur,
-        n,
-    )[1:-1]
-    actual_d_par = dparam_cur / (n - 2)
-    return par_array, actual_d_par
-
-
-@njit
-def range_param(vmin: float, vmax: float, dv: float) -> np.ndarray:
-    """Return a range of parameters with a given step size.
-
-    Parameters
-    ----------
-    vmin : float
-        Minimum value of the parameter range.
-    vmax : float
-        Maximum value of the parameter range.
-    dv : float
-        Step size of the parameter range.
-
-    Returns
-    -------
-    np.ndarray
-        Array of parameter values.
-
-    Notes
-    -----
-    Correctly stepping a parameter is a non-trivial ugly question.
-    Make sure this is right another time.
-    """
-    if dv > (vmax - vmin) / 2:
-        return np.array([(vmax + vmin) / 2])
-    npoints = int((vmax - vmin) / dv)
-    return np.linspace(vmin, vmax, npoints + 2)[1:-1]
