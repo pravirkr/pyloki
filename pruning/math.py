@@ -13,7 +13,7 @@ functype = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double, ctypes.c_double)
 cbinom_func = functype(addr)
 
 
-@vectorize("float64(float64, float64)")
+@vectorize("f8(f8, f8)")
 def nbinom(xx: float, yy: float) -> float:
     return cbinom_func(xx, yy)
 

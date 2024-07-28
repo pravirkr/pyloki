@@ -206,12 +206,19 @@ class PruningDPFunctions:
     def load(self, fold: np.ndarray, index: int) -> np.ndarray:
         return fold[index]
 
-    def resolve(self, param_set: np.ndarray, idx_dist: int) -> tuple[np.ndarray, int]:
-        t_ref_prev = idx_dist * self.tsegment_ffa
-        return defaults.prune_resolve(
-            param_set,
+    def resolve(
+        self,
+        leaf: np.ndarray,
+        seg_cur: int,
+        seg_ref: int,
+    ) -> tuple[tuple[int, int], int]:
+        t_ref_cur = (seg_cur + 1 / 2) * self.tsegment_ffa
+        t_ref_init = (seg_ref + 1 / 2) * self.tsegment_ffa
+        return defaults.poly_taylor_resolve(
+            leaf,
             self.param_arr,
-            t_ref_prev,
+            t_ref_cur,
+            t_ref_init,
             self.cfg.nbins,
         )
 
@@ -248,21 +255,26 @@ class PruningDPFunctions:
     def validate_physical(
         self,
         leaves: np.ndarray,
-        indices_arr: np.ndarray,
+        tcheby: float,
+        tzero: float,
         validation_params: np.ndarray,
     ) -> np.ndarray:
-        return defaults.validate_physical(leaves, indices_arr, validation_params)
+        return defaults.validate_physical(leaves, tcheby, tzero, validation_params)
 
-    def get_trans_matrix(self, scheme_till_now: np.ndarray) -> np.ndarray:
-        return defaults.get_trans_matrix(scheme_till_now)
+    def get_trans_matrix(
+        self,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> np.ndarray:
+        return defaults.get_trans_matrix(coord_cur, coord_prev)
 
     def transform_coords(
         self,
         leaf: np.ndarray,
-        coord_ref: np.ndarray,
-        trans_matrix: np.ndarray,
+        coord_ref: tuple[float, float],  # noqa: ARG002
+        trans_matrix: np.ndarray,  # noqa: ARG002
     ) -> np.ndarray:
-        return defaults.coordinate_transform(leaf, coord_ref, trans_matrix)
+        return leaf
 
 
 @jitclass(
@@ -298,27 +310,64 @@ class PruningChebychevDPFunctions:
         return self._cheb_table
 
     def load(self, fold: np.ndarray, index: int) -> np.ndarray:
+        """Load the data for the given index from the fold.
+
+        Parameters
+        ----------
+        fold : np.ndarray
+            The folded data structure to load from.
+        index : int
+            Segment index to load from the fold.
+
+        Returns
+        -------
+        np.ndarray
+            The data for the given index.
+
+        Notes
+        -----
+        Future implementations may include:
+        - Simply accessing the data from the fold.
+        - Calibration (RFI removal + fold_e, fold_v generation) of the data structure.
+        - Compute the data structure live (using dynamic programming).
+        - Save the calculated data structure to prevent excessive computation.
+        - Remove pulsars with known ephemeris to keep the suggestion counts low.
+        - Implement it as a class, and pass its loading function here.
+
+        """
         return fold[index]
 
     def resolve(
         self,
-        param_set: np.ndarray,
-        idx_dist: int,
-        param_ref_ind: int,
-    ) -> tuple[tuple[int, int], float]:
-        tsegment_cur = idx_dist * self.tsegment_ffa
-        tsegment_ref = param_ref_ind * self.tsegment_ffa
+        leaf: np.ndarray,
+        seg_cur: int,
+        seg_ref: int,
+    ) -> tuple[tuple[int, int], int]:
+        t_ref_cur = (seg_cur + 1 / 2) * self.tsegment_ffa
+        t_ref_init = (seg_ref + 1 / 2) * self.tsegment_ffa
         return chebyshev.poly_chebychev_resolve(
-            param_set,
+            leaf,
             self.param_arr,
-            tsegment_ref,
-            tsegment_cur,
+            t_ref_cur,
+            t_ref_init,
             self.cfg.nbins,
             self.cheb_table,
         )
 
     def branch(self, param_set: np.ndarray) -> np.ndarray:
-        return chebyshev.poly_chebychev_branch(
+        """Branch the current parameter set into the finer grid of parameters (leaves).
+
+        Parameters
+        ----------
+        param_set : np.ndarray
+            The current parameter set to branch.
+
+        Returns
+        -------
+        np.ndarray
+            The branched parameter set.
+        """
+        return chebyshev.poly_chebychev_branch2leaves(
             param_set,
             self.poly_order,
             self.cfg.tolerance,
@@ -330,6 +379,20 @@ class PruningChebychevDPFunctions:
         fold_segment: np.ndarray,
         ref_index: int,
     ) -> kernels.SuggestionStruct:
+        """Generate an initial suggestion struct for the starting segment.
+
+        Parameters
+        ----------
+        fold_segment : np.ndarray
+            The folded data segment to generate the suggestion for.
+        ref_index : int
+            The reference index of the segment.
+
+        Returns
+        -------
+        kernels.SuggestionStruct
+            The initial suggestion struct for the segment.
+        """
         t_ref = self.tsegment_ffa * (ref_index + 1 / 2)
         scale = self.tsegment_ffa / 2
         return chebyshev.suggestion_struct_chebyshev(
@@ -343,6 +406,23 @@ class PruningChebychevDPFunctions:
         )
 
     def score(self, combined_res: np.ndarray) -> float:
+        """Calculate the statistical detection score of the combined fold.
+
+        Parameters
+        ----------
+        combined_res : np.ndarray
+            The combined fold to calculate the score for (fold_e, fold_v).
+
+        Returns
+        -------
+        float
+            The statistical detection score of the combined fold.
+
+        Notes
+        -----
+        - Score units should be log(P(D|pulsar(theta)) / P(D|noise)).
+        - Maybe use it to keep track of a family of scores (profile width, etc).
+        """
         return scores.snr_score_func(combined_res)
 
     def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
@@ -354,15 +434,65 @@ class PruningChebychevDPFunctions:
     def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
         return defaults.shift(data, phase_shift)
 
+    def get_validation_params(
+        self,
+        tcheby: float,
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """Prepare the validation parameters for the epicyclic validation.
+
+        Parameters
+        ----------
+        tcheby : float
+            The Chebyshev time to prepare the validation parameters for.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray, float]
+            The validation parameters for the epicyclic validation.
+        """
+        return chebyshev.prepare_epicyclic_validation_params(
+            tcheby,
+            self.tsegment_ffa,
+            self.num_validation,
+            self.omega_bounds,
+            self.x_max,
+            self.ecc_max,
+        )
+
     def validate_physical(
         self,
         leaves: np.ndarray,
-        indices_arr: np.ndarray,
+        tcheby: float,
+        tzero: float,
         validation_params: np.ndarray,
     ) -> np.ndarray:
+        """Validate which of the leaves are physical.
+
+        Parameters
+        ----------
+        leaves : np.ndarray
+            Set of leaves (parameter sets) to validate.
+        indices_arr : np.ndarray
+            Segment access scheme till now.
+        validation_params : np.ndarray
+            Pre-computed validation parameters for the physical validation.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean mask indicating which of the leaves are physical.
+
+        Notes
+        -----
+        - The validation_params are pre-computed to reduce computation.
+        - This function should filter out leafs with unphysical derivatives.
+        - pruning scans only functions that are physical at position (t/2).
+        But same bounds apply everywhere.
+        """
         return chebyshev.poly_chebychev_physical_validation(
             leaves,
-            indices_arr,
+            tcheby,
+            tzero,
             validation_params,
             self.tsegment_ffa,
             self.derivative_bounds,
@@ -371,17 +501,21 @@ class PruningChebychevDPFunctions:
             self.period_bounds,
         )
 
-    def get_trans_matrix(self, scheme_till_now: np.ndarray) -> np.ndarray:
+    def get_trans_matrix(
+        self,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> np.ndarray:
         return chebyshev.poly_chebychev_coord_trans_matrix(
-            scheme_till_now,
+            coord_cur,
+            coord_prev,
             self.poly_order,
-            self.tsegment_ffa,
         )
 
     def transform_coords(
         self,
         leaf: np.ndarray,
-        coord_ref: np.ndarray,
+        coord_ref: tuple[float, float],
         trans_matrix: np.ndarray,
     ) -> np.ndarray:
         return chebyshev.poly_chebychev_coord_trans(leaf, coord_ref, trans_matrix)

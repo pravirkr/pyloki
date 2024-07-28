@@ -4,11 +4,14 @@ import logging
 
 import numpy as np
 from astropy import constants
-from numpy.polynomial import chebyshev as cheb
+from numpy import polynomial
 from rich.logging import RichHandler
 from spyden import TemplateBank, snratio
 
-c_val = constants.c.value
+c_val = float(constants.c.value)
+g_val = float(constants.G.value)
+au_val = float(constants.au.value)
+m_sun_val = float(constants.M_sun.value)
 
 
 def cartesian_prod(arr_list: list[np.ndarray]) -> np.ndarray:
@@ -163,12 +166,29 @@ class Spyden:
 
 def generate_chebyshev_polys_table_numpy(order: int, n_derivs: int) -> np.ndarray:
     tab = np.zeros((n_derivs + 1, order + 1, order + 1))
+    basis = [polynomial.chebyshev.Chebyshev.basis(i) for i in range(order + 1)]
+
     for ideriv in range(n_derivs + 1):
-        for iorder in range(order + 1):
-            poly_coeffs = cheb.cheb2poly(
-                cheb.Chebyshev.basis(iorder).deriv(ideriv).coef,
-            )
-            tab[ideriv, iorder, : poly_coeffs.size] = poly_coeffs
+        for iorder, poly in enumerate(basis):
+            poly_coeffs = polynomial.chebyshev.cheb2poly(poly.deriv(ideriv).coef)
+            tab[ideriv, iorder, : len(poly_coeffs)] = poly_coeffs
+    return tab
+
+def generate_power_series_table_numpy(order_max: int, n_derivs: int) -> np.ndarray:
+    tab = np.zeros((n_derivs + 1, order_max + 1, order_max + 1))
+    
+    for order in range(order_max + 1):
+        # Create power series polynomial
+        coeffs = np.zeros(order + 1)
+        coeffs[order] = 1 / np.math.factorial(order)
+        poly = P.Polynomial(coeffs)
+        
+        for deriv in range(n_derivs + 1):
+            # Get coefficients of the derivative
+            deriv_coeffs = poly.deriv(deriv).coef
+            # Pad with zeros if necessary
+            tab[deriv, order, :len(deriv_coeffs)] = deriv_coeffs
+    
     return tab
 
 

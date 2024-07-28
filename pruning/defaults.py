@@ -20,28 +20,23 @@ def shift(data: np.ndarray, phase_shift: int) -> np.ndarray:
 
 
 @njit(cache=True)
-def get_trans_matrix(scheme_till_now: np.ndarray) -> np.ndarray:
-    return np.ones((len(scheme_till_now), len(scheme_till_now)))
-
-
-@njit(cache=True)
-def coordinate_transform(
-    leaf: np.ndarray,
-    coord_ref: np.ndarray,  # noqa: ARG001
-    trans_matrix: np.ndarray,  # noqa: ARG001
+def get_trans_matrix(
+    coord_cur: tuple[float, float],  # noqa: ARG001
+    coord_prev: tuple[float, float],  # noqa: ARG001
 ) -> np.ndarray:
-    return leaf
+    return np.eye(2)
 
 
-@njit(cache=True)
-def ffa_shift_ref(param_vec: np.ndarray, t_ref: float) -> np.ndarray:
+
+@njit(cache=True, fastmath=True)
+def shift_params(param_vec: np.ndarray, tj_minus_ti: float) -> np.ndarray:
     """Shift the parameters to a new reference time.
 
     Parameters
     ----------
     param_vec : np.ndarray
         Parameter vector [..., a, v, d]
-    t_ref : float
+    tj_minus_ti : float
         Reference time to shift the parameters to. t_ref = t_j - t_i
 
     Returns
@@ -52,7 +47,7 @@ def ffa_shift_ref(param_vec: np.ndarray, t_ref: float) -> np.ndarray:
     nparams = len(param_vec)
     powers = np.tril(np.arange(nparams)[:, np.newaxis] - np.arange(nparams))
     # Calculate the transformation matrix (taylor coefficients)
-    coeffs = t_ref**powers / math.fact(powers) * np.tril(np.ones_like(powers))
+    coeffs = tj_minus_ti**powers / math.fact(powers) * np.tril(np.ones_like(powers))
     return np.dot(coeffs, param_vec)
 
 
@@ -94,7 +89,7 @@ def ffa_resolve(
     else:
         kvec_cur = np.zeros(nparams + 1, dtype=np.float64)
         kvec_cur[:-2] = pset_cur[:-1]  # till acceleration
-        kvec_prev = ffa_shift_ref(kvec_cur, t_ref_prev)
+        kvec_prev = shift_params(kvec_cur, t_ref_prev)
         pset_prev = kvec_prev[:-1]
         pset_prev[-1] = pset_cur[-1] * (1 + kvec_prev[-2] / utils.c_val)
         delay_rel = kvec_prev[-1] / utils.c_val
@@ -132,24 +127,58 @@ def ffa_init(
     )
 
 
-@njit(cache=True)
-def prune_resolve(
-    pset_cur: np.ndarray,
-    parr_prev: types.ListType,
-    t_ref_prev: float,
+@njit(cache=True, fastmath=True)
+def poly_taylor_resolve(
+    leaf: np.ndarray,
+    param_arr: types.ListType,
+    t_ref_cur: float,
+    t_ref_init: float,
     nbins: int,
-) -> tuple[tuple[int, int], float]:
-    nparams = len(pset_cur)
+) -> tuple[tuple[int, int], int]:
+    """Resolve the leaf parameters to find the closest param index and phase shift.
+
+    Parameters
+    ----------
+    leaf : np.ndarray
+        The leaf parameter set.
+    param_arr : types.ListType
+        Parameter array containing the parameter values for the current segment.
+    t_ref_cur : float
+        The reference time for the current segment.
+    t_ref_init : float
+        The reference time for the initial segment (pruning level 0).
+    nbins : int
+        Number of bins in the folded profile.
+
+    Returns
+    -------
+    tuple[tuple[int, int], int]
+        The resolved parameter index and the relative phase shift.
+
+    Notes
+    -----
+    leaf is referenced to t_ref_init, so we need to shift it to t_ref_cur to get the
+    resolved parameters index and phase shift.
+
+    """
+    nparams = len(leaf)
+    # distance between the current segment reference time and the global reference time
+    tpoly = t_ref_cur - t_ref_init
+
     kvec_cur = np.zeros(nparams + 1, dtype=np.float64)
-    kvec_cur[:-2] = pset_cur[:-1, 0]  # till acceleration
-    kvec_prev = ffa_shift_ref(kvec_cur, t_ref_prev)
-    pset_prev = kvec_prev[:-1]
-    pset_prev[-1] = pset_cur[-1, 0] * (1 + kvec_prev[-2] / utils.c_val)  # new frequency
-    delay_rel = -kvec_prev[-1] / utils.c_val
-    phase_rel = kernels.get_phase_idx(t_ref_prev, pset_prev[-1], nbins, delay_rel)
-    prev_index_a = math.find_nearest_sorted_idx(parr_prev[-2], pset_prev[-2])
-    prev_index_f = math.find_nearest_sorted_idx(parr_prev[-1], pset_prev[-1])
-    return (prev_index_a, prev_index_f), phase_rel
+    kvec_cur[:-2] = leaf[:-1, 0]  # till acceleration
+    kvec_new = shift_params(kvec_cur, tpoly)
+
+    old_f = leaf[-1, 0]
+
+    new_a = kvec_new[-3]
+    new_f = old_f * (1 + kvec_new[-2] / utils.c_val)
+    delay = kvec_new[-1] / utils.c_val
+
+    relative_phase = kernels.get_phase_idx(tpoly, old_f, nbins, delay)
+    prev_index_a = math.find_nearest_sorted_idx(param_arr[-2], new_a)
+    prev_index_f = math.find_nearest_sorted_idx(param_arr[-1], new_f)
+    return (prev_index_a, prev_index_f), relative_phase
 
 
 @njit

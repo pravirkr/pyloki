@@ -11,33 +11,7 @@ from pruning import kernels, utils
 from pruning.base import PruningDPFunctions
 
 if TYPE_CHECKING:
-    from typing import Callable
-
     from pruning.ffa import DynamicProgramming
-
-
-@njit(cache=True)
-def load_folds_seg_1d(fold_in: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (nfreqs, 2, nbins)."""
-    return fold_in[param_idx[0]]
-
-
-@njit(cache=True)
-def load_folds_seg_2d(fold_in: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (naccels, nfreqs, 2, nbins)."""
-    return fold_in[param_idx[0], param_idx[1]]
-
-
-@njit(cache=True)
-def load_folds_seg_3d(fold_in: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (njerks, naccels, nfreqs, 2, nbins)."""
-    return fold_in[param_idx[0], param_idx[1], param_idx[2]]
-
-
-@njit(cache=True)
-def load_folds_seg_4d(fold_in: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
-    """fold_in shape: (nsnap, njerks, naccels, nfreqs, 2, nbins)."""
-    return fold_in[param_idx[0], param_idx[1], param_idx[2], param_idx[3]]
 
 
 @njit(cache=True, fastmath=True)
@@ -46,9 +20,11 @@ def pruning_iteration(
     fold_segment: np.ndarray,
     prune_funcs: PruningDPFunctions,
     threshold: float,
-    idx_distance: int,
     prune_level: int,
-    load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
+    seg_cur: int,
+    seg_ref: int,
     max_sugg: int = 2**17,
 ) -> tuple[kernels.SuggestionStruct, kernels.PruneStats]:
     suggestion_new = suggestion.get_new(max_sugg)
@@ -56,14 +32,13 @@ def pruning_iteration(
     n_leaves_physical = 0
     n_branches = suggestion.size
     iparam = 0
+    tcheby = coord_prev[1] * 2
 
-    trans_matrix, coord_ref = prune_funcs.get_trans_matrix(idx_distance)
+    trans_matrix = prune_funcs.get_trans_matrix(coord_cur, coord_prev)
     physical_validation_iter = (prune_level % 4 == 1) and (prune_level > 16)
     physical_validation_iter = False
     if physical_validation_iter:
-        validation_params = prune_funcs.get_validation_params(
-            data_access_scheme[:iter_num]
-        )
+        validation_params = prune_funcs.get_validation_params(tcheby)
 
     for isuggest in range(n_branches):
         leaves_arr = prune_funcs.branch(suggestion.param_sets[isuggest], prune_level)
@@ -71,25 +46,23 @@ def pruning_iteration(
         if physical_validation_iter:
             leaves_arr = prune_funcs.validate_physical(
                 leaves_arr,
-                data_access_scheme[:iter_num],
+                tcheby,
+                tcheby,
                 validation_params,
             )
         n_leaves_physical += len(leaves_arr)
 
         for ileaf in range(len(leaves_arr)):
-            leaf_param_set = leaves_arr[ileaf]
-            param_idx, phase_shift = prune_funcs.resolve(leaf_param_set, idx_distance)
-            partial_res = prune_funcs.shift(
-                load_func(fold_segment, param_idx),
-                phase_shift,
-            )
+            leaf = leaves_arr[ileaf]
+            param_idx, phase_shift = prune_funcs.resolve(leaf, seg_cur, seg_ref)
+            partial_res = prune_funcs.shift(fold_segment[param_idx], phase_shift)
             combined_res = prune_funcs.add(suggestion.folds[isuggest], partial_res)
             score = prune_funcs.score(combined_res)
 
             if score >= threshold:
                 suggestion_new.param_sets[iparam] = prune_funcs.transform_coords(
-                    leaf_param_set,
-                    coord_ref,
+                    leaf,
+                    coord_cur,
                     trans_matrix,
                 )
                 suggestion_new.folds[iparam] = combined_res
@@ -147,7 +120,6 @@ class Pruning:
             dyp.dparams,
             dyp.chunk_duration,
         )
-        self._load_func = self._set_load_func(dyp.cfg.nparams)
         self._threshold_scheme = threshold_scheme
         self._max_sugg = max_sugg
 
@@ -172,10 +144,6 @@ class Pruning:
     @property
     def prune_funcs(self) -> PruningDPFunctions:
         return self._prune_funcs
-
-    @property
-    def load_func(self) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
-        return self._load_func
 
     @property
     def segment_scheme(self) -> np.ndarray:
@@ -262,17 +230,26 @@ class Pruning:
         if self.is_complete:
             return
         self._prune_level += 1
-        seg_cur = self.segment_scheme[self.prune_level]
+        scheme_till_now = self.segment_scheme[: self.prune_level + 1]
+        idx_cur = self.segment_scheme[self.prune_level]
+        ref_cur = (np.min(scheme_till_now) + np.max(scheme_till_now) + 1) / 2
+        ref_prev = (np.min(scheme_till_now[:-1]) + np.max(scheme_till_now[:-1]) + 1) / 2
+        scale_cur = ref_cur - np.min(scheme_till_now)
+        scale_prev = ref_prev - np.min(scheme_till_now[:-1])
         fold_segment = self.prune_funcs.load(self.dyp.fold, seg_cur)
-        idx_distance = seg_cur - self.seg_ref
         threshold = self.threshold_scheme[self.prune_level]
         suggestion, pstats = pruning_iteration(
             self.suggestion,
             fold_segment,
             self.prune_funcs,
             threshold,
-            idx_distance,
             self.prune_level,
+            ref_cur,
+            ref_prev,
+            scale_cur,
+            scale_prev,
+            seg_cur,
+            self.seg_ref,
             self.load_func,
             self.max_sugg,
         )
@@ -306,15 +283,3 @@ class Pruning:
             branching_pattern.append(len(leaves_arr))
             leaf_param_sets = leaves_arr
         return np.array(branching_pattern)
-
-    def _set_load_func(
-        self,
-        nparams: int,
-    ) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
-        nparams_to_load_func = {
-            1: load_folds_seg_1d,
-            2: load_folds_seg_2d,
-            3: load_folds_seg_3d,
-            4: load_folds_seg_4d,
-        }
-        return nparams_to_load_func[nparams]
