@@ -176,7 +176,7 @@ class FFASearchDPFunctions:
         return defaults.add(data0, data1)
 
     def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:
-        return defaults.pack(data, ffa_level)
+        return defaults.pack(data)
 
     def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
         return defaults.shift(data, phase_shift)
