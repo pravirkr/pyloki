@@ -97,13 +97,35 @@ def compute_snr_fft(data: np.ndarray, templates: np.ndarray) -> np.ndarray:
     return result.reshape((*data.shape[:-1], ntemp))
 
 
+@njit(cache=True, fastmath=True)
+def get_e_mat(templates: np.ndarray, shifts: np.ndarray) -> np.ndarray:
+    ntemp, nbins = templates.shape
+
+    total_shifts = 0
+    for itemp in range(ntemp):
+        total_shifts += nbins // shifts[itemp]
+
+    temp_bank = np.empty((total_shifts, nbins), dtype=templates.dtype)
+
+    row_idx = 0
+    for itemp in range(ntemp):
+        for jbin in range(0, nbins, shifts[itemp]):
+            temp = np.roll(templates[itemp], jbin)
+            temp_bank[row_idx] = temp
+            row_idx += 1
+
+    return temp_bank
+
+
 @jitclass(
     spec=[
         ("widths", types.i8[:]),
         ("nbins", types.i8),
+        ("shift", types.i8),
         ("shape", types.string),
-        ("_templates", types.f4[:, :]),
-        ("_e_mat", types.f4[:, ::1]),
+        ("templates", types.f4[:, :]),
+        ("shifts", types.i8[:]),
+        ("e_mat", types.f4[:, ::1]),
     ],
 )
 class MatchedFilter:
@@ -115,7 +137,7 @@ class MatchedFilter:
         _description_
     nbins : int
         Number of bins in the folded profile.
-    shifts : np.ndarray | int, optional
+    shifts : int, optional
         Shifts to apply to the templates, by default 0.
     shape : str, optional
         Template shape, either 'boxcar' or 'gaussian', by default 'boxcar'.
@@ -132,15 +154,15 @@ class MatchedFilter:
         self,
         widths: np.ndarray,
         nbins: int,
-        shifts: np.ndarray | int = 0,
+        shift: int = 1,
         shape: str = "boxcar",
     ) -> None:
         self.widths = widths
-        self.shape = shape
         self.nbins = nbins
+        self.shape = shape
         self.templates = self._init_template_bank(nbins)
-        self.e_mat = self._init_e_mat()
-        self.shifts = self._init_shifts(shifts)
+        self.shifts = self._init_shifts(shift)
+        self.e_mat = get_e_mat(self.templates, self.shifts)
 
     @property
     def ntemp(self) -> int:
@@ -234,25 +256,11 @@ class MatchedFilter:
             raise ValueError(msg)
         return templates
 
-    def _init_e_mat(self) -> np.ndarray:
-        return np.array(
-            [
-                np.roll(self.templates[itemp], jbin)
-                for itemp in range(self.ntemp)
-                for jbin in range(0, self.nbins, self.shifts[itemp])
-            ],
-            dtype=np.float32,
-        )
-
-    def _init_shifts(self, shifts: np.ndarray | int) -> np.ndarray:
-        if shifts == 0 or not isinstance(shifts, np.ndarray):
-            shifts = np.ones(self.widths, dtype=np.int64)
-        elif len(shifts) != len(self.widths):
-            msg = "Length of shifts must match length of widths."
+    def _init_shifts(self, shift: int) -> np.ndarray:
+        if shift == 0:
+            msg = "Shift must be greater than 0."
             raise ValueError(msg)
-        else:
-            shifts = shifts.astype(np.int64)
-        return shifts
+        return np.ones(self.ntemp, dtype=np.int64) * shift
 
 
 @njit(cache=True, fastmath=True)
@@ -334,7 +342,8 @@ def boxcar_snr_1d(
     )
     snr = np.zeros(len(widths), dtype=np.float32)
     for iw, width in enumerate(widths):
-        height = 1 / np.sqrt(width)  # boxcar height = +h
+        height = np.sqrt((size - width) / (size * width))
+        b = width * height / (size - width)
         dmax = np.max(prefix_sum[width : width + size] - prefix_sum[:size])
-        snr[iw] = height * dmax / stdnoise
+        snr[iw] = ((height + b) * dmax - b * total_sum) / stdnoise
     return snr

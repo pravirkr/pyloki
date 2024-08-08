@@ -27,7 +27,6 @@ def get_trans_matrix(
     return np.eye(2)
 
 
-
 @njit(cache=True, fastmath=True)
 def shift_params(param_vec: np.ndarray, tj_minus_ti: float) -> np.ndarray:
     """Shift the parameters to a new reference time.
@@ -51,7 +50,7 @@ def shift_params(param_vec: np.ndarray, tj_minus_ti: float) -> np.ndarray:
     return np.dot(coeffs, param_vec)
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def ffa_resolve(
     pset_cur: np.ndarray,
     parr_prev: np.ndarray,
@@ -92,8 +91,8 @@ def ffa_resolve(
         kvec_prev = shift_params(kvec_cur, t_ref_prev)
         pset_prev = kvec_prev[:-1]
         pset_prev[-1] = pset_cur[-1] * (1 + kvec_prev[-2] / utils.c_val)
-        delay_rel = kvec_prev[-1] / utils.c_val
-    phase_rel = kernels.get_phase_idx_helper(
+        delay_rel = -kvec_prev[-1] / utils.c_val
+    relative_phase = kernels.get_phase_idx_helper(
         t_ref_prev,
         pset_prev[-1],
         nbins,
@@ -102,10 +101,10 @@ def ffa_resolve(
     pindex_prev = np.empty(nparams, dtype=np.int64)
     for ip in range(nparams):
         pindex_prev[ip] = math.find_nearest_sorted_idx(parr_prev[ip], pset_prev[ip])
-    return pindex_prev, phase_rel
+    return pindex_prev, relative_phase
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def ffa_init(
     ts_e: np.ndarray,
     ts_v: np.ndarray,
@@ -181,7 +180,7 @@ def poly_taylor_resolve(
     return (prev_index_a, prev_index_f), relative_phase
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def branch2leaves(
     param_set: np.ndarray,
     tchunk_cur: float,
@@ -238,7 +237,7 @@ def branch2leaves(
     return split_params(param_cur, dparam_cur, dparam_opt, tol_time, tchunk_cur)
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def split_params(
     param_cur: np.ndarray,
     dparam_cur: np.ndarray,
@@ -258,19 +257,19 @@ def split_params(
             / math.fact(deriv)
         )
         if shift > tol_time:
-            leaf_params, dparam_act = kernels.branch_param(
-                dparam_opt[iparam],
-                dparam_cur[iparam],
+            leaf_param, dparam_act = kernels.branch_param(
                 param_cur[iparam],
+                dparam_cur[iparam],
+                dparam_opt[iparam],
             )
         else:
-            leaf_params, dparam_act = np.array([param_cur[iparam]]), dparam_cur[iparam]
+            leaf_param, dparam_act = np.array([param_cur[iparam]]), dparam_cur[iparam]
         leaf_dparams[iparam] = dparam_act
-        leaf_params.append(leaf_params)
+        leaf_params.append(leaf_param)
     return kernels.get_leaves(leaf_params, leaf_dparams)
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def suggestion_struct(
     fold_segment: np.ndarray,
     param_arr: types.ListType,
@@ -308,7 +307,7 @@ def suggestion_struct(
     return kernels.SuggestionStruct(param_sets, data, scores, backtracks)
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def generate_branching_pattern(
     param_arr: types.ListType,
     dparams: np.ndarray,

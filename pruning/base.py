@@ -96,7 +96,7 @@ class SearchConfig:
             dparams[-deriv] = self.deriv_step(tsegment_cur, deriv)
         return dparams
 
-    def get_updated_dparams(self, param_steps: types.ListType[types.f8]) -> np.ndarray:
+    def get_updated_dparams(self, param_steps: types.ListType) -> np.ndarray:
         if len(param_steps) != self.nparams:
             msg = f"param_steps must have length {self.nparams}, got {len(param_steps)}"
             raise ValueError(msg)
@@ -175,7 +175,7 @@ class FFASearchDPFunctions:
     def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
         return defaults.add(data0, data1)
 
-    def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:
+    def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:  # noqa: ARG002
         return defaults.pack(data)
 
     def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:

@@ -35,6 +35,7 @@ dependencies = [
     "rich",
     "matplotlib",
     "rocket-fft",
+    "h5py",
 ]
 
 [project.urls]

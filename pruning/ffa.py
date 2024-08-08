@@ -19,25 +19,26 @@ if TYPE_CHECKING:
 
 logger = utils.get_logger(__name__)
 
-@njit(cache=True)
+
+@njit(cache=True, fastmath=True)
 def load_folds_1d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
     """fold_in shape: (nsegments, nfreqs, 2, nbins)."""
     return fold_in[iseg, param_idx[0]]
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def load_folds_2d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
     """fold_in shape: (nsegments, naccels, nfreqs, 2, nbins)."""
     return fold_in[iseg, param_idx[0], param_idx[1]]
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def load_folds_3d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
     """fold_in shape: (nsegments, njerks, naccels, nfreqs, 2, nbins)."""
     return fold_in[iseg, param_idx[0], param_idx[1], param_idx[2]]
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def load_folds_4d(fold_in: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
     """fold_in shape: (nsegments, nsnap, njerks, naccels, nfreqs, 2, nbins)."""
     return fold_in[iseg, param_idx[0], param_idx[1], param_idx[2], param_idx[3]]

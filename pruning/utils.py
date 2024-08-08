@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+import seaborn as sns
 from astropy import constants
 from numpy import polynomial
 from rich.logging import RichHandler
@@ -174,21 +175,22 @@ def generate_chebyshev_polys_table_numpy(order: int, n_derivs: int) -> np.ndarra
             tab[ideriv, iorder, : len(poly_coeffs)] = poly_coeffs
     return tab
 
+
 def generate_power_series_table_numpy(order_max: int, n_derivs: int) -> np.ndarray:
     tab = np.zeros((n_derivs + 1, order_max + 1, order_max + 1))
-    
+
     for order in range(order_max + 1):
         # Create power series polynomial
         coeffs = np.zeros(order + 1)
         coeffs[order] = 1 / np.math.factorial(order)
-        poly = P.Polynomial(coeffs)
-        
+        poly = polynomial.Polynomial(coeffs)
+
         for deriv in range(n_derivs + 1):
             # Get coefficients of the derivative
             deriv_coeffs = poly.deriv(deriv).coef
             # Pad with zeros if necessary
-            tab[deriv, order, :len(deriv_coeffs)] = deriv_coeffs
-    
+            tab[deriv, order, : len(deriv_coeffs)] = deriv_coeffs
+
     return tab
 
 
@@ -234,3 +236,43 @@ def get_logger(
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
     return logger
+
+
+def set_seaborn(**rc_kwargs) -> None:
+    rc = {
+        # Fontsizes
+        "font.size": 16,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "legend.fontsize": 16,
+        "legend.title_fontsize": 16,
+        "axes.titlesize": 16,
+        "axes.labelsize": 16,
+        "xtick.direction": "in",
+        "xtick.minor.visible": True,
+        "xtick.top": False,
+        "ytick.direction": "in",
+        "ytick.minor.visible": True,
+        "ytick.right": False,
+        # Set line widths
+        "axes.axisbelow": "line",
+        "axes.linewidth": 1,
+        "lines.linewidth": 1.5,
+        "lines.markersize": 3,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.05,
+        "font.serif": "Times",
+        "font.family": "serif",
+        "mathtext.fontset": "dejavuserif",
+        # Use LaTeX for math formatting
+        "text.usetex": True,
+        "text.latex.preamble": r"\usepackage{amsmath, amssymb}",  # {txfonts, mathptmx}
+    }
+    rc.update(rc_kwargs)
+    sns.set_theme(
+        context="paper",
+        style="ticks",
+        palette="colorblind",
+        font_scale=1,
+        rc=rc,
+    )
