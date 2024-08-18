@@ -64,32 +64,22 @@ def trials_scheme(nstages: int, nparams: int, trials_start: int = 1) -> np.ndarr
 
 
 @njit(cache=True, fastmath=True)
-def neighbouring_indices(arr: np.ndarray, target: float, num: int) -> np.ndarray:
-    index = np.argwhere(arr == target)[0][0]
+def neighbouring_indices(
+    beam_indices: np.ndarray,
+    target_idx: int,
+    num: int,
+) -> np.ndarray:
+    # Find the index of target_idx in beam_indices
+    target_beam_idx = np.searchsorted(beam_indices, target_idx)
 
     # Calculate the window around the target
-    left = max(0, index - num // 2)
-    right = min(len(arr), index + num // 2 + 1)
+    left = max(0, int(target_beam_idx - num // 2))
+    right = min(len(beam_indices), left + num)
 
-    # Adjust the window if necessary for the end points
-    while right - left < num:
-        if left == 0:
-            right += 1
-        elif right == len(arr) or index - left < right - index:
-            left -= 1
-        else:
-            right += 1
+    # Adjust left if we're at the right edge
+    left = max(0, right - num)
 
-    return np.arange(left, right)
-
-
-@njit(cache=True, fastmath=True)
-def neighbouring_indices_low(arr: np.ndarray, target: float, num_up: int) -> np.ndarray:
-    index = np.argwhere(arr == target)[0][0]
-
-    # Calculate the window around the target
-    right = min(len(arr), index + num_up + 1)
-    return np.arange(0, right)
+    return beam_indices[left:right]
 
 
 @njit(cache=True, fastmath=True)
@@ -562,33 +552,26 @@ class DynamicThresholdScheme:
             self.states[0, ithres, iprob] = cur_state
             self.folds_in[ithres, iprob] = cur_fold_state
 
-    def run(self, thresh_neighbours_tol: float = 20) -> None:
+    def run(self, thres_neigh: int = 20) -> None:
         for istage in track(range(1, self.nstages), description="Running stages"):
-            beam_idx_cur = self.get_current_thresholds_idx(istage)
-            beam_idx_prev = self.get_current_thresholds_idx(istage - 1)
-            self.run_stage(istage, beam_idx_cur, beam_idx_prev, thresh_neighbours_tol)
+            self.run_stage(istage, thres_neigh)
             self.folds_in = self.folds_out
             self.folds_out = np.empty((self.nthresholds, self.nprobs), dtype=object)
 
-    def run_stage(
-        self,
-        istage: int,
-        beam_idx_cur: np.ndarray,
-        beam_idx_prev: np.ndarray,
-        thresh_neighbours_tol: float = 10,
-    ) -> None:
+    def run_stage(self, istage: int, thres_neigh: int = 10) -> None:
+        beam_idx_cur = self.get_current_thresholds_idx(istage)
+        beam_idx_prev = self.get_current_thresholds_idx(istage - 1)
         for ibeam_cur in range(len(beam_idx_cur)):
             ithres = beam_idx_cur[ibeam_cur]
             # Find nearest neighbors in the previous beam
             neighbour_beam_indices = neighbouring_indices(
-                self.thresholds[beam_idx_prev],
-                self.thresholds[ithres],
-                thresh_neighbours_tol,
+                beam_idx_prev,
+                ithres,
+                thres_neigh,
             )
-            neighbour_beam_indices_global = beam_idx_prev[neighbour_beam_indices]
             candidates = []
             for jthresh, kprob in itertools.product(
-                neighbour_beam_indices_global,
+                neighbour_beam_indices,
                 range(self.nprobs),
             ):
                 prev_state = self.states[istage - 1, jthresh, kprob]
@@ -620,7 +603,7 @@ class DynamicThresholdScheme:
     def save(self, outdir: str = ".") -> str:
         """Save the StatesInfo object to an hdf5 file."""
         filebase = (
-            f"dynamic_threshold_scheme_nstages_{self.nstages}_"
+            f"dynscheme_nstages_{self.nstages}_"
             f"nthresh_{self.nthresholds}_nprobs_{self.nprobs}_"
             f"ntrials_{self.ntrials}_snr_{self.snr_final:.1f}_"
             f"beam_{self.beam_width:.1f}"
@@ -628,22 +611,107 @@ class DynamicThresholdScheme:
         filename = Path(outdir) / f"{filebase}.h5"
         with h5py.File(filename, "w") as f:
             # Save simple attributes
-            f.attrs["ntrials"] = self.ntrials
-            f.attrs["snr_final"] = self.snr_final
-            f.attrs["ducy_max"] = self.ducy_max
-            f.attrs["beam_width"] = self.beam_width
-
+            for attr in ["ntrials", "snr_final", "ducy_max", "beam_width"]:
+                f.attrs[attr] = getattr(self, attr)
             # Save numpy arrays
-            f.create_dataset("branching_pattern", data=self.branching_pattern)
-            f.create_dataset("template", data=self.template)
-            f.create_dataset("thresholds", data=self.thresholds)
-            f.create_dataset("probs", data=self.probs)
-            f.create_dataset("guess_path", data=self.guess_path)
+            for arr in [
+                "branching_pattern",
+                "template",
+                "thresholds",
+                "probs",
+                "guess_path",
+            ]:
+                f.create_dataset(
+                    arr,
+                    data=getattr(self, arr),
+                    compression="gzip",
+                    compression_opts=9,
+                )
+
+            # Prepare state data
+            state_data = []
+            backtrack_data = []
+            backtrack_lengths = []
+            grid_indices = []
+            for istage in range(self.nstages):
+                for ithres in range(self.nthresholds):
+                    for iprob in range(self.nprobs):
+                        jit_state = self.states[istage, ithres, iprob]
+                        if jit_state is not None:
+                            state_dict = {
+                                "success_h0": jit_state.success_h0,
+                                "success_h1": jit_state.success_h1,
+                                "complexity": jit_state.complexity,
+                                "complexity_cumul": jit_state.complexity_cumul,
+                                "success_h1_cumul": jit_state.success_h1_cumul,
+                                "nbranches": jit_state.nbranches,
+                            }
+                            backtrack = list(jit_state.backtrack)
+                            backtrack_data.extend(backtrack)
+                            backtrack_lengths.append(len(backtrack))
+                            state_data.append(state_dict)
+                            grid_indices.append((istage, ithres, iprob))
+            # Create a structured numpy array
+            dtype = [(key, "f8") for key in state_data[0]]
+            state_array = np.array([tuple(d.values()) for d in state_data], dtype=dtype)
+            f.create_dataset(
+                "states",
+                data=state_array,
+                compression="gzip",
+                compression_opts=9,
+            )
+            f.create_dataset(
+                "backtrack",
+                data=np.array(backtrack_data, dtype="f8"),
+                compression="gzip",
+                compression_opts=9,
+            )
+            f.create_dataset(
+                "backtrack_lengths",
+                data=np.array(backtrack_lengths, dtype="i4"),
+                compression="gzip",
+                compression_opts=9,
+            )
+            f.create_dataset(
+                "grid_indices",
+                data=np.array(grid_indices, dtype="i4"),
+                compression="gzip",
+                compression_opts=9,
+            )
+        return filename.as_posix()
+
+    def save1(self, outdir: str = ".") -> str:
+        """Save the StatesInfo object to an hdf5 file."""
+        filebase = (
+            f"dynscheme_nstages_{self.nstages}_"
+            f"nthresh_{self.nthresholds}_nprobs_{self.nprobs}_"
+            f"ntrials_{self.ntrials}_snr_{self.snr_final:.1f}_"
+            f"beam_{self.beam_width:.1f}"
+        )
+        filename = Path(outdir) / f"{filebase}.h5"
+        with h5py.File(filename, "w") as f:
+            # Save simple attributes
+            for attr in ["ntrials", "snr_final", "ducy_max", "beam_width"]:
+                f.attrs[attr] = getattr(self, attr)
+            # Save numpy arrays
+            for arr in [
+                "branching_pattern",
+                "template",
+                "thresholds",
+                "probs",
+                "guess_path",
+            ]:
+                f.create_dataset(
+                    arr,
+                    data=getattr(self, arr),
+                    compression="gzip",
+                    compression_opts=9,
+                )
 
             # create groups for the states
-            state_group = f.create_group("states")
+            states_group = f.create_group("states")
             for istage in range(self.nstages):
-                stage_group = state_group.create_group(f"stage_{istage}")
+                stage_group = states_group.create_group(f"stage_{istage}")
                 for ithres in range(self.nthresholds):
                     threshold_group = stage_group.create_group(f"threshold_{ithres}")
                     for iprob in range(self.nprobs):
@@ -779,6 +847,16 @@ class DynamicThresholdSchemeAnalyser:
         ax.invert_yaxis()
         return fig
 
+    def save(self, filename: str) -> None:
+        """Save the StatesInfo object to a file."""
+        np.savez(
+            filename,
+            thresholds=self.thresholds,
+            probs=self.probs,
+            states=self.states,
+            allow_pickle=True,
+        )
+
     @classmethod
     def from_file(cls, filename: str) -> DynamicThresholdSchemeAnalyser:
         """Load a DynamicThresholdScheme object from an hdf5 file."""
@@ -789,10 +867,45 @@ class DynamicThresholdSchemeAnalyser:
             nstages = len(branching_pattern)
             nthresholds = len(thresholds)
             nprobs = len(probs)
+            # Load datasets
+            states = f["states"][:]
+            backtrack_data = f["backtrack"][:]
+            backtrack_lengths = f["backtrack_lengths"][:]
+            grid_indices = f["grid_indices"][:]
+            re_states = np.empty((nstages, nthresholds, nprobs), dtype=object)
+
+            start = 0
+            for i, (istage, ithres, iprob) in enumerate(grid_indices):
+                state = states[i]
+                length = backtrack_lengths[i]
+                end = start + length
+                backtrack = backtrack_data[start:end]
+                re_states[istage, ithres, iprob] = SaveState(
+                    state["success_h0"],
+                    state["success_h1"],
+                    state["complexity"],
+                    state["complexity_cumul"],
+                    state["success_h1_cumul"],
+                    state["nbranches"],
+                    list(backtrack),
+                )
+                start = end
+        return cls(re_states, thresholds, probs)
+
+    @classmethod
+    def from_file1(cls, filename: str) -> DynamicThresholdSchemeAnalyser:
+        """Load a DynamicThresholdScheme object from an hdf5 file."""
+        with h5py.File(filename, "r") as f:
+            branching_pattern = f["branching_pattern"][:]
+            thresholds = f["thresholds"][:]
+            probs = f["probs"][:]
+            nstages = len(branching_pattern)
+            nthresholds = len(thresholds)
+            nprobs = len(probs)
             states = np.empty((nstages, nthresholds, nprobs), dtype=object)
-            state_group = f["states"]
+            states_group = f["states"]
             for istage in range(nstages):
-                stage_group = state_group[f"stage_{istage}"]
+                stage_group = states_group[f"stage_{istage}"]
                 for ithres in range(nthresholds):
                     threshold_group = stage_group[f"threshold_{ithres}"]
                     for iprob in range(nprobs):
