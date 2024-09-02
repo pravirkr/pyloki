@@ -3,11 +3,11 @@ from __future__ import annotations
 import numpy as np
 from numba import typed
 
-from pruning import ffa, prune, scores, thresholds
-from pruning.base import SearchConfig
-from pruning.periodogram import Periodogram
-from pruning.timeseries import SignalConfig, TimeSeries
-from pruning.utils import get_logger
+from pyloki import ffa, prune, scores, thresholds
+from pyloki.base import SearchConfig
+from pyloki.periodogram import Periodogram
+from pyloki.timeseries import SignalConfig, TimeSeries
+from pyloki.utils import get_logger
 
 logger = get_logger(__name__)
 

@@ -5,9 +5,11 @@ from matplotlib import pyplot as plt
 from matplotlib.offsetbox import AnchoredText
 from sigpyproc.core import filters as sig_filters
 
-from pruning import kernels, simulate
-from pruning.detect.scores import boxcar_snr_1d
-from pruning.utils.plotter import Table
+from pyloki.core import common
+from pyloki.detect.scores import boxcar_snr_1d
+from pyloki.simulate.modulate import type_to_mods
+from pyloki.utils import np_utils
+from pyloki.utils.plotter import Table
 
 
 class TimeSeries:
@@ -37,12 +39,12 @@ class TimeSeries:
         return self.nsamps * self.dt
 
     def downsample(self, factor: int) -> TimeSeries:
-        ts_e = kernels.downsample_1d(self.ts_e, factor)
-        ts_v = kernels.downsample_1d(self.ts_v, factor)
+        ts_e = np_utils.downsample_1d(self.ts_e, factor)
+        ts_v = np_utils.downsample_1d(self.ts_v, factor)
         return TimeSeries(ts_e, ts_v, self.dt)
 
     def resample(self, accel: float) -> TimeSeries:
-        ts_e, ts_v = kernels.resample(self.ts_e, self.ts_v, self.dt, accel)
+        ts_e, ts_v = common.resample(self.ts_e, self.ts_v, self.dt, accel)
         return TimeSeries(ts_e, ts_v, self.dt)
 
     def fold_ephem(
@@ -64,9 +66,9 @@ class TimeSeries:
             raise ValueError(msg)
         if mod_kwargs is None:
             mod_kwargs = {}
-        mod_func = simulate.type_to_mods[mod_type](**mod_kwargs)
+        mod_func = type_to_mods[mod_type](**mod_kwargs)
         proper_time = mod_func.generate(np.arange(0, self.tobs, self.dt), self.tobs / 2)
-        fold = kernels.brutefold(
+        fold = common.brutefold(
             self.ts_e,
             self.ts_v,
             proper_time,

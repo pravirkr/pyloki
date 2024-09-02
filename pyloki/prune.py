@@ -7,12 +7,12 @@ import numpy as np
 from numba import njit
 from rich.progress import track
 
-from pruning.core import PruneStats, PruningDPFunctions, SuggestionStruct
-from pruning.utils import np_utils
-from pruning.utils.misc import get_logger
+from pyloki.core import PruneStats, PruningDPFunctions, SuggestionStruct
+from pyloki.utils import np_utils
+from pyloki.utils.misc import get_logger
 
 if TYPE_CHECKING:
-    from pruning.ffa import DynamicProgramming
+    from pyloki.ffa import DynamicProgramming
 
 
 logger = get_logger(__name__)

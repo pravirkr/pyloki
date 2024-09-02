@@ -1,3 +1,3 @@
-# pruning
+# pyloki
 
-Detecting pulsars
+Leverage Optimal significance to detect Keplerian orbIt pulsars

@@ -1,7 +1,7 @@
 import numpy as np
 from numba import njit
 
-from pruning.utils import math
+from pyloki.utils import math
 
 
 @njit(cache=True)

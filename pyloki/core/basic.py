@@ -4,11 +4,11 @@ import numpy as np
 from numba import njit, typed, types
 from numba.experimental import jitclass
 
-from pruning import scores
-from pruning.config import PulsarSearchConfig
-from pruning.core import common, defaults
-from pruning.utils import math, np_utils
-from pruning.utils.misc import C_VAL
+from pyloki import scores
+from pyloki.config import PulsarSearchConfig
+from pyloki.core import common, defaults
+from pyloki.utils import math, np_utils
+from pyloki.utils.misc import C_VAL
 
 
 @njit(cache=True, fastmath=True)

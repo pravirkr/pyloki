@@ -4,8 +4,8 @@ import attrs
 import numpy as np
 from scipy import stats
 
-from pruning.io.timeseries import TimeSeries
-from pruning.simulate import modulate
+from pyloki.io.timeseries import TimeSeries
+from pyloki.simulate import modulate
 
 
 @attrs.define(auto_attribs=True, kw_only=True)

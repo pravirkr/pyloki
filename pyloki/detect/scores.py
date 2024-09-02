@@ -4,7 +4,7 @@ import numpy as np
 from numba import njit, prange, types
 from numba.experimental import jitclass
 
-from pruning.utils import math, np_utils
+from pyloki.utils import math, np_utils
 
 
 @njit(cache=True, fastmath=True)

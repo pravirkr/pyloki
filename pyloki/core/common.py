@@ -4,7 +4,7 @@ import numpy as np
 from numba import njit, types, vectorize
 from numba.experimental import jitclass
 
-from pruning import math, utils
+from pyloki import math, utils
 
 
 @vectorize(nopython=True, cache=True)

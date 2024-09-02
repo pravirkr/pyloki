@@ -15,10 +15,10 @@ from numba.experimental import jitclass
 from rich.progress import track
 from scipy import stats
 
-from pruning.detect import scores
-from pruning.utils import np_utils
-from pruning.utils.misc import get_logger
-from pruning.utils.plotter import set_seaborn
+from pyloki.detect import scores
+from pyloki.utils import np_utils
+from pyloki.utils.misc import get_logger
+from pyloki.utils.plotter import set_seaborn
 
 logger = get_logger(__name__)
 

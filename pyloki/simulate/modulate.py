@@ -3,7 +3,7 @@ from astropy import constants
 from numba import types
 from numba.experimental import jitclass
 
-from pruning import kepler
+from pyloki import kepler
 
 
 @jitclass(

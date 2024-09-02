@@ -6,16 +6,16 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import njit, prange, types
 
-from pruning.core import FFASearchDPFunctions, PulsarSearchConfig
-from pruning.utils import np_utils
-from pruning.utils.misc import get_logger
+from pyloki.core import FFASearchDPFunctions, PulsarSearchConfig
+from pyloki.utils import np_utils
+from pyloki.utils.misc import get_logger
 
 if TYPE_CHECKING:
     from typing import Callable
 
     from numpy import typing as npt
 
-    from pruning.io.timeseries import TimeSeries
+    from pyloki.io.timeseries import TimeSeries
 
 
 logger = get_logger(__name__)

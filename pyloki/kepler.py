@@ -8,7 +8,7 @@ from astropy import constants
 from numba import njit
 from scipy import optimize
 
-from pruning.utils import math
+from pyloki.utils import math
 
 
 def semi_major_axis(mass: float, period: float) -> float:

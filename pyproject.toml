@@ -3,8 +3,8 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pruning"
-version = "0.4.0"
+name = "pyloki"
+version = "0.5.0"
 description = "Detecting Pulsars"
 readme = "README.md"
 authors = [
@@ -36,10 +36,11 @@ dependencies = [
     "matplotlib",
     "rocket-fft",
     "h5py",
+    "sigpyproc @ git+https://github.com/FRBs/sigpyproc.git",
 ]
 
 [project.urls]
-Repository = "https://github.com/pravirkr/pruning"
+Repository = "https://github.com/pravirkr/pyloki"
 
 [project.optional-dependencies]
 tests = [
@@ -54,7 +55,7 @@ docs = ["sphinx", "sphinx-book-theme", "sphinx-click", "myst-nb"]
 develop = ["ruff"]
 
 [tool.ruff]
-include = ["pyproject.toml", "pruning/**/*.py"]
+include = ["pyproject.toml", "pyloki/**/*.py"]
 line-length = 88
 indent-width = 4
 target-version = "py39"
@@ -79,7 +80,7 @@ minversion = "8.0"
 testpaths = "tests"
 
 [tool.coverage.paths]
-source = ["./pruning/"]
+source = ["./pyloki/"]
 
 [tool.coverage.run]
 omit = ["tests/*", "*__init__.py"]
