@@ -1,95 +1,9 @@
 from __future__ import annotations
 
-import ctypes
 from typing import Callable
 
 import numpy as np
-from numba import njit, vectorize
-from numba.extending import get_cython_function_address
-from scipy import stats
-
-addr = get_cython_function_address("scipy.special.cython_special", "binom")
-functype = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double, ctypes.c_double)
-cbinom_func = functype(addr)
-
-
-@vectorize("f8(f8, f8)")
-def nbinom(xx: float, yy: float) -> float:
-    return cbinom_func(xx, yy)
-
-
-def fact_factory(n_tab_out: int = 100) -> np.ufunc:
-    fact_tab = np.ones(n_tab_out)
-
-    @njit(cache=True)
-    def _fact(num: int, n_tab: int = n_tab_out) -> int:
-        if num < n_tab:
-            return fact_tab[num]
-        ret = 1
-        for nn in range(1, num + 1):
-            ret *= nn
-        return ret
-
-    for ii in range(n_tab_out):
-        fact_tab[ii] = _fact(ii, 0)
-
-    @vectorize(cache=True)
-    def fact_vec(num: int) -> int:
-        return _fact(num)
-
-    return fact_vec
-
-
-fact = fact_factory(120)
-
-
-def gen_norm_isf_table(max_minus_logsf: float, minus_logsf_res: float) -> np.ndarray:
-    x_arr = np.arange(0, max_minus_logsf, minus_logsf_res)
-    return stats.norm.isf(np.exp(-x_arr))
-
-
-def gen_chi_sq_minus_logsf_table(
-    df_max: int,
-    chi_sq_max: float,
-    chi_sq_res: float,
-) -> np.ndarray:
-    x_arr = np.arange(0, chi_sq_max, chi_sq_res)
-    table = np.zeros((df_max + 1, len(x_arr)))
-    for i in range(1, df_max + 1):
-        table[i] = -stats.chi2.logsf(x_arr, i)
-    return table
-
-
-chi_sq_res = 0.5
-chi_sq_max = 300
-max_minus_logsf = 400
-minus_logsf_res = 0.1
-chi_sq_minus_logsf_table = gen_chi_sq_minus_logsf_table(64, chi_sq_max, chi_sq_res)
-norm_isf_table = gen_norm_isf_table(max_minus_logsf, minus_logsf_res)
-
-
-@njit(cache=True)
-def norm_isf_func(minus_logsf: float) -> float:
-    pos = minus_logsf / minus_logsf_res
-    frac_pos = pos % 1
-    if minus_logsf < max_minus_logsf:
-        return (
-            norm_isf_table[int(pos)] * (1 - frac_pos)
-            + norm_isf_table[int(pos) + 1] * frac_pos
-        )
-    return norm_isf_table[-1] * (minus_logsf / max_minus_logsf) ** 0.5
-
-
-@njit(cache=True)
-def chi_sq_minus_logsf_func(chi_sq_score: float, df: int) -> float:
-    tab_pos = chi_sq_score / chi_sq_res
-    frac_pos = tab_pos % 1
-    if chi_sq_score < chi_sq_max:
-        return (
-            chi_sq_minus_logsf_table[df, int(tab_pos)] * (1 - frac_pos)
-            + chi_sq_minus_logsf_table[df, int(tab_pos) + 1] * frac_pos
-        )
-    return chi_sq_minus_logsf_table[df, -1] * chi_sq_score / chi_sq_max
+from numba import njit
 
 
 @njit(cache=True, fastmath=True)
@@ -116,7 +30,7 @@ def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
     return idx
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def np_apply_along_axis(func1d: Callable, axis: int, arr: np.ndarray) -> np.ndarray:
     if arr.ndim != 2:
         msg = "arr must be 2D"
@@ -137,23 +51,23 @@ def np_apply_along_axis(func1d: Callable, axis: int, arr: np.ndarray) -> np.ndar
     return result
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def nb_max(array: np.ndarray, axis: int) -> np.ndarray:
     return np_apply_along_axis(np.max, axis, array)
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def np_mean(array: np.ndarray, axis: int) -> np.ndarray:
     return np_apply_along_axis(np.mean, axis, array)
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def downsample_1d(array: np.ndarray, factor: int) -> np.ndarray:
     reshaped_ar = np.reshape(array, (array.size // factor, factor))
     return np_mean(reshaped_ar, 1)
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def nb_roll2d(arr: np.ndarray, shift: int) -> np.ndarray:
     """Roll the 2D array along the second axis (axis=1).
 
@@ -179,7 +93,7 @@ def nb_roll2d(arr: np.ndarray, shift: int) -> np.ndarray:
     return res
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def nb_roll3d(arr: np.ndarray, shift: int) -> np.ndarray:
     """Roll the 3D array along the last axis (axis=-1).
 
@@ -205,7 +119,7 @@ def nb_roll3d(arr: np.ndarray, shift: int) -> np.ndarray:
     return res
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def cartesian_prod(arrays: np.ndarray) -> np.ndarray:
     nn = 1
     for array in arrays:
@@ -226,7 +140,23 @@ def cartesian_prod(arrays: np.ndarray) -> np.ndarray:
     return out
 
 
-@njit
+def cartesian_prod_np(arr_list: list[np.ndarray]) -> np.ndarray:
+    mesh = np.meshgrid(*arr_list, indexing="ij")
+    flattened_mesh = [arr.ravel() for arr in mesh]
+    return np.vstack(flattened_mesh).T
+
+
+def cartesian_prod_st(arr_list: list[np.ndarray]) -> np.ndarray:
+    """Twice as fast as cartesian_prod_np."""
+    la = len(arr_list)
+    dtype = np.result_type(*arr_list)
+    cart = np.empty([la] + [len(arr) for arr in arr_list], dtype=dtype)
+    for iarr, arr in enumerate(np.ix_(*arr_list)):
+        cart[iarr, ...] = arr
+    return cart.reshape(la, -1).T
+
+
+@njit(cache=True, fastmath=True)
 def numba_bf_row_vector_unique(arr: np.ndarray) -> np.ndarray:
     ret = np.zeros(arr.shape, arr.dtype)
     ret[0] = arr[0]
@@ -242,10 +172,76 @@ def numba_bf_row_vector_unique(arr: np.ndarray) -> np.ndarray:
     return ret[:ind]
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def numba_bypass_all_close(
     arr1: np.ndarray,
     arr2: np.ndarray,
     tol: float = 1e-8,
 ) -> bool:
     return bool(np.all(np.abs(arr1 - arr2) < tol))
+
+
+def pad_with_inf(param_list: list[np.ndarray]) -> np.ndarray:
+    """Pad a list of arrays with inf to make them all the same length.
+
+    Parameters
+    ----------
+    param_list : list[np.ndarray]
+        List of arrays to pad.
+
+    Returns
+    -------
+    np.ndarray
+        Padded array.
+    """
+    maxlen = np.max(list(map(len, param_list)))
+    output = np.zeros([len(param_list), maxlen])
+    output += np.inf
+    for iarr, arr in enumerate(param_list):
+        output[iarr][: len(arr)] = arr
+    return output
+
+
+def snail_access_scheme(nchunks: int, ref_idx: int) -> np.ndarray:
+    """Get an access pattern for the chunks.
+
+    Parameters
+    ----------
+    nchunks : int
+        number of chunks
+    ind_ref : int
+        index of the chunk to start with
+
+    Returns
+    -------
+    np.ndarray
+        access pattern for the chunks
+    """
+    return np.argsort(np.abs(np.arange(nchunks) - ref_idx))
+
+@njit(cache=True, fastmath=True)
+def cpadpow2(arr: np.ndarray) -> np.ndarray:
+    """Circularly pad the last dimension to power of 2.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        Input array.
+
+    Returns
+    -------
+    np.ndarray
+        Padded array.
+    """
+    nbins = arr.shape[-1]
+    padded_length = 2 ** int(np.ceil(np.log2(nbins)))
+    padding_needed = padded_length - nbins
+    return np.concatenate((arr, arr[..., :padding_needed]), axis=-1)
+
+
+@njit(cache=True, fastmath=True)
+def cpad2len(arr: np.ndarray, size: int) -> np.ndarray:
+    """Circularly pad the last dimension of ndarray 'arr' to given length with zeros."""
+    padding_needed = size - arr.shape[-1]
+    zero_arr = np.zeros(arr.shape[:-1] + (padding_needed,))
+    return np.concatenate((arr, zero_arr), axis=-1)

@@ -4,19 +4,23 @@ import time
 from typing import TYPE_CHECKING
 
 import numpy as np
-from numba import njit, prange
+from numba import njit
 from rich.progress import track
 
-from pruning import kernels, utils
-from pruning.base import PruningDPFunctions
+from pruning.core import PruneStats, PruningDPFunctions, SuggestionStruct
+from pruning.utils import np_utils
+from pruning.utils.misc import get_logger
 
 if TYPE_CHECKING:
     from pruning.ffa import DynamicProgramming
 
 
+logger = get_logger(__name__)
+
+
 @njit(cache=True, fastmath=True)
 def pruning_iteration(
-    suggestion: kernels.SuggestionStruct,
+    suggestion: SuggestionStruct,
     fold_segment: np.ndarray,
     prune_funcs: PruningDPFunctions,
     threshold: float,
@@ -26,7 +30,7 @@ def pruning_iteration(
     seg_cur: int,
     seg_ref: int,
     max_sugg: int = 2**17,
-) -> tuple[kernels.SuggestionStruct, kernels.PruneStats]:
+) -> tuple[SuggestionStruct, PruneStats]:
     suggestion_new = suggestion.get_new(max_sugg)
     n_leaves_total = 0
     n_leaves_physical = 0
@@ -78,7 +82,7 @@ def pruning_iteration(
                     iparam = suggestion_new.actual_size
 
     suggestion_new = suggestion_new.trim_empty(iparam)
-    stats = kernels.PruneStats(
+    stats = PruneStats(
         n_branches,
         n_leaves_total,
         n_leaves_physical,
@@ -123,8 +127,6 @@ class Pruning:
         self._threshold_scheme = threshold_scheme
         self._max_sugg = max_sugg
 
-        self.logger = utils.get_logger("Pruning")
-
     @property
     def max_sugg(self) -> int:
         return self._max_sugg
@@ -158,7 +160,7 @@ class Pruning:
         return self._threshold_scheme
 
     @property
-    def suggestion(self) -> kernels.SuggestionStruct:
+    def suggestion(self) -> SuggestionStruct:
         return self._suggestion
 
     @property
@@ -186,13 +188,13 @@ class Pruning:
         Reference time for the parameters will be the middle of the reference segment.
         """
         tstart = time.time()
-        self._segment_scheme = utils.snail_access_scheme(
+        self._segment_scheme = np_utils.snail_access_scheme(
             self.dyp.nchunks,
             ref_idx=seg_ref,
         )
         self._complete = False
         self._prune_level = 0
-        self.logger.info(f"Initializing pruning with ref segment: {self.seg_ref}")
+        logger.info(f"Initializing pruning with ref segment: {self.seg_ref}")
         # Initialize the suggestions with the first segment
         fold_segment = self.prune_funcs.load(self.dyp.fold, self.seg_ref)
         self._suggestion = self.prune_funcs.suggest(fold_segment)
@@ -204,7 +206,7 @@ class Pruning:
             (self.dyp.fold.shape[0], 3),
             dtype=object,
         )
-        self.logger.info(f"Initialization time: {time.time() - tstart}")
+        logger.info(f"Initialization time: {time.time() - tstart}")
 
     def prune_enumeration(
         self,
@@ -212,7 +214,7 @@ class Pruning:
         seg_ref_list: np.ndarray | None = None,
         *,
         lazy: bool = True,
-    ) -> list[tuple[int, kernels.SuggestionStruct]]:
+    ) -> list[tuple[int, SuggestionStruct]]:
         res = []
         if seg_ref_list is None:
             seg_ref_list = np.arange(0, self.dyp.nchunks, self.dyp.nchunks // 16)
@@ -261,15 +263,15 @@ class Pruning:
         if suggestion.size == 0:
             self._complete = True
             self._suggestion = suggestion
-            self.logger.info(log_str)
-            self.logger.info(f"Pruning complete at level: {self.prune_level}")
+            logger.info(log_str)
+            logger.info(f"Pruning complete at level: {self.prune_level}")
             return
 
         log_str += (
             f"score thresh: {threshold:.2f}, max: {suggestion.scores.max():.2f}, "
             f"min: {suggestion.scores.min():.2f}, P(surv): {pstats.surv_frac:.2f}"
         )
-        self.logger.info(log_str)
+        logger.info(log_str)
         # Records to track the numercal stability of the algorithm
         self._best_intermediate_arr[self.prune_level] = suggestion.get_best()
         self._backtrack_arr[self.prune_level, : suggestion.size] = suggestion.backtracks

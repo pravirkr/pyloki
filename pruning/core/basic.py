@@ -1,30 +1,36 @@
+from __future__ import annotations
+
 import numpy as np
 from numba import njit, typed, types
+from numba.experimental import jitclass
 
-from pruning import kernels, math, utils
-
-
-@njit(cache=True)
-def add(data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
-    return data0 + data1
-
-
-@njit(cache=True)
-def pack(data: np.ndarray) -> np.ndarray:
-    return data
+from pruning import scores
+from pruning.config import PulsarSearchConfig
+from pruning.core import common, defaults
+from pruning.utils import math, np_utils
+from pruning.utils.misc import C_VAL
 
 
-@njit(cache=True)
-def shift(data: np.ndarray, phase_shift: int) -> np.ndarray:
-    return math.nb_roll2d(data, phase_shift)
-
-
-@njit(cache=True)
-def get_trans_matrix(
-    coord_cur: tuple[float, float],  # noqa: ARG001
-    coord_prev: tuple[float, float],  # noqa: ARG001
+@njit(cache=True, fastmath=True)
+def ffa_init(
+    ts_e: np.ndarray,
+    ts_v: np.ndarray,
+    param_arr: types.ListType,
+    segment_len: int,
+    nbins: int,
+    tsamp: float,
 ) -> np.ndarray:
-    return np.eye(2)
+    freq_arr = param_arr[-1]
+    t_ref = segment_len * tsamp / 2
+    return common.brutefold_start(
+        ts_e,
+        ts_v,
+        freq_arr,
+        segment_len,
+        nbins,
+        tsamp,
+        t_ref,
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -90,9 +96,9 @@ def ffa_resolve(
         kvec_cur[:-2] = pset_cur[:-1]  # till acceleration
         kvec_prev = shift_params(kvec_cur, t_ref_prev)
         pset_prev = kvec_prev[:-1]
-        pset_prev[-1] = pset_cur[-1] * (1 + kvec_prev[-2] / utils.c_val)
-        delay_rel = -kvec_prev[-1] / utils.c_val
-    relative_phase = kernels.get_phase_idx_helper(
+        pset_prev[-1] = pset_cur[-1] * (1 + kvec_prev[-2] / C_VAL)
+        delay_rel = -kvec_prev[-1] / C_VAL
+    relative_phase = common.get_phase_idx_helper(
         t_ref_prev,
         pset_prev[-1],
         nbins,
@@ -100,30 +106,8 @@ def ffa_resolve(
     )
     pindex_prev = np.empty(nparams, dtype=np.int64)
     for ip in range(nparams):
-        pindex_prev[ip] = math.find_nearest_sorted_idx(parr_prev[ip], pset_prev[ip])
+        pindex_prev[ip] = np_utils.find_nearest_sorted_idx(parr_prev[ip], pset_prev[ip])
     return pindex_prev, relative_phase
-
-
-@njit(cache=True, fastmath=True)
-def ffa_init(
-    ts_e: np.ndarray,
-    ts_v: np.ndarray,
-    param_arr: types.ListType,
-    segment_len: int,
-    nbins: int,
-    tsamp: float,
-) -> np.ndarray:
-    freq_arr = param_arr[-1]
-    t_ref = segment_len * tsamp / 2
-    return kernels.brutefold_start(
-        ts_e,
-        ts_v,
-        freq_arr,
-        segment_len,
-        nbins,
-        tsamp,
-        t_ref,
-    )
 
 
 @njit(cache=True, fastmath=True)
@@ -171,13 +155,45 @@ def poly_taylor_resolve(
     old_f = leaf[-1, 0]
 
     new_a = kvec_new[-3]
-    new_f = old_f * (1 + kvec_new[-2] / utils.c_val)
-    delay = kvec_new[-1] / utils.c_val
+    new_f = old_f * (1 + kvec_new[-2] / C_VAL)
+    delay = kvec_new[-1] / C_VAL
 
-    relative_phase = kernels.get_phase_idx(tpoly, old_f, nbins, delay)
-    prev_index_a = math.find_nearest_sorted_idx(param_arr[-2], new_a)
-    prev_index_f = math.find_nearest_sorted_idx(param_arr[-1], new_f)
+    relative_phase = common.get_phase_idx(tpoly, old_f, nbins, delay)
+    prev_index_a = np_utils.find_nearest_sorted_idx(param_arr[-2], new_a)
+    prev_index_f = np_utils.find_nearest_sorted_idx(param_arr[-1], new_f)
     return (prev_index_a, prev_index_f), relative_phase
+
+
+@njit(cache=True, fastmath=True)
+def split_params(
+    param_cur: np.ndarray,
+    dparam_cur: np.ndarray,
+    dparam_opt: np.ndarray,
+    tol_time: float,
+    tchunk_cur: float,
+) -> np.ndarray:
+    nparams = len(param_cur)
+    leaf_params = typed.List.empty_list(types.float64[:])
+    leaf_dparams = np.empty(nparams, dtype=np.float64)
+    for iparam in range(nparams):
+        deriv = nparams - iparam
+        shift = (
+            (dparam_cur[iparam] - dparam_opt[iparam])
+            / 2
+            * (tchunk_cur) ** deriv
+            / math.fact(deriv)
+        )
+        if shift > tol_time:
+            leaf_param, dparam_act = common.branch_param(
+                param_cur[iparam],
+                dparam_cur[iparam],
+                dparam_opt[iparam],
+            )
+        else:
+            leaf_param, dparam_act = np.array([param_cur[iparam]]), dparam_cur[iparam]
+        leaf_dparams[iparam] = dparam_act
+        leaf_params.append(leaf_param)
+    return common.get_leaves(leaf_params, leaf_dparams)
 
 
 @njit(cache=True, fastmath=True)
@@ -216,7 +232,7 @@ def branch2leaves(
     for iparam in range(nparams):
         deriv = nparams - iparam
         if deriv == 1:
-            dparam_opt_p = kernels.freq_step(
+            dparam_opt_p = common.freq_step(
                 tchunk_cur,
                 nbins,
                 param_cur[iparam],
@@ -225,7 +241,7 @@ def branch2leaves(
             # for param_cur = freq, tchunk is number of period jumps
             tchunk_cur *= param_cur[iparam]
         else:
-            dparam_opt_p = kernels.param_step(
+            dparam_opt_p = common.param_step(
                 tchunk_cur,
                 tsamp,
                 deriv,
@@ -238,44 +254,12 @@ def branch2leaves(
 
 
 @njit(cache=True, fastmath=True)
-def split_params(
-    param_cur: np.ndarray,
-    dparam_cur: np.ndarray,
-    dparam_opt: np.ndarray,
-    tol_time: float,
-    tchunk_cur: float,
-) -> np.ndarray:
-    nparams = len(param_cur)
-    leaf_params = typed.List.empty_list(types.float64[:])
-    leaf_dparams = np.empty(nparams, dtype=np.float64)
-    for iparam in range(nparams):
-        deriv = nparams - iparam
-        shift = (
-            (dparam_cur[iparam] - dparam_opt[iparam])
-            / 2
-            * (tchunk_cur) ** deriv
-            / math.fact(deriv)
-        )
-        if shift > tol_time:
-            leaf_param, dparam_act = kernels.branch_param(
-                param_cur[iparam],
-                dparam_cur[iparam],
-                dparam_opt[iparam],
-            )
-        else:
-            leaf_param, dparam_act = np.array([param_cur[iparam]]), dparam_cur[iparam]
-        leaf_dparams[iparam] = dparam_act
-        leaf_params.append(leaf_param)
-    return kernels.get_leaves(leaf_params, leaf_dparams)
-
-
-@njit(cache=True, fastmath=True)
 def suggestion_struct(
     fold_segment: np.ndarray,
     param_arr: types.ListType,
     dparams: np.ndarray,
     score_func: types.FunctionType,
-) -> kernels.SuggestionStruct:
+) -> common.SuggestionStruct:
     """Generate a suggestion struct from a fold segment.
 
     Parameters
@@ -292,19 +276,19 @@ def suggestion_struct(
 
     Returns
     -------
-    kernels.SuggestionStruct
+    common.SuggestionStruct
         Suggestion struct
     """
     n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
     # \n_param_sets = n_accel * n_period
     # \param_sets_shape = [n_param_sets, 2]
-    param_sets = kernels.get_leaves(param_arr, dparams)
+    param_sets = common.get_leaves(param_arr, dparams)
     data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
     scores = np.zeros(n_param_sets)
     for iparam in range(n_param_sets):
         scores[iparam] = score_func(data[iparam])
     backtracks = np.zeros((n_param_sets, 2 + len(param_arr)))
-    return kernels.SuggestionStruct(param_sets, data, scores, backtracks)
+    return common.SuggestionStruct(param_sets, data, scores, backtracks)
 
 
 @njit(cache=True, fastmath=True)
@@ -318,7 +302,7 @@ def generate_branching_pattern(
     nbins: int,
     isuggest: int,
 ) -> np.ndarray:
-    leaf_param_sets = kernels.get_leaves(param_arr, dparams)
+    leaf_param_sets = common.get_leaves(param_arr, dparams)
     branching_pattern = []
     for prune_level in range(1, nsegments):
         tchunk_cur = tchunk_ffa * (prune_level + 1)
@@ -333,3 +317,147 @@ def generate_branching_pattern(
         branching_pattern.append(len(leaves_arr))
         leaf_param_sets = leaves_arr
     return np.array(branching_pattern)
+
+
+@jitclass(spec=[("cfg", PulsarSearchConfig.class_type.instance_type)])  # type: ignore [attr-defined]
+class FFASearchDPFunctions:
+    def __init__(self, cfg: PulsarSearchConfig) -> None:
+        self.cfg = cfg
+
+    def init(
+        self,
+        ts_e: np.ndarray,
+        ts_v: np.ndarray,
+        param_arr: types.ListType[types.Array],
+    ) -> np.ndarray:
+        return ffa_init(
+            ts_e,
+            ts_v,
+            param_arr,
+            self.cfg.segment_len,
+            self.cfg.nbins,
+            self.cfg.tsamp,
+        )
+
+    def step(self, ffa_level: int) -> np.ndarray:
+        return self.cfg.get_dparams(ffa_level)
+
+    def resolve(
+        self,
+        pset_cur: np.ndarray,
+        parr_prev: np.ndarray,
+        ffa_level: int,
+        latter: int,
+    ) -> tuple[np.ndarray, int]:
+        return ffa_resolve(
+            pset_cur,
+            parr_prev,
+            ffa_level,
+            latter,
+            self.cfg.tsegment,
+            self.cfg.nbins,
+        )
+
+    def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
+        return defaults.add(data0, data1)
+
+    def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:  # noqa: ARG002
+        return defaults.pack(data)
+
+    def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
+        return defaults.shift(data, phase_shift)
+
+
+@jitclass(
+    spec=[
+        ("cfg", PulsarSearchConfig.class_type.instance_type),  # type: ignore [attr-defined]
+        ("param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
+        ("dparams", types.f8[:]),
+        ("tsegment_ffa", types.f8),
+    ],
+)
+class PruningDPFunctions:
+    def __init__(
+        self,
+        cfg: PulsarSearchConfig,
+        param_arr: types.ListType[types.Array],
+        dparams: np.ndarray,
+        tsegment_ffa: float,
+    ) -> None:
+        self.cfg = cfg
+        self.param_arr = param_arr
+        self.dparams = dparams
+        self.tsegment_ffa = tsegment_ffa
+
+    def load(self, fold: np.ndarray, index: int) -> np.ndarray:
+        return fold[index]
+
+    def resolve(
+        self,
+        leaf: np.ndarray,
+        seg_cur: int,
+        seg_ref: int,
+    ) -> tuple[tuple[int, int], int]:
+        t_ref_cur = (seg_cur + 1 / 2) * self.tsegment_ffa
+        t_ref_init = (seg_ref + 1 / 2) * self.tsegment_ffa
+        return poly_taylor_resolve(
+            leaf,
+            self.param_arr,
+            t_ref_cur,
+            t_ref_init,
+            self.cfg.nbins,
+        )
+
+    def branch(self, param_set: np.ndarray, prune_level: int) -> np.ndarray:
+        tchunk_curr = self.tsegment_ffa * (prune_level + 1)
+        return branch2leaves(
+            param_set,
+            tchunk_curr,
+            self.cfg.tolerance,
+            self.cfg.tsamp,
+            self.cfg.nbins,
+        )
+
+    def suggest(self, fold_segment: np.ndarray) -> common.SuggestionStruct:
+        return suggestion_struct(
+            fold_segment,
+            self.param_arr,
+            self.dparams,
+            self.score,
+        )
+
+    def score(self, combined_res: np.ndarray) -> float:
+        return scores.snr_score_func(combined_res)
+
+    def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
+        return defaults.add(data0, data1)
+
+    def pack(self, x: np.ndarray) -> np.ndarray:
+        return defaults.pack(x)
+
+    def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
+        return defaults.shift(data, phase_shift)
+
+    def validate_physical(
+        self,
+        leaves: np.ndarray,
+        tcheby: float,
+        tzero: float,
+        validation_params: np.ndarray,
+    ) -> np.ndarray:
+        return defaults.validate_physical(leaves, tcheby, tzero, validation_params)
+
+    def get_trans_matrix(
+        self,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> np.ndarray:
+        return defaults.get_trans_matrix(coord_cur, coord_prev)
+
+    def transform_coords(
+        self,
+        leaf: np.ndarray,
+        coord_ref: tuple[float, float],  # noqa: ARG002
+        trans_matrix: np.ndarray,  # noqa: ARG002
+    ) -> np.ndarray:
+        return leaf

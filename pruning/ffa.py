@@ -6,18 +6,19 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import njit, prange, types
 
-from pruning import utils
-from pruning.base import FFASearchDPFunctions, SearchConfig
+from pruning.core import FFASearchDPFunctions, PulsarSearchConfig
+from pruning.utils import np_utils
+from pruning.utils.misc import get_logger
 
 if TYPE_CHECKING:
     from typing import Callable
 
     from numpy import typing as npt
 
-    from pruning.timeseries import TimeSeries
+    from pruning.io.timeseries import TimeSeries
 
 
-logger = utils.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 @njit(cache=True, fastmath=True)
@@ -71,7 +72,7 @@ class DynamicProgramming:
     def __init__(
         self,
         ts_data: TimeSeries,
-        cfg: SearchConfig,
+        cfg: PulsarSearchConfig,
         data_type: npt.DTypeLike = np.float32,
     ) -> None:
         self.ts_data = ts_data
@@ -87,7 +88,7 @@ class DynamicProgramming:
         self.time_total = 0.0
 
     @property
-    def cfg(self) -> SearchConfig:
+    def cfg(self) -> PulsarSearchConfig:
         return self._cfg
 
     @property
@@ -115,7 +116,7 @@ class DynamicProgramming:
         return self._ffa_level
 
     @property
-    def param_steps(self) -> types.ListType[types.f8]:
+    def param_steps(self) -> types.ListType:
         return self._param_steps
 
     @property
@@ -167,7 +168,7 @@ class DynamicProgramming:
         param_arr_new = self.cfg.get_param_arr(param_steps)
         self.time_step += time.time() - tstart
         tstart = time.time()
-        param_cart_new = utils.cartesian_prod_st(param_arr_new)
+        param_cart_new = np_utils.cartesian_prod_st(param_arr_new)
         self.time_cart += time.time() - tstart
         fold_new = np.zeros(
             (self.nchunks // 2, len(param_cart_new), *self.fold.shape[-2:]),

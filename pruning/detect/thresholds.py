@@ -15,9 +15,12 @@ from numba.experimental import jitclass
 from rich.progress import track
 from scipy import stats
 
-from pruning import math, scores, utils
+from pruning.detect import scores
+from pruning.utils import np_utils
+from pruning.utils.misc import get_logger
+from pruning.utils.plotter import set_seaborn
 
-logger = utils.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 def bound_scheme(nstages: int, snr_bound: float) -> np.ndarray:
@@ -153,7 +156,7 @@ def measure_success(
     """
     folds_norm = folds / np.sqrt(var_cur * np.ones_like(folds))
     widths = scores.generate_width_trials(folds.shape[1], ducy_max=ducy_max, wtsp=1)
-    scores_arr = math.nb_max(scores.boxcar_snr(folds_norm, widths), axis=1)
+    scores_arr = np_utils.nb_max(scores.boxcar_snr(folds_norm, widths), axis=1)
     good_scores_idx = np.nonzero(scores_arr > snr_thresh)[0]
     succ_prob = len(good_scores_idx) / len(scores_arr)
     return succ_prob, folds[good_scores_idx]
@@ -168,7 +171,7 @@ def measure_threshold(
 ) -> tuple[float, float, np.ndarray]:
     folds_norm = folds / np.sqrt(var_cur * np.ones_like(folds))
     widths = scores.generate_width_trials(folds.shape[1], ducy_max=ducy_max, wtsp=1)
-    scores_arr = math.nb_max(scores.boxcar_snr(folds_norm, widths), axis=1)
+    scores_arr = np_utils.nb_max(scores.boxcar_snr(folds_norm, widths), axis=1)
     n_surviving = int(survive_prob * len(scores_arr))
     good_scores_idx = np.flip(np.argsort(scores_arr))[: int(n_surviving)]
     succ_prob = len(good_scores_idx) / len(scores_arr)
@@ -783,7 +786,7 @@ class DynamicThresholdSchemeAnalyser:
     def plot_paths(self, best_min_prob: float, min_prob: float) -> plt.Figure:
         paths = self.backtrack_all(min_prob)
         best_path = self.backtrack_best(min_probs=[best_min_prob])[0]
-        utils.set_seaborn(**{"lines.linewidth": 1.5})
+        set_seaborn(**{"lines.linewidth": 1.5})
         fig, ([ax1, ax2], [ax3, ax4]) = plt.subplots(2, 2, figsize=(12, 8))  # type: ignore[misc]
         x = np.arange(self.nstages)
 

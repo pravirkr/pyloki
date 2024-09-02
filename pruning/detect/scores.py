@@ -4,31 +4,7 @@ import numpy as np
 from numba import njit, prange, types
 from numba.experimental import jitclass
 
-from pruning import math
-
-
-@njit
-def gaussian_template(width: int, bins: int) -> np.ndarray:
-    sigma = width / (2 * np.sqrt(2 * np.log(2)))
-    xmax = int(np.ceil(3.5 * sigma))
-    xx = np.arange(-xmax, xmax + 1)
-    data = np.exp(-(xx**2) / (2 * sigma**2))
-    padded_data = np.zeros(bins)
-    if bins >= 2 * xmax + 1:
-        padded_data[bins // 2 - xmax : bins // 2 + xmax + 1] = data
-    else:
-        start = xmax - bins // 2
-        end = start + bins
-        padded_data[:bins] = data[start:end]
-    return normalise(padded_data)
-
-
-@njit
-def boxcar_template(width: int, size: int) -> np.ndarray:
-    data = np.ones(width)
-    padded_data = np.zeros(size)
-    padded_data[: len(data)] = data
-    return normalise(padded_data)
+from pruning.utils import math, np_utils
 
 
 @njit(cache=True, fastmath=True)
@@ -49,32 +25,35 @@ def normalise(arr: np.ndarray) -> np.ndarray:
     return arr_norm / (np.dot(arr_norm, arr_norm) ** 0.5)
 
 
-@njit
-def cpadpow2(arr: np.ndarray) -> np.ndarray:
-    """Circularly pad the last dimension to power of 2.
+@njit(cache=True, fastmath=True)
+def gen_gaussian_templates(widths: np.ndarray, nbins: int) -> np.ndarray:
+    templates = np.empty((len(widths), nbins), dtype=np.float32)
+    for iw in range(len(widths)):
+        width = widths[iw]
+        sigma = width / (2 * np.sqrt(2 * np.log(2)))
+        xmax = int(np.ceil(3.5 * sigma))
+        xx = np.arange(-xmax, xmax + 1)
+        data = np.exp(-(xx**2) / (2 * sigma**2))
+        padded_data = np.zeros(nbins)
+        if nbins >= 2 * xmax + 1:
+            padded_data[nbins // 2 - xmax : nbins // 2 + xmax + 1] = data
+        else:
+            start = xmax - nbins // 2
+            end = start + nbins
+            padded_data[:nbins] = data[start:end]
+        templates[iw] = normalise(padded_data)
+    return templates
 
-    Parameters
-    ----------
-    arr : np.ndarray
-        Input array.
 
-    Returns
-    -------
-    np.ndarray
-        Padded array.
-    """
-    nbins = arr.shape[-1]
-    padded_length = 2 ** int(np.ceil(np.log2(nbins)))
-    padding_needed = padded_length - nbins
-    return np.concatenate((arr, arr[..., :padding_needed]), axis=-1)
-
-
-@njit
-def cpad2len(arr: np.ndarray, size: int) -> np.ndarray:
-    """Circularly pad the last dimension of ndarray 'arr' to given length with zeros."""
-    padding_needed = size - arr.shape[-1]
-    zero_arr = np.zeros(arr.shape[:-1] + (padding_needed,))
-    return np.concatenate((arr, zero_arr), axis=-1)
+@njit(cache=True, fastmath=True)
+def gen_boxcar_templates(widths: np.ndarray, nbins: int) -> np.ndarray:
+    templates = np.empty((len(widths), nbins), dtype=np.float32)
+    for iw in range(len(widths)):
+        data = np.ones(widths[iw])
+        padded_data = np.zeros(nbins)
+        padded_data[: len(data)] = data
+        templates[iw] = normalise(padded_data)
+    return templates
 
 
 @njit(cache=True, fastmath=True)
@@ -84,8 +63,8 @@ def compute_snr_fft(data: np.ndarray, templates: np.ndarray) -> np.ndarray:
     folds = data.reshape(-1, nbins).astype(np.float32)
     nprof, nbins = folds.shape
 
-    xx = cpadpow2(folds)
-    yy = cpad2len(templates, xx.shape[-1])
+    xx = np_utils.cpadpow2(folds)
+    yy = np_utils.cpad2len(templates, xx.shape[-1])
     fx = np.fft.rfft(xx).reshape(nprof, 1, -1)
     fy = np.fft.rfft(yy).reshape(1, ntemp, -1)
     snr = np.fft.irfft(fx * fy)
@@ -244,13 +223,10 @@ class MatchedFilter:
         return math.norm_isf_func(max(x_single, x_double))
 
     def _init_template_bank(self, nbins: int) -> np.ndarray:
-        templates = np.empty((len(self.widths), nbins), dtype=np.float32)
         if self.shape == "boxcar":
-            for iw, width in enumerate(self.widths):
-                templates[iw] = boxcar_template(width, nbins)
+            templates = gen_boxcar_templates(self.widths, nbins)
         elif self.shape == "gaussian":
-            for iw, width in enumerate(self.widths):
-                templates[iw] = gaussian_template(width, nbins)
+            templates = gen_gaussian_templates(self.widths, nbins)
         else:
             msg = f"Unknown template shape: {self.shape}"
             raise ValueError(msg)

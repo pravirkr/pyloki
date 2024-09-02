@@ -3,33 +3,11 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-import seaborn as sns
 from astropy import constants
-from numpy import polynomial
 from rich.logging import RichHandler
 from spyden import TemplateBank, snratio
 
-c_val = float(constants.c.value)
-g_val = float(constants.G.value)
-au_val = float(constants.au.value)
-m_sun_val = float(constants.M_sun.value)
-
-
-def cartesian_prod(arr_list: list[np.ndarray]) -> np.ndarray:
-    mesh = np.meshgrid(*arr_list, indexing="ij")
-    flattened_mesh = [arr.ravel() for arr in mesh]
-    return np.vstack(flattened_mesh).T
-
-
-def cartesian_prod_st(arr_list: list[np.ndarray]) -> np.ndarray:
-    """Twice as fast as cartesian_prod."""
-    la = len(arr_list)
-    dtype = np.result_type(*arr_list)
-    cart = np.empty([la] + [len(arr) for arr in arr_list], dtype=dtype)
-    for iarr, arr in enumerate(np.ix_(*arr_list)):
-        cart[iarr, ...] = arr
-    return cart.reshape(la, -1).T
-
+C_VAL = float(constants.c.value)
 
 def get_indices(
     proper_time: np.ndarray,
@@ -58,45 +36,6 @@ def get_indices(
     factor = nbins / periods[:, np.newaxis]
     indices = np.round((proper_time % periods[:, np.newaxis]) * factor) % nbins
     return indices.astype(np.uint32).squeeze()
-
-
-def pad_with_inf(param_list: list[np.ndarray]) -> np.ndarray:
-    """Pad a list of arrays with inf to make them all the same length.
-
-    Parameters
-    ----------
-    param_list : list[np.ndarray]
-        List of arrays to pad.
-
-    Returns
-    -------
-    np.ndarray
-        Padded array.
-    """
-    maxlen = np.max(list(map(len, param_list)))
-    output = np.zeros([len(param_list), maxlen])
-    output += np.inf
-    for iarr, arr in enumerate(param_list):
-        output[iarr][: len(arr)] = arr
-    return output
-
-
-def snail_access_scheme(nchunks: int, ref_idx: int) -> np.ndarray:
-    """Get an access pattern for the chunks.
-
-    Parameters
-    ----------
-    nchunks : int
-        number of chunks
-    ind_ref : int
-        index of the chunk to start with
-
-    Returns
-    -------
-    np.ndarray
-        access pattern for the chunks
-    """
-    return np.argsort(np.abs(np.arange(nchunks) - ref_idx))
 
 
 class Spyden:
@@ -165,35 +104,6 @@ class Spyden:
         return on_pulse_idx
 
 
-def generate_chebyshev_polys_table_numpy(order: int, n_derivs: int) -> np.ndarray:
-    tab = np.zeros((n_derivs + 1, order + 1, order + 1))
-    basis = [polynomial.chebyshev.Chebyshev.basis(i) for i in range(order + 1)]
-
-    for ideriv in range(n_derivs + 1):
-        for iorder, poly in enumerate(basis):
-            poly_coeffs = polynomial.chebyshev.cheb2poly(poly.deriv(ideriv).coef)
-            tab[ideriv, iorder, : len(poly_coeffs)] = poly_coeffs
-    return tab
-
-
-def generate_power_series_table_numpy(order_max: int, n_derivs: int) -> np.ndarray:
-    tab = np.zeros((n_derivs + 1, order_max + 1, order_max + 1))
-
-    for order in range(order_max + 1):
-        # Create power series polynomial
-        coeffs = np.zeros(order + 1)
-        coeffs[order] = 1 / np.math.factorial(order)
-        poly = polynomial.Polynomial(coeffs)
-
-        for deriv in range(n_derivs + 1):
-            # Get coefficients of the derivative
-            deriv_coeffs = poly.deriv(deriv).coef
-            # Pad with zeros if necessary
-            tab[deriv, order, : len(deriv_coeffs)] = deriv_coeffs
-
-    return tab
-
-
 def get_logger(
     name: str,
     *,
@@ -237,42 +147,3 @@ def get_logger(
         logger.addHandler(file_handler)
     return logger
 
-
-def set_seaborn(**rc_kwargs) -> None:
-    rc = {
-        # Fontsizes
-        "font.size": 16,
-        "xtick.labelsize": 16,
-        "ytick.labelsize": 16,
-        "legend.fontsize": 16,
-        "legend.title_fontsize": 16,
-        "axes.titlesize": 16,
-        "axes.labelsize": 16,
-        "xtick.direction": "in",
-        "xtick.minor.visible": True,
-        "xtick.top": False,
-        "ytick.direction": "in",
-        "ytick.minor.visible": True,
-        "ytick.right": False,
-        # Set line widths
-        "axes.axisbelow": "line",
-        "axes.linewidth": 1,
-        "lines.linewidth": 1.5,
-        "lines.markersize": 3,
-        "savefig.bbox": "tight",
-        "savefig.pad_inches": 0.05,
-        "font.serif": "Times",
-        "font.family": "serif",
-        "mathtext.fontset": "dejavuserif",
-        # Use LaTeX for math formatting
-        "text.usetex": True,
-        "text.latex.preamble": r"\usepackage{amsmath, amssymb}",  # {txfonts, mathptmx}
-    }
-    rc.update(rc_kwargs)
-    sns.set_theme(
-        context="paper",
-        style="ticks",
-        palette="colorblind",
-        font_scale=1,
-        rc=rc,
-    )

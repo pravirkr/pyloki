@@ -1,0 +1,185 @@
+from __future__ import annotations
+
+import numpy as np
+from matplotlib import pyplot as plt
+from matplotlib.offsetbox import AnchoredText
+from sigpyproc.core import filters as sig_filters
+
+from pruning import kernels, simulate
+from pruning.detect.scores import boxcar_snr_1d
+from pruning.utils.plotter import Table
+
+
+class TimeSeries:
+    def __init__(self, ts_e: np.ndarray, ts_v: np.ndarray, dt: float) -> None:
+        self._ts_e = np.asarray(ts_e, dtype=np.float32)
+        self._ts_v = np.asarray(ts_v, dtype=np.float32)
+        self._dt = dt
+
+    @property
+    def ts_e(self) -> np.ndarray:
+        return self._ts_e
+
+    @property
+    def ts_v(self) -> np.ndarray:
+        return self._ts_v
+
+    @property
+    def dt(self) -> float:
+        return self._dt
+
+    @property
+    def nsamps(self) -> int:
+        return len(self.ts_e)
+
+    @property
+    def tobs(self) -> float:
+        return self.nsamps * self.dt
+
+    def downsample(self, factor: int) -> TimeSeries:
+        ts_e = kernels.downsample_1d(self.ts_e, factor)
+        ts_v = kernels.downsample_1d(self.ts_v, factor)
+        return TimeSeries(ts_e, ts_v, self.dt)
+
+    def resample(self, accel: float) -> TimeSeries:
+        ts_e, ts_v = kernels.resample(self.ts_e, self.ts_v, self.dt, accel)
+        return TimeSeries(ts_e, ts_v, self.dt)
+
+    def fold_ephem(
+        self,
+        freq: float,
+        nbins: int,
+        nsubints: int = 1,
+        *,
+        normalize: bool = True,
+        mod_type: str = "derivative",
+        mod_kwargs: dict | None = None,
+    ) -> np.ndarray:
+        cycles = int(self.tobs * freq)
+        if cycles < 1:
+            msg = f"Period ({1/freq}) is less than the total data length ({self.tobs})"
+            raise ValueError(msg)
+        if nsubints < 1 or nsubints > cycles:
+            msg = f"subints must be >= 1 and <= {cycles}"
+            raise ValueError(msg)
+        if mod_kwargs is None:
+            mod_kwargs = {}
+        mod_func = simulate.type_to_mods[mod_type](**mod_kwargs)
+        proper_time = mod_func.generate(np.arange(0, self.tobs, self.dt), self.tobs / 2)
+        fold = kernels.brutefold(
+            self.ts_e,
+            self.ts_v,
+            proper_time,
+            freq,
+            nsubints,
+            nbins,
+        ).squeeze()
+        if normalize:
+            return np.divide(
+                fold[..., 0, :],
+                np.sqrt(fold[..., 1, :]),
+                out=np.full_like(fold[..., 0, :], np.nan),
+                where=~np.isclose(fold[..., 1, :], 0, atol=1e-5),
+            )
+        return fold
+
+    def plot_fold(
+        self,
+        freq: float,
+        fold_bins: int,
+        nsubints: int = 64,
+        mod_type: str = "derivative",
+        mod_kwargs: dict | None = None,
+        figsize: tuple[float, float] = (10, 6.5),
+        dpi: int = 100,
+        cmap: str = "magma_r",
+    ) -> plt.Figure:
+        ephem_fold = self.fold_ephem(
+            freq,
+            fold_bins,
+            nsubints=1,
+            mod_type=mod_type,
+            mod_kwargs=mod_kwargs,
+        )
+        ephem_fold_subints = self.fold_ephem(freq, fold_bins, nsubints=nsubints)
+        fold_bins = len(ephem_fold)
+        sig_boxcar = sig_filters.MatchedFilter(ephem_fold, np.arange(1, fold_bins // 2))
+        match_boxcar = boxcar_snr_1d(ephem_fold, np.arange(1, fold_bins // 2))
+        if mod_kwargs is None:
+            mod_kwargs = {"acc": 0, "jerk": 0, "snap": 0}
+
+        figure = plt.figure(figsize=figsize, dpi=dpi)
+        grid = figure.add_gridspec(
+            nrows=2,
+            ncols=2,
+            height_ratios=(1.5, 1),
+            width_ratios=(1, 1.5),
+        )
+        grid.update(left=0.1, right=0.98, bottom=0.08, top=0.95, hspace=0.2)
+        axtable = plt.subplot(grid[0, 0])
+        axsubints = plt.subplot(grid[0, 1])
+        axprofile = plt.subplot(grid[1, :])
+        ducy = sig_boxcar.best_width / len(ephem_fold)
+        table = Table(
+            col_off=[0.01, 0.75],
+            top_margin=0.1,
+            line_height=0.12,
+            fontsize=12,
+        )
+        table.add_row(["Tsamp", f"{self.dt*1e3:.3f}"])
+        table.add_row(["Period", 1 / freq])
+        table.add_row(["Accel", mod_kwargs.get("acc", 0)])
+        table.add_row(["Jerk", mod_kwargs.get("jerk", 0)])
+        table.add_row(["Snap", mod_kwargs.get("snap", 0)])
+        table.add_row(["Width", sig_boxcar.best_width])
+        table.add_row(["Ducy", f"{ducy:.3f}"])
+        table.plot(axtable)
+
+        axsubints.imshow(
+            ephem_fold_subints,
+            aspect="auto",
+            interpolation="none",
+            extent=(0, fold_bins, 0, self.tobs),
+            cmap=plt.get_cmap(cmap),
+            origin="lower",
+        )
+        axsubints.set_ylabel("Time (seconds)")
+        axsubints.set_xlabel("Phase bin")
+        axprofile.plot(
+            range(fold_bins),
+            ephem_fold,
+            color="#404040",
+            label="Folded Profile",
+        )
+        axprofile.plot(
+            range(fold_bins),
+            sig_boxcar.best_model,
+            color="#d62728",
+            alpha=0.65,
+            ls="--",
+            label="Boxcar template",
+        )
+        axprofile.set_xlim(0, fold_bins)
+        axprofile.set_xlabel("Phase bin")
+        axprofile.set_ylabel("Normalised amplitude")
+
+        textstr = (
+            f"S/N (Boxcar) = {sig_boxcar.snr:.2f}\n"
+            f"S/N (Boxcar, 1D) = {match_boxcar.max():.2f}\n"
+        )
+
+        at = AnchoredText(textstr, loc="upper left", prop={"size": 10}, frameon=True)
+        at.patch.set_boxstyle("round", pad=0, rounding_size=0.2)
+        axprofile.add_artist(at)
+        axprofile.legend(loc="upper right")
+        return figure
+
+    def __str__(self) -> str:
+        name = type(self).__name__
+        return (
+            f"{name} {{nsamps = {self.nsamps:d}, tsamp = {self.dt:.4e}, "
+            f"tobs = {self.tobs:.3f}}}"
+        )
+
+    def __repr__(self) -> str:
+        return str(self)

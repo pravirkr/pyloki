@@ -4,24 +4,27 @@ from typing import Callable
 
 import attrs
 import numpy as np
+from astropy import constants
 from numba import njit
 from scipy import optimize
 
-from pruning import math, utils
+from pruning.utils import math
 
 
 def semi_major_axis(mass: float, period: float) -> float:
     omega = 2 * np.pi / period
-    return (utils.m_sun_val * utils.g_val * mass / omega**2) ** (1 / 3) / utils.c_val
+    a = (constants.M_sun * constants.G * mass / omega**2) ** (1 / 3) / constants.c
+    return float(a.value)
 
 
 def mass_function(dv_over_c: float, period: float) -> float:
-    av = dv_over_c * utils.c_val / 2
+    av = dv_over_c * constants.c / 2
     omega = 2 * np.pi / period
-    return av**3 / omega / utils.g_val
+    f = av**3 / omega / constants.G
+    return float(f.value)
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def keplerian_nu(
     t_arr: np.ndarray,
     p_orb: float,
@@ -59,7 +62,7 @@ def keplerian_nu(
     return 2 * np.arctan(np.sqrt((1 + ecc) / (1 - ecc)) * np.tan(e_arr / 2))
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def keplerian_z(
     t_arr: np.ndarray,
     p_orb: float,
@@ -153,7 +156,7 @@ def find_max_deriv_bounds(
             errs.append(fit[1])
             fits.append(fit[0][::-1])
     factors = np.array([omega**i * math.fact(i) for i in range(deg + 1)])
-    return np.max(fits, 0) * utils.c_val * factors
+    return np.max(fits, 0) * constants.c.value * factors
 
 
 def keplerian_derivative_bounds(
@@ -166,7 +169,7 @@ def keplerian_derivative_bounds(
         x_max
         * omega_max**deriv_index
         * sum([ecc_max**k * (k + 1) ** deriv_index for k in range(100)])
-        * utils.c_val
+        * constants.c.value
     )
 
 
@@ -199,13 +202,13 @@ class KeplerianOrbit:
                         t_arr,
                         phi_orb,
                         p_orb,
-                        x_orb * utils.c_val,
+                        x_orb * constants.c.value,
                         np.pi / 2,
                         ecc_orb,
                         omega_ecc_orb,
                     ),
                 )
-                / utils.c_val
+                / constants.c.value
             )
             model_phases = kep_phases + const + lin * t_arr
             if ret_model_phases:
