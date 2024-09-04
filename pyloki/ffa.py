@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import njit, prange, types
 
-from pyloki.core import FFASearchDPFunctions, PulsarSearchConfig
+from pyloki.core import FFASearchDPFunctions
 from pyloki.utils import np_utils
 from pyloki.utils.misc import get_logger
 
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
     from numpy import typing as npt
 
+    from pyloki.config import PulsarSearchConfig
     from pyloki.io.timeseries import TimeSeries
 
 

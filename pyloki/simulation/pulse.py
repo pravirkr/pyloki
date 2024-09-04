@@ -5,11 +5,11 @@ import numpy as np
 from scipy import stats
 
 from pyloki.io.timeseries import TimeSeries
-from pyloki.simulate import modulate
+from pyloki.simulation import modulate
 
 
 @attrs.define(auto_attribs=True, kw_only=True)
-class SignalConfig:
+class PulseSignalConfig:
     """A pulsar signal generator configuration.
 
     Parameters
@@ -82,14 +82,14 @@ class SignalConfig:
         """Proper time array."""
         return self.mod_func.generate(np.arange(0, self.tobs, self.dt), self.tobs / 2)
 
-    def get_updated(self, update_dict: dict) -> SignalConfig:
+    def get_updated(self, update_dict: dict) -> PulseSignalConfig:
         new = attrs.asdict(self, filter=attrs.filters.exclude("_mod_func"))
         if update_dict is not None:
             new.update(update_dict)
         new_checked = {
             key: value for key, value in new.items() if key in attrs.asdict(self)
         }
-        return SignalConfig(**new_checked)
+        return PulseSignalConfig(**new_checked)
 
     def generate(
         self,

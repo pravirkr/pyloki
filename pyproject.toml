@@ -36,7 +36,7 @@ dependencies = [
     "matplotlib",
     "rocket-fft",
     "h5py",
-    "sigpyproc @ git+https://github.com/FRBs/sigpyproc.git",
+    "sigpyproc @ git+https://github.com/FRBs/sigpyproc3.git",
 ]
 
 [project.urls]

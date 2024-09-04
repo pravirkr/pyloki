@@ -1,25 +1,25 @@
 import numpy as np
 from numba import njit
 
-from pyloki.utils import math
+from pyloki.utils import np_utils
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def add(data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
     return data0 + data1
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def pack(data: np.ndarray) -> np.ndarray:
     return data
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def shift(data: np.ndarray, phase_shift: int) -> np.ndarray:
-    return math.nb_roll2d(data, phase_shift)
+    return np_utils.nb_roll2d(data, phase_shift)
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def get_trans_matrix(
     coord_cur: tuple[float, float],  # noqa: ARG001
     coord_prev: tuple[float, float],  # noqa: ARG001

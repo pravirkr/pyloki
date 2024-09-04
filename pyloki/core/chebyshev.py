@@ -4,9 +4,9 @@ import numpy as np
 from numba import njit, typed, types
 from numba.experimental import jitclass
 
-from pyloki import scores
 from pyloki.config import PulsarSearchConfig
 from pyloki.core import common, defaults
+from pyloki.detection import scoring
 from pyloki.utils import math, np_utils
 from pyloki.utils.misc import C_VAL
 
@@ -670,7 +670,7 @@ class PruningChebychevDPFunctions:
         - Score units should be log(P(D|pulsar(theta)) / P(D|noise)).
         - Maybe use it to keep track of a family of scores (profile width, etc).
         """
-        return scores.snr_score_func(combined_res)
+        return scoring.snr_score_func(combined_res)
 
     def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
         return defaults.add(data0, data1)

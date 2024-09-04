@@ -6,8 +6,8 @@ from matplotlib.offsetbox import AnchoredText
 from sigpyproc.core import filters as sig_filters
 
 from pyloki.core import common
-from pyloki.detect.scores import boxcar_snr_1d
-from pyloki.simulate.modulate import type_to_mods
+from pyloki.detection.scoring import boxcar_snr_1d
+from pyloki.simulation.modulate import type_to_mods
 from pyloki.utils import np_utils
 from pyloki.utils.plotter import Table
 
@@ -105,7 +105,13 @@ class TimeSeries:
         )
         ephem_fold_subints = self.fold_ephem(freq, fold_bins, nsubints=nsubints)
         fold_bins = len(ephem_fold)
-        sig_boxcar = sig_filters.MatchedFilter(ephem_fold, np.arange(1, fold_bins // 2))
+        sig_boxcar = sig_filters.MatchedFilter(
+            ephem_fold,
+            loc_method="norm",
+            scale_method="norm",
+            nbins_max=fold_bins // 2,
+            spacing_factor=1,
+        )
         match_boxcar = boxcar_snr_1d(ephem_fold, np.arange(1, fold_bins // 2))
         if mod_kwargs is None:
             mod_kwargs = {"acc": 0, "jerk": 0, "snap": 0}
@@ -121,7 +127,7 @@ class TimeSeries:
         axtable = plt.subplot(grid[0, 0])
         axsubints = plt.subplot(grid[0, 1])
         axprofile = plt.subplot(grid[1, :])
-        ducy = sig_boxcar.best_width / len(ephem_fold)
+        ducy = sig_boxcar.best_temp.width / len(ephem_fold)
         table = Table(
             col_off=[0.01, 0.75],
             top_margin=0.1,
@@ -133,7 +139,7 @@ class TimeSeries:
         table.add_row(["Accel", mod_kwargs.get("acc", 0)])
         table.add_row(["Jerk", mod_kwargs.get("jerk", 0)])
         table.add_row(["Snap", mod_kwargs.get("snap", 0)])
-        table.add_row(["Width", sig_boxcar.best_width])
+        table.add_row(["Width", sig_boxcar.best_temp.width])
         table.add_row(["Ducy", f"{ducy:.3f}"])
         table.plot(axtable)
 

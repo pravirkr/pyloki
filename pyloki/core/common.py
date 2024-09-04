@@ -4,7 +4,8 @@ import numpy as np
 from numba import njit, types, vectorize
 from numba.experimental import jitclass
 
-from pyloki import math, utils
+from pyloki.utils import math, np_utils
+from pyloki.utils.misc import C_VAL
 
 
 @vectorize(nopython=True, cache=True)
@@ -77,7 +78,7 @@ def param_step(
     if deriv < 2:
         msg = "deriv must be >= 2"
         raise ValueError(msg)
-    dparam = tsamp * math.fact(deriv) * utils.c_val / (tobs - t_ref) ** deriv
+    dparam = tsamp * math.fact(deriv) * C_VAL / (tobs - t_ref) ** deriv
     return tol * dparam
 
 
@@ -247,7 +248,7 @@ def resample(ts_e: np.ndarray, ts_v: np.ndarray, tsamp: float, accel: float) -> 
     ts_e_resamp = np.zeros_like(ts_e)
     ts_v_resamp = np.zeros_like(ts_v)
 
-    partial_calc = (accel * tsamp) / (2 * utils.c)
+    partial_calc = (accel * tsamp) / (2 * C_VAL)
     tot_drift = partial_calc * (nsamps // 2) ** 2
     last_bin = 0
     for isamp in range(nsamps):
@@ -332,7 +333,7 @@ def get_leaves(param_arr: types.ListType, dparams: np.ndarray) -> np.ndarray:
     np.ndarray
         Array of leaf parameter sets.
     """
-    param_cart = math.cartesian_prod(param_arr)
+    param_cart = np_utils.cartesian_prod(param_arr)
     param_mat = np.expand_dims(param_cart, axis=2)
     dparams_set = np.broadcast_to(np.expand_dims(dparams, 1), param_mat.shape)
     return np.concatenate((param_mat, dparams_set), axis=2)

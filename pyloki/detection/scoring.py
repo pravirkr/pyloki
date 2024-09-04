@@ -278,7 +278,8 @@ def generate_width_trials(
     return np.asarray(widths)
 
 
-@njit(cache=True, fastmath=True)
+# Note: No cache=True when using parallel=True (numba issue)
+@njit(fastmath=True)
 def boxcar_snr(
     data: np.ndarray,
     widths: np.ndarray,
@@ -291,7 +292,7 @@ def boxcar_snr(
     return snrs.reshape((*data.shape[:-1], widths.size))
 
 
-@njit(cache=True, parallel=True, fastmath=False)
+@njit(parallel=True, fastmath=False)
 def boxcar_snr_2d(
     folds: np.ndarray,
     widths: np.ndarray,
@@ -322,4 +323,24 @@ def boxcar_snr_1d(
         b = width * height / (size - width)
         dmax = np.max(prefix_sum[width : width + size] - prefix_sum[:size])
         snr[iw] = ((height + b) * dmax - b * total_sum) / stdnoise
+    return snr
+
+
+@njit(cache=True, fastmath=True)
+def boxcar_snr_1do(
+    norm_data: np.ndarray,
+    widths: np.ndarray,
+    stdnoise: float = 1.0,
+) -> np.ndarray:
+    size = len(norm_data)
+    data_cumsum = np.cumsum(norm_data)
+    total_sum = data_cumsum[-1]
+    prefix_sum = np.concatenate(
+        (data_cumsum, total_sum + np.cumsum(norm_data[: max(widths)])),
+    )
+    snr = np.zeros(len(widths), dtype=np.float32)
+    for iw, width in enumerate(widths):
+        height = 1 / np.sqrt(width)  # boxcar height = +h
+        dmax = np.max(prefix_sum[width : width + size] - prefix_sum[:size])
+        snr[iw] = height * dmax / stdnoise
     return snr

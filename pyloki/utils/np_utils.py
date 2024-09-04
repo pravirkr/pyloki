@@ -29,8 +29,8 @@ def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
         return idx - 1
     return idx
 
-
-@njit(cache=True, fastmath=True)
+# Note: no cache=True here, as it is not supported by numba
+@njit(fastmath=True)
 def np_apply_along_axis(func1d: Callable, axis: int, arr: np.ndarray) -> np.ndarray:
     if arr.ndim != 2:
         msg = "arr must be 2D"
@@ -51,7 +51,7 @@ def np_apply_along_axis(func1d: Callable, axis: int, arr: np.ndarray) -> np.ndar
     return result
 
 
-@njit(cache=True, fastmath=True)
+@njit(fastmath=True)
 def nb_max(array: np.ndarray, axis: int) -> np.ndarray:
     return np_apply_along_axis(np.max, axis, array)
 
