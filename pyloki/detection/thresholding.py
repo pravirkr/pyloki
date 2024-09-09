@@ -155,7 +155,11 @@ def measure_success(
         Success probability and the folds that passed the threshold.
     """
     folds_norm = folds / np.sqrt(var_cur * np.ones_like(folds))
-    widths = scoring.generate_width_trials(folds.shape[1], ducy_max=ducy_max, wtsp=1)
+    widths = scoring.generate_box_width_trials(
+        folds.shape[1],
+        ducy_max=ducy_max,
+        spacing_factor=1,
+    )
     scores_arr = np_utils.nb_max(scoring.boxcar_snr(folds_norm, widths), axis=1)
     good_scores_idx = np.nonzero(scores_arr > snr_thresh)[0]
     succ_prob = len(good_scores_idx) / len(scores_arr)
@@ -170,7 +174,11 @@ def measure_threshold(
     ducy_max: float = 0.2,
 ) -> tuple[float, float, np.ndarray]:
     folds_norm = folds / np.sqrt(var_cur * np.ones_like(folds))
-    widths = scoring.generate_width_trials(folds.shape[1], ducy_max=ducy_max, wtsp=1)
+    widths = scoring.generate_box_width_trials(
+        folds.shape[1],
+        ducy_max=ducy_max,
+        spacing_factor=1,
+    )
     scores_arr = np_utils.nb_max(scoring.boxcar_snr(folds_norm, widths), axis=1)
     n_surviving = int(survive_prob * len(scores_arr))
     good_scores_idx = np.flip(np.argsort(scores_arr))[: int(n_surviving)]

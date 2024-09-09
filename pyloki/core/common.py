@@ -90,6 +90,12 @@ def freq_step(tobs: int, nbins: int, f_max: float, tol: float) -> float:
 
 
 @njit
+def freq_step_approx(tobs: int, f_max: float, tsamp: float, tol: float) -> float:
+    m_cycle = tobs * f_max
+    return tol * f_max**2 * tsamp / (m_cycle - 1)
+
+
+@njit
 def period_step_init(tobs: float, nbins: int, p_min: float, tol: float) -> float:
     m_cycle = tobs / p_min
     tsamp_min = p_min / nbins
@@ -107,8 +113,11 @@ def branch_param(
     param_cur: float,
     dparam_cur: float,
     dparam_new: float,
+    param_min: float,
+    param_max: float,
 ) -> tuple[np.ndarray, float]:
-    """Refine a parameter range around a current value with a new step size.
+    """
+    Refine a parameter range around a current value with a new step size.
 
     Parameters
     ----------
@@ -118,6 +127,10 @@ def branch_param(
         current parameter step size (half-width of the range)
     dparam_new : float
         new parameter step size (half-width of the new range)
+    param_min : float
+        minimum value of the parameter range
+    param_max : float
+        maximum value of the parameter range
 
     Returns
     -------
@@ -127,6 +140,11 @@ def branch_param(
     if not (dparam_cur > 0 and dparam_new > 0):
         msg = "dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
+    if not (param_min <= param_cur <= param_max):
+        msg = "Invalid input: ensure param_min < param_cur < param_max."
+        raise ValueError(msg)
+    if dparam_new > (param_max - param_min) / 2:
+        return np.array([param_cur]), dparam_new
     n = 2 + int(np.ceil(dparam_cur / dparam_new))
     if n < 3:
         msg = "Invalid input: ensure dparam_cur > dparam_new."
@@ -141,7 +159,8 @@ def branch_param(
 
 @njit(cache=True, fastmath=True)
 def range_param(vmin: float, vmax: float, dv: float) -> np.ndarray:
-    """Return a range of parameters with a given step size.
+    """
+    Return a range of parameters with a given step size.
 
     Parameters
     ----------
@@ -339,7 +358,7 @@ def get_leaves(param_arr: types.ListType, dparams: np.ndarray) -> np.ndarray:
     return np.concatenate((param_mat, dparams_set), axis=2)
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def get_unique_indices(params: np.ndarray) -> np.ndarray:
     nparams = params.shape[0]
     unique_dict = {}
@@ -355,7 +374,7 @@ def get_unique_indices(params: np.ndarray) -> np.ndarray:
     return unique_indices[:count]
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def get_unique_indices_scores(params: np.ndarray, scores: np.ndarray) -> np.ndarray:
     nparams = params.shape[0]
     unique_dict: dict[int, bool] = {}
@@ -389,7 +408,8 @@ def get_unique_indices_scores(params: np.ndarray, scores: np.ndarray) -> np.ndar
     ],
 )
 class SuggestionStruct:
-    """A struct to hold suggestions for pruning.
+    """
+    A struct to hold suggestions for pruning.
 
     Parameters
     ----------
@@ -428,11 +448,19 @@ class SuggestionStruct:
     def nparams(self) -> int:
         return self.param_sets.shape[1]
 
+    @property
+    def score_max(self) -> float:
+        return np.max(self.scores) if self.size > 0 else 0
+
+    @property
+    def score_min(self) -> float:
+        return np.min(self.scores) if self.size > 0 else 0
+
     def get_new(self, max_sugg: int) -> SuggestionStruct:
         param_sets = np.zeros((max_sugg, self.nparams, 2))
         folds = np.zeros((max_sugg, *self.folds.shape[1:]), dtype=self.folds.dtype)
         scores = np.zeros(max_sugg)
-        backtracks = np.zeros((max_sugg, 2 + self.nparams))
+        backtracks = np.zeros((max_sugg, self.backtracks.shape[1]))
         return SuggestionStruct(param_sets, folds, scores, backtracks)
 
     def remove_repetitions(self) -> SuggestionStruct:
@@ -474,41 +502,3 @@ class SuggestionStruct:
         sug_new.backtracks[:ind_size] = self.backtracks[indices]
         sug_new._actual_size = ind_size  # noqa: SLF001
         return sug_new
-
-
-@jitclass(
-    spec=[
-        ("n_leaves_tot", types.i8),
-        ("n_leaves_phy", types.i8),
-        ("n_branches", types.i8),
-        ("n_leaves_surv", types.i8),
-    ],
-)
-class PruneStats:
-    def __init__(
-        self,
-        n_branches: int,
-        n_leaves_tot: int,
-        n_leaves_phy: int,
-        n_leaves_surv: int,
-    ) -> None:
-        self.n_branches = n_branches
-        self.n_leaves_tot = n_leaves_tot
-        self.n_leaves_phy = n_leaves_phy
-        self.n_leaves_surv = n_leaves_surv
-
-    @property
-    def lb_leaves(self) -> float:
-        return np.round(np.log2(self.n_leaves_tot), 2)
-
-    @property
-    def branch_frac_tot(self) -> float:
-        return np.round(self.n_leaves_tot / self.n_branches, 2)
-
-    @property
-    def branch_frac_phy(self) -> float:
-        return np.round(self.n_leaves_phy / self.n_branches, 2)
-
-    @property
-    def surv_frac(self) -> float:
-        return np.round(self.n_leaves_surv / self.n_leaves_tot, 2)

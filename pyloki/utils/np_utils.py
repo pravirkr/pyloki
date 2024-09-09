@@ -29,6 +29,7 @@ def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
         return idx - 1
     return idx
 
+
 # Note: no cache=True here, as it is not supported by numba
 @njit(fastmath=True)
 def np_apply_along_axis(func1d: Callable, axis: int, arr: np.ndarray) -> np.ndarray:
@@ -201,23 +202,6 @@ def pad_with_inf(param_list: list[np.ndarray]) -> np.ndarray:
         output[iarr][: len(arr)] = arr
     return output
 
-
-def snail_access_scheme(nchunks: int, ref_idx: int) -> np.ndarray:
-    """Get an access pattern for the chunks.
-
-    Parameters
-    ----------
-    nchunks : int
-        number of chunks
-    ind_ref : int
-        index of the chunk to start with
-
-    Returns
-    -------
-    np.ndarray
-        access pattern for the chunks
-    """
-    return np.argsort(np.abs(np.arange(nchunks) - ref_idx))
 
 @njit(cache=True, fastmath=True)
 def cpadpow2(arr: np.ndarray) -> np.ndarray:

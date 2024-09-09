@@ -105,7 +105,8 @@ def gen_chebyshev_polys_table_np(order: int, n_derivs: int) -> np.ndarray:
 
 @njit(cache=True, fastmath=True)
 def gen_chebyshev_polys_table(order_max: int, n_derivs: int) -> np.ndarray:
-    """Generate table of Chebyshev polynomials of the first kind and their derivatives.
+    """
+    Generate table of Chebyshev polynomials of the first kind and their derivatives.
 
     Parameters
     ----------
@@ -192,3 +193,8 @@ def gen_power_series_table_np(order_max: int, n_derivs: int) -> np.ndarray:
             tab[deriv, order, : len(deriv_coeffs)] = deriv_coeffs
 
     return tab
+
+
+@njit(cache=True, fastmath=True)
+def is_power_of_two(n: int) -> bool:
+    return (n != 0) and (n & (n - 1) == 0)

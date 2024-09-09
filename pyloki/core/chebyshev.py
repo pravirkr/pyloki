@@ -12,7 +12,7 @@ from pyloki.utils.misc import C_VAL
 
 
 @njit(cache=True, fastmath=True)
-def cheb_step(poly_order: int, tsamp: float, tol: int) -> np.ndarray:
+def poly_cheb_step(poly_order: int, tol: float, tsamp: float) -> np.ndarray:
     return np.zeros(poly_order + 1, np.float32) + ((tol * tsamp) * C_VAL)
 
 
@@ -21,24 +21,24 @@ def split_cheb_params(
     cheb_coeffs_cur: np.ndarray,
     dcheb_cur: np.ndarray,
     dcheb_opt: np.ndarray,
-    tol_time: float,
+    tol: float,
+    tsamp: float,
 ) -> np.ndarray:
     ncoeffs = len(dcheb_cur)
     leaf_params = typed.List.empty_list(types.float64[:])
     leaf_dparams = np.empty(ncoeffs, dtype=np.float64)
 
-    effective_tol = tol_time * C_VAL
+    effective_tol = tol * tsamp * C_VAL
     for i in range(ncoeffs):
         if abs(dcheb_cur[i]) > effective_tol:
             dcheb_opt[i] = min(dcheb_opt[i], 0.5 * dcheb_cur[i])
             leaf_param, dparam_act = common.branch_param(
-                dcheb_opt[i],
-                dcheb_cur[i],
                 cheb_coeffs_cur[i],
+                dcheb_cur[i],
+                dcheb_opt[i],
             )
         else:
-            leaf_param = np.array((cheb_coeffs_cur[i],))
-            dparam_act = dcheb_cur[i]
+            leaf_param, dparam_act = np.array([cheb_coeffs_cur[i]]), dcheb_cur[i]
         leaf_dparams[i] = dparam_act
         leaf_params.append(leaf_param)
     return common.get_leaves(leaf_params, leaf_dparams)
@@ -122,14 +122,14 @@ def chebychev_poly_evaluate(
 
 
 @njit(cache=True, fastmath=True)
-def get_leaves_chebyshev(
+def poly_chebyshev_leaves(
     param_arr: types.ListType,
     dparams: np.ndarray,
     poly_order: int,
-    t0: float,
-    scale: float,
+    coord_init: tuple[float, float],
 ) -> np.ndarray:
-    """Generate the leaf parameter sets for Chebyshev polynomials.
+    """
+    Generate the leaf parameter sets for Chebyshev polynomials.
 
     Parameters
     ----------
@@ -139,10 +139,11 @@ def get_leaves_chebyshev(
         Parameter step sizes for each dimension. Shape is (poly_order,).
     poly_order : int
         The order of the Chebyshev polynomial.
-    t0 : float
-        The reference time with respect to which the Chebyshev polynomials are defined.
-    scale : float
-        The scale of the Chebyshev polynomials.
+    coord_init : tuple[float, float]
+        The coordinate of the starting segment.
+        - coord_init[0] -> t0 (reference time with respect to which the Chebyshev
+            polynomials are defined).
+        - coord_init[1] -> scale (scale of the Chebyshev polynomials).
 
     Returns
     -------
@@ -160,6 +161,7 @@ def get_leaves_chebyshev(
                     the polynomials are defined in the range [-1, 1]).
 
     """
+    t0, scale = coord_init
     param_cart = np_utils.cartesian_prod(param_arr)
     conversion_matrix = np.linalg.inv(math.generalized_cheb_pols(poly_order, t0, scale))
 
@@ -174,23 +176,23 @@ def get_leaves_chebyshev(
     alpha_vec[:, 1, 1] = dparams[0] / param_cart[:, 1] * C_VAL
     alpha_vec[:, 2:-2, 1] = dparams[1:] * np.diag(conversion_matrix)[2:]
 
-    alpha_vec[:, -2, 0] = param_cart[:, 1]  # p0
+    alpha_vec[:, -2, 0] = param_cart[:, 1, 0]  # f0
     alpha_vec[:, -1, 0] = t0
     alpha_vec[:, -1, 1] = scale
     return alpha_vec
 
 
 @njit(cache=True, fastmath=True)
-def suggestion_struct_chebyshev(
+def poly_chebychev_suggestion_struct(
     fold_segment: np.ndarray,
     param_arr: types.ListType,
     dparams: np.ndarray,
     poly_order: int,
-    t0: float,
-    scale: float,
+    coord_init: tuple[float, float],
     score_func: types.FunctionType,
 ) -> common.SuggestionStruct:
-    """Generate a suggestion struct from a fold segment for Chebyshev polynomials.
+    """
+    Generate a suggestion struct from a fold segment.
 
     Parameters
     ----------
@@ -203,10 +205,8 @@ def suggestion_struct_chebyshev(
         Parameter step sizes for each dimension in a 1D array.
     poly_order : int
         The order of the Chebyshev polynomial to use.
-    t0 : float
-        The reference time with respect to which the Chebyshev polynomials are defined.
-    scale : float
-        The scale of the Chebyshev polynomials.
+    coord_init : tuple[float, float]
+        The coordinate of the starting segment (level 0).
     score_func : types.FunctionType
         Function to score the folded data.
 
@@ -218,7 +218,7 @@ def suggestion_struct_chebyshev(
     n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
     # \n_param_sets = n_accel * n_period
     # \param_sets_shape = [n_param_sets, poly_order + 3, 2]
-    param_sets = get_leaves_chebyshev(param_arr, dparams, poly_order, t0, scale)
+    param_sets = poly_chebyshev_leaves(param_arr, dparams, poly_order, coord_init)
     data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
     scores = np.zeros(n_param_sets)
     for iparam in range(n_param_sets):
@@ -230,32 +230,28 @@ def suggestion_struct_chebyshev(
 @njit(cache=True, fastmath=True)
 def poly_chebychev_branch2leaves(
     param_set: np.ndarray,
-    poly_order: int,
-    tolerance: float,
+    tol: float,
     tsamp: float,
+    poly_order: int,
 ) -> np.ndarray:
-    # multiplication by 2 is due to the middle out scheme.
-    # indexing_distance = 2*abs(new_index - reference_index) + 1
-    # total_duration = indexing_distance * duration
-
     cheb_coeffs_cur = param_set[0:-2, 0]
     dcheb_cur = param_set[0:-2, 1]
-    p0 = param_set[-2, 0]
-    t0 = param_set[-1, 0]
-    scale = param_set[-1, 1]
+    p0, _ = param_set[-2]
+    t0_cur, scale_cur = param_set[-1]
 
-    dcheb_opt = cheb_step(poly_order, tsamp, tolerance)
+    dcheb_opt = poly_cheb_step(poly_order, tol, tsamp)
     leafs_cheb = split_cheb_params(
         cheb_coeffs_cur,
-        dcheb_opt,
         dcheb_cur,
-        tolerance * tsamp,
+        dcheb_opt,
+        tol,
+        tsamp,
     )
     leaves = np.zeros((len(leafs_cheb), poly_order + 3, 2))
     leaves[:, :-2] = leafs_cheb
     leaves[:, -2, 0] = p0
-    leaves[:, -1, 0] = t0
-    leaves[:, -1, 1] = scale
+    leaves[:, -1, 0] = t0_cur
+    leaves[:, -1, 1] = scale_cur
     return leaves
 
 
@@ -263,12 +259,13 @@ def poly_chebychev_branch2leaves(
 def poly_chebychev_resolve(
     leaf: np.ndarray,
     param_arr: types.ListType,
-    t_ref_cur: float,
-    t_ref_init: float,
+    coord_add: tuple[float, float],
+    coord_init: tuple[float, float],
     nbins: int,
     cheb_table: np.ndarray,
-) -> tuple[tuple[int, int], int]:
-    """Resolve the leaf parameters to find the closest param index and phase shift.
+) -> tuple[np.ndarray, int]:
+    """
+    Resolve the leaf parameters to find the closest param index and phase shift.
 
     Parameters
     ----------
@@ -276,10 +273,10 @@ def poly_chebychev_resolve(
         The leaf parameter set.
     param_arr : types.ListType
         Parameter array containing the parameter values for the current segment.
-    t_ref_cur : float
-        The reference time for the current segment.
-    t_ref_init : float
-        The reference time for the initial segment (pruning level 0).
+    coord_add : tuple[float, float]
+        The coordinates of the added segment (level cur).
+    coord_init : tuple[float, float]
+        The coordinates for the starting segment (level 0).
     nbins : int
         Number of bins in the folded profile.
     cheb_table : np.ndarray
@@ -287,52 +284,58 @@ def poly_chebychev_resolve(
 
     Returns
     -------
-    tuple[tuple[int, int], int]
+    tuple[np.ndarray, int]
         The resolved parameter index and the relative phase shift.
 
     Notes
     -----
-    leaf is referenced to t0, so we need to shift it to t_ref_cur and t_ref
+    leaf is referenced to t0, so we need to shift it to t_ref_add and t_ref_init
     to get the resolved parameters index and phase shift.
+    Check if the t_ref should be in the middle of the segment.
 
     """
-    t0 = leaf[-1, 0]
-    tcheby = t_ref_cur - t0
-    tzero = t_ref_init - t0
+    t0, _ = leaf[-1]
+    tcheby = coord_add[0] - t0
+    tzero = coord_init[0] - t0
 
-    eff_degree = effective_degree(leaf[:-2, 0], 1000)
-    a_tcheby = chebychev_poly_evaluate(cheb_table, tcheby, leaf, 2, eff_degree)
-    v_tcheby = chebychev_poly_evaluate(cheb_table, tcheby, leaf, 1, eff_degree)
-    v_tzero = chebychev_poly_evaluate(cheb_table, tzero, leaf, 1, eff_degree)
-    d_tcheby = chebychev_poly_evaluate(cheb_table, tcheby, leaf, 0, eff_degree)
-    d_tzero = chebychev_poly_evaluate(cheb_table, tzero, leaf, 0, eff_degree)
+    eff_deg = effective_degree(leaf[:-2, 0], 1000)
+    a_tcheby = chebychev_poly_evaluate(cheb_table, tcheby, leaf, 2, eff_deg)
+    v_tcheby = chebychev_poly_evaluate(cheb_table, tcheby, leaf, 1, eff_deg)
+    v_tzero = chebychev_poly_evaluate(cheb_table, tzero, leaf, 1, eff_deg)
+    d_tcheby = chebychev_poly_evaluate(cheb_table, tcheby, leaf, 0, eff_deg)
+    d_tzero = chebychev_poly_evaluate(cheb_table, tzero, leaf, 0, eff_deg)
 
-    p0 = leaf[-2, 0]
+    f0 = leaf[-2, 0]
+
     new_a = a_tcheby
-    new_p = p0 * (1 - (v_tcheby - v_tzero) / C_VAL)
+    new_f = f0 * (1 + (v_tcheby - v_tzero) / C_VAL)
     delay = (d_tcheby - d_tzero) / C_VAL
 
-    relative_phase = common.get_phase_idx(t_ref_cur, p0, nbins, delay)
+    # phase is measured relative to the phase at 0
+    relative_phase = common.get_phase_idx(coord_add[0], f0, nbins, delay)
     idx_a = np_utils.find_nearest_sorted_idx(param_arr[-2], new_a)
-    idx_f = np_utils.find_nearest_sorted_idx(param_arr[-1], new_p)
-    return (idx_a, idx_f), relative_phase
+    idx_f = np_utils.find_nearest_sorted_idx(param_arr[-1], new_f)
+    index_prev = np.empty(len(param_arr), dtype=np.int64)
+    index_prev[-1] = idx_f
+    index_prev[-2] = idx_a
+    return index_prev, relative_phase
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebychev_coord_trans_matrix(
+def poly_chebychev_transform_matrix(
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
     poly_order: int,
 ) -> np.ndarray:
-    t0_prev, scale_prev = coord_prev
     t0_cur, scale_cur = coord_cur
-    cheb_pols_prev = math.generalized_cheb_pols(poly_order, scale_prev, t0_prev)
-    cheb_pols_cur = math.generalized_cheb_pols(poly_order, scale_cur, t0_cur)
+    t0_prev, scale_prev = coord_prev
+    cheb_pols_cur = math.generalized_cheb_pols(poly_order, t0_cur, scale_cur)
+    cheb_pols_prev = math.generalized_cheb_pols(poly_order, t0_prev, scale_prev)
     return np.dot(cheb_pols_prev, np.linalg.inv(cheb_pols_cur))
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebychev_coord_trans(
+def poly_chebychev_transform(
     leaf: np.ndarray,
     coord_ref: tuple[float, float],
     trans_matrix: np.ndarray,
@@ -347,21 +350,20 @@ def poly_chebychev_coord_trans(
     dparams_new = np.diag(trans_matrix) * dparams  # Violent ignorance approach
     leaf_trans[:-2, 0] = params_new
     leaf_trans[:-2, 1] = dparams_new
-    leaf_trans[-2, 0] = leaf[-2, 0]
-    leaf_trans[-1, 0] = coord_ref[0]
-    leaf_trans[-1, 1] = coord_ref[1]
+    leaf_trans[-2] = leaf[-2]
+    leaf_trans[-1] = coord_ref
     return leaf_trans
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebychev_physical_validation(
+def poly_chebychev_validate(
     leaves: np.ndarray,
-    tcheby: float,
-    tzero: float,
+    t_ref_add: float,
+    t_ref_init: float,
     validation_params: tuple[np.ndarray, np.ndarray, float],
-    tsegment_ffa: float,
-    derivative_bounds: np.ndarray,
-    num_validation: int,
+    tseg_ffa: float,
+    deriv_bounds: np.ndarray,
+    n_valid: int,
     cheb_table: np.ndarray,
     period_bounds: np.ndarray,
 ) -> np.ndarray:
@@ -370,20 +372,19 @@ def poly_chebychev_physical_validation(
     t0 = leaves[0, -1, 0]
     # Important not to check on the segment edges because quantization effects
     # may cause unphysical derivatives that are later corrected.
-    time_arr = (
-        np.linspace(
-            tzero + 3 * tsegment_ffa / 2,
-            tcheby - tsegment_ffa / 2,
-            num_validation,
-        )
-        - t0
+    tcheby = t_ref_add - t0
+    tzero = t_ref_init - t0
+    time_arr = np.linspace(
+        tzero + 3 * tseg_ffa / 2,
+        tcheby - tseg_ffa / 2,
+        n_valid,
     )
     for ileaf in range(nleaves):
         mask[ileaf] = leaf_validate_physical(
             leaves[ileaf],
             time_arr,
             validation_params,
-            derivative_bounds,
+            deriv_bounds,
             cheb_table,
             period_bounds,
         )
@@ -396,7 +397,7 @@ def leaf_validate_physical(
     leaf: np.ndarray,
     time_arr: np.ndarray,
     validation_params: tuple[np.ndarray, np.ndarray, float],
-    derivative_bounds: np.ndarray,
+    deriv_bounds: np.ndarray,
     cheb_table: np.ndarray,
     period_bounds: np.ndarray,
 ) -> bool:
@@ -415,7 +416,7 @@ def leaf_validate_physical(
     if max_diff < 3.2 * st and min_diff < 3.2 * st and is_epicycle_fit:
         p0 = leaf[-2, 0]
         good = True
-        for deriv_index in range(1, len(derivative_bounds)):
+        for deriv_index in range(1, len(deriv_bounds)):
             values = chebychev_poly_evaluate(
                 cheb_table,
                 time_arr,
@@ -424,9 +425,7 @@ def leaf_validate_physical(
                 eff_degree,
             )
             if deriv_index == 1:
-                if (np.max(values) - np.min(values)) > 2 * derivative_bounds[
-                    deriv_index
-                ]:
+                if (np.max(values) - np.min(values)) > 2 * deriv_bounds[deriv_index]:
                     good = False
                     break
                 if (((1 - np.min(values) / C_VAL) * p0) < period_bounds[0]) or (
@@ -434,7 +433,7 @@ def leaf_validate_physical(
                 ):
                     good = False
                     break
-            elif np.max(np.abs(values)) > derivative_bounds[deriv_index]:
+            elif np.max(np.abs(values)) > deriv_bounds[deriv_index]:
                 good = False
                 break
     return good
@@ -459,8 +458,7 @@ def err_epicycle_fit(
         dot_mat = np.linalg.inv(np.dot(mat, mat.T))
         x = np.dot(dot_mat, np.dot(mat, values_arr))
         err = np.max(np.abs(np.dot(mat.T, x) - values_arr))
-        if err < min_err:
-            min_err = err
+        min_err = min(err, min_err)
     return min_err
 
 
@@ -475,26 +473,21 @@ def err_epicycle_fit_fast(
         x = np.dot(mat_list_right[i], values_arr)
         err_vec = np.dot(mat_list_left[i], x) - values_arr
         err = np.max(np.abs(err_vec))
-        if err < min_err:
-            min_err = err
+        min_err = min(err, min_err)
     return min_err
 
 
 @njit(cache=True, fastmath=True)
 def prepare_epicyclic_validation_params(
     tcheby: float,
-    tsegment_ffa: float,
-    num_validation: int,
+    tseg_ffa: float,
+    n_valid: int,
     omega_min: float,
     omega_max: float,
     x_max: float,
     ecc_max: float,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    time_arr = np.linspace(
-        3 * tsegment_ffa / 2,
-        tcheby - tsegment_ffa / 2,
-        num_validation,
-    )
+    time_arr = np.linspace(3 * tseg_ffa / 2, tcheby - tseg_ffa / 2, n_valid)
     epicycle_bound = 2 * x_max * ecc_max**2 * C_VAL
     d_omega = ecc_max**2 / (time_arr[-1] - time_arr[0])
     omega_arr = np.arange(omega_min, omega_max, d_omega)
@@ -526,13 +519,13 @@ def prepare_epicyclic_validation_params(
 
 @jitclass(
     spec=[
-        ("cfg", PulsarSearchConfig.class_type.instance_type),  # type: ignore [attr-defined]
+        ("cfg", PulsarSearchConfig.class_type.instance_type),
         ("param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
         ("dparams", types.f8[:]),
-        ("tsegment_ffa", types.f8),
+        ("tseg_ffa", types.f8),
         ("poly_order", types.i8),
-        ("n_validation_derivs", types.i8),
-        ("_cheb_table", types.f8[:, :]),
+        ("n_derivs", types.i8),
+        ("cheb_table", types.f8[:, :]),
     ],
 )
 class PruningChebychevDPFunctions:
@@ -541,29 +534,27 @@ class PruningChebychevDPFunctions:
         cfg: PulsarSearchConfig,
         param_arr: types.ListType[types.Array],
         dparams: np.ndarray,
-        tsegment_ffa: float,
-        poly_order: int,
-        n_validation_derivs: int,
+        tseg_ffa: float,
+        poly_order: int = 13,
+        n_derivs: int = 6,
     ) -> None:
         self.cfg = cfg
         self.param_arr = param_arr
-        # / dparam = np.array([[self.ds, self.dj, self.da, self.dp]])
         self.dparams = dparams
-        self.tsegment_ffa = tsegment_ffa
-        self._cheb_table = self._compute_cheb_table(poly_order, n_validation_derivs)
+        self.tseg_ffa = tseg_ffa
+        self.poly_order = poly_order
+        self.n_derivs = n_derivs
+        self.cheb_table = math.gen_chebyshev_polys_table(poly_order, n_derivs)
 
-    @property
-    def cheb_table(self) -> np.ndarray:
-        return self._cheb_table
-
-    def load(self, fold: np.ndarray, index: int) -> np.ndarray:
-        """Load the data for the given index from the fold.
+    def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
+        """
+        Load the data for the given segment index from the folded data structure.
 
         Parameters
         ----------
         fold : np.ndarray
             The folded data structure to load from.
-        index : int
+        seg_idx : int
             Segment index to load from the fold.
 
         Returns
@@ -582,27 +573,32 @@ class PruningChebychevDPFunctions:
         - Implement it as a class, and pass its loading function here.
 
         """
-        return fold[index]
+        return fold[seg_idx]
 
     def resolve(
         self,
         leaf: np.ndarray,
-        seg_cur: int,
-        seg_ref: int,
-    ) -> tuple[tuple[int, int], int]:
-        t_ref_cur = (seg_cur + 1 / 2) * self.tsegment_ffa
-        t_ref_init = (seg_ref + 1 / 2) * self.tsegment_ffa
+        coord_add: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> tuple[np.ndarray, int]:
+        coord_add = (coord_add[0] * self.tseg_ffa, coord_add[1] * self.tseg_ffa)
+        coord_init = (coord_init[0] * self.tseg_ffa, coord_init[1] * self.tseg_ffa)
         return poly_chebychev_resolve(
             leaf,
             self.param_arr,
-            t_ref_cur,
-            t_ref_init,
+            coord_add,
+            coord_init,
             self.cfg.nbins,
             self.cheb_table,
         )
 
-    def branch(self, param_set: np.ndarray) -> np.ndarray:
-        """Branch the current parameter set into the finer grid of parameters (leaves).
+    def branch(
+        self,
+        param_set: np.ndarray,
+        coord_cur: tuple[float, float],
+    ) -> np.ndarray:
+        """
+        Branch the current parameter set into the finer grid of parameters (leaves).
 
         Parameters
         ----------
@@ -614,46 +610,47 @@ class PruningChebychevDPFunctions:
         np.ndarray
             The branched parameter set.
         """
+        coord_cur = (coord_cur[0] * self.tseg_ffa, coord_cur[1] * self.tseg_ffa)
         return poly_chebychev_branch2leaves(
             param_set,
-            self.poly_order,
-            self.cfg.tolerance,
+            self.cfg.tol,
             self.cfg.tsamp,
+            self.poly_order,
         )
 
     def suggest(
         self,
         fold_segment: np.ndarray,
-        ref_index: int,
+        coord_init: tuple[float, float],
     ) -> common.SuggestionStruct:
-        """Generate an initial suggestion struct for the starting segment.
+        """
+        Generate an initial suggestion struct for the starting segment.
 
         Parameters
         ----------
         fold_segment : np.ndarray
             The folded data segment to generate the suggestion for.
-        ref_index : int
-            The reference index of the segment.
+        coord_init : tuple[float, float]
+            The coordinate of the starting segment.
 
         Returns
         -------
         common.SuggestionStruct
             The initial suggestion struct for the segment.
         """
-        t_ref = self.tsegment_ffa * (ref_index + 1 / 2)
-        scale = self.tsegment_ffa / 2
-        return suggestion_struct_chebyshev(
+        coord_init = (coord_init[0] * self.tseg_ffa, coord_init[1] * self.tseg_ffa)
+        return poly_chebychev_suggestion_struct(
             fold_segment,
             self.param_arr,
             self.dparams,
             self.poly_order,
-            t_ref,
-            scale,
+            coord_init,
             self.score,
         )
 
     def score(self, combined_res: np.ndarray) -> float:
-        """Calculate the statistical detection score of the combined fold.
+        """
+        Calculate the statistical detection score of the combined fold.
 
         Parameters
         ----------
@@ -681,46 +678,21 @@ class PruningChebychevDPFunctions:
     def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
         return defaults.shift(data, phase_shift)
 
-    def get_validation_params(
-        self,
-        tcheby: float,
-    ) -> tuple[np.ndarray, np.ndarray, float]:
-        """Prepare the validation parameters for the epicyclic validation.
-
-        Parameters
-        ----------
-        tcheby : float
-            The Chebyshev time to prepare the validation parameters for.
-
-        Returns
-        -------
-        tuple[np.ndarray, np.ndarray, float]
-            The validation parameters for the epicyclic validation.
-        """
-        return prepare_epicyclic_validation_params(
-            tcheby,
-            self.tsegment_ffa,
-            self.num_validation,
-            self.omega_bounds,
-            self.x_max,
-            self.ecc_max,
-        )
-
-    def validate_physical(
+    def validate(
         self,
         leaves: np.ndarray,
-        tcheby: float,
-        tzero: float,
-        validation_params: np.ndarray,
+        coord_valid: tuple[float, float],
+        validation_params: tuple[np.ndarray, np.ndarray, float],
     ) -> np.ndarray:
-        """Validate which of the leaves are physical.
+        """
+        Validate which of the leaves are physical.
 
         Parameters
         ----------
         leaves : np.ndarray
             Set of leaves (parameter sets) to validate.
-        indices_arr : np.ndarray
-            Segment access scheme till now.
+        coord_valid : np.ndarray
+            hacky way to pass min and max
         validation_params : np.ndarray
             Pre-computed validation parameters for the physical validation.
 
@@ -736,33 +708,65 @@ class PruningChebychevDPFunctions:
         - pruning scans only functions that are physical at position (t/2).
         But same bounds apply everywhere.
         """
-        return poly_chebychev_physical_validation(
+        t_ref_add = self.tseg_ffa * coord_valid[1]
+        t_ref_init = self.tseg_ffa * coord_valid[0]
+        return poly_chebychev_validate(
             leaves,
-            tcheby,
-            tzero,
+            t_ref_add,
+            t_ref_init,
             validation_params,
             self.tsegment_ffa,
-            self.derivative_bounds,
-            self.num_validation,
+            self.deriv_bounds,
+            self.n_valid,
             self.cheb_table,
             self.period_bounds,
         )
 
-    def get_trans_matrix(
+    def transform(
+        self,
+        leaf: np.ndarray,
+        coord_cur: tuple[float, float],
+        trans_matrix: np.ndarray,
+    ) -> np.ndarray:
+        coord_cur = (self.tseg_ffa * coord_cur[0], self.tseg_ffa * coord_cur[1])
+        return poly_chebychev_transform(leaf, coord_cur, trans_matrix)
+
+    def get_transform_matrix(
         self,
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
     ) -> np.ndarray:
-        return poly_chebychev_coord_trans_matrix(
+        coord_cur = (self.tseg_ffa * coord_cur[0], self.tseg_ffa * coord_cur[1])
+        coord_prev = (self.tseg_ffa * coord_prev[0], self.tseg_ffa * coord_prev[1])
+        return poly_chebychev_transform_matrix(
             coord_cur,
             coord_prev,
             self.poly_order,
         )
 
-    def transform_coords(
+    def get_validation_params(
         self,
-        leaf: np.ndarray,
-        coord_ref: tuple[float, float],
-        trans_matrix: np.ndarray,
-    ) -> np.ndarray:
-        return poly_chebychev_coord_trans(leaf, coord_ref, trans_matrix)
+        coord_add: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """
+        Prepare the validation parameters for the epicyclic validation.
+
+        Parameters
+        ----------
+        coord_add : float
+            The Chebyshev time to prepare the validation parameters for.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray, float]
+            The validation parameters for the epicyclic validation.
+        """
+        t_ref = self.tseg_ffa * (coord_add[1] - coord_add[0])
+        return prepare_epicyclic_validation_params(
+            t_ref,
+            self.tsegment_ffa,
+            self.num_validation,
+            self.omega_bounds,
+            self.x_max,
+            self.ecc_max,
+        )

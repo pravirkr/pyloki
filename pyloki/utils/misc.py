@@ -1,13 +1,28 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 from astropy import constants
 from rich.logging import RichHandler
+from rich.progress import (
+    BarColumn,
+    Progress,
+    ProgressColumn,
+    ProgressType,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
+from rich.text import Text
 from spyden import TemplateBank, snratio
 
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Sequence
+
 C_VAL = float(constants.c.value)
+
 
 def get_indices(
     proper_time: np.ndarray,
@@ -147,3 +162,49 @@ def get_logger(
         logger.addHandler(file_handler)
     return logger
 
+
+class ScoreColumn(ProgressColumn):
+    def __init__(self) -> None:
+        super().__init__()
+        self.score = 0.0
+
+    def update_score(self, score: float) -> None:
+        self.score = score
+
+    def render(self, task: ProgressType) -> Text:  # noqa: ARG002
+        return Text(f"Score: {self.score:.2f}", style="cyan")
+
+
+def prune_track(
+    sequence: Sequence[ProgressType] | Iterable[ProgressType],
+    description: str = "Working...",
+    total: float | None = None,
+    get_score: Callable[[], float] | None = None,
+) -> Iterable[ProgressType]:
+    columns: list[ProgressColumn] = (
+        [TextColumn("[progress.description]{task.description}")] if description else []
+    )
+    columns.extend(
+        (
+            BarColumn(),
+            TaskProgressColumn(show_speed=True),
+            TextColumn("•"),
+            TimeRemainingColumn(elapsed_when_finished=True),
+            TextColumn("•"),
+        ),
+    )
+    score_column = ScoreColumn()
+    columns.append(score_column)
+    progress = Progress(*columns)
+
+    task_id = progress.add_task(description, total=total)
+
+    def track_progress() -> Iterable[ProgressType]:
+        for item in sequence:
+            if get_score:
+                score_column.update_score(get_score())
+            progress.update(task_id, advance=1)
+            yield item
+
+    with progress:
+        yield from track_progress()

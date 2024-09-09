@@ -1,11 +1,13 @@
-from .basic import FFASearchDPFunctions, PruningDPFunctions
+from .basic import FFASearchDPFunctions, PruningTaylorDPFunctions
 from .chebyshev import PruningChebychevDPFunctions
-from .common import PruneStats, SuggestionStruct
+from .common import SuggestionStruct
+from .defaults import set_ffa_load_func, set_prune_load_func
 
 __all__ = [
     "FFASearchDPFunctions",
     "PruningChebychevDPFunctions",
-    "PruningDPFunctions",
+    "PruningTaylorDPFunctions",
     "SuggestionStruct",
-    "PruneStats",
+    "set_ffa_load_func",
+    "set_prune_load_func",
 ]

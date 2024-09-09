@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+import ctypes
+import statistics
+import time
+from collections import defaultdict
+from contextlib import ContextDecorator
+from typing import Callable, ClassVar
+
+import attrs
+import numpy as np
+from numba import njit
+from typing_extensions import Self
+
+# Access the _PyTime_AsSecondsDouble and _PyTime_GetSystemClock functions from pythonapi
+get_system_clock = ctypes.pythonapi._PyTime_GetSystemClock  # noqa: SLF001
+as_seconds_double = ctypes.pythonapi._PyTime_AsSecondsDouble  # noqa: SLF001
+
+# Set the argument types and return types of the functions
+get_system_clock.argtypes = []
+get_system_clock.restype = ctypes.c_int64
+
+as_seconds_double.argtypes = [ctypes.c_int64]
+as_seconds_double.restype = ctypes.c_double
+
+
+@njit
+def nb_time_now() -> float:
+    system_clock = get_system_clock()
+    return as_seconds_double(system_clock)
+
+
+@attrs.define(slots=True)
+class TimingStats:
+    count: int = attrs.field(default=0, init=False)
+    total: float = attrs.field(default=0.0, init=False)
+    min: float = attrs.field(default=np.inf, init=False)
+    max: float = attrs.field(default=0.0, init=False)
+    _values: list[float] = attrs.field(factory=list, repr=False, init=False)
+
+    def add(self, value: float) -> None:
+        self.count += 1
+        self.total += value
+        self.min = min(self.min, value)
+        self.max = max(self.max, value)
+        self._values.append(value)
+
+    @property
+    def mean(self) -> float:
+        return self.total / self.count if self.count else 0
+
+    @property
+    def median(self) -> float:
+        return statistics.median(self._values) if self._values else 0.0
+
+    @property
+    def stdev(self) -> float:
+        return statistics.stdev(self._values) if len(self._values) > 1 else 0.0
+
+
+@attrs.define(auto_attribs=True, slots=True)
+class Timer(ContextDecorator):
+    timers: ClassVar[defaultdict[str, TimingStats]] = defaultdict(TimingStats)
+    name: str | None = None
+    logger: Callable[[str], None] | None = None
+    text: str | Callable[[float], str] = attrs.field(init=False)
+    last: float = attrs.field(default=np.nan, init=False)
+    _start_time: float | None = attrs.field(default=None, init=False, repr=False)
+
+    def __attrs_post_init__(self) -> None:
+        if self.name:
+            self.text = f"{self.name} finished, Elapsed time: {{:.3f}} seconds"
+        else:
+            self.text = "Elapsed time: {:.3f} seconds"
+
+    def start(self) -> None:
+        """Start a new timer."""
+        if self._start_time is not None:
+            msg = f"Timer {self.name} is already running. Call stop() first."
+            raise RuntimeError(msg)
+        self._start_time = time.perf_counter()
+
+    def stop(self) -> float:
+        """Stop the current timer and return the elapsed time."""
+        if self._start_time is None:
+            msg = f"Timer {self.name} is not running. Call start() first."
+            raise RuntimeError(msg)
+        self.last = time.perf_counter() - self._start_time
+        self._start_time = None
+
+        if self.logger:
+            if callable(self.text):
+                text = self.text(self.last)
+            else:
+                text = self.text.format(self.last)
+            self.logger(text)
+        if self.name:
+            self.timers[self.name].add(self.last)
+        return self.last
+
+    def __enter__(self) -> Self:
+        """Start a new timer as a context manager."""
+        self.start()
+        return self
+
+    def __exit__(self, *exc_info) -> None:  # noqa: ANN002
+        """Stop the context manager timer."""
+        self.stop()
