@@ -22,7 +22,8 @@ from pyloki.utils import math
     ],
 )
 class PulsarSearchConfig:
-    """Class to hold the configuration for the polynomial search.
+    """
+    Class to hold the configuration for the polynomial search.
 
     Parameters
     ----------
@@ -127,16 +128,15 @@ class PulsarSearchConfig:
             dparams[-deriv] = self._deriv_step(tseg_cur, deriv)
         return dparams
 
-    def get_updated_dparams(self, param_steps: types.ListType) -> np.ndarray:
-        if len(param_steps) != self.nparams:
-            msg = f"param_steps must have length {self.nparams}, got {len(param_steps)}"
-            raise ValueError(msg)
-        dparams = np.zeros_like(self.dparams)
+    def get_dparams_limited(self, ffa_level: int) -> np.ndarray:
+        dparams = self.get_dparams(ffa_level)
+        dparams_lim = np.zeros_like(dparams)
         for iparam in range(self.nparams):
             if iparam == self.nparams - 1:
-                dparams[iparam] = param_steps[iparam]
-            dparams[iparam] = min(self.dparams[iparam], param_steps[iparam])
-        return dparams
+                dparams_lim[iparam] = dparams[iparam]
+            dparam_diff = self.param_limits[iparam][1] - self.param_limits[iparam][0]
+            dparams_lim[iparam] = min(dparam_diff, dparams[iparam])
+        return dparams_lim
 
     def get_param_arr(self, dparams: np.ndarray) -> types.ListType[types.Array]:
         """

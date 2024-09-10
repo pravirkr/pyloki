@@ -25,7 +25,7 @@ def load_folds_1d(fold: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndar
     np.ndarray
         Fold with shape (2, nbins).
     """
-    return fold[iseg, param_idx[0]]
+    return fold[iseg, param_idx[-1]]
 
 
 @njit(cache=True, fastmath=True)
@@ -47,19 +47,19 @@ def load_folds_2d(fold: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndar
     np.ndarray
         Fold with shape (2, nbins).
     """
-    return fold[iseg, param_idx[0], param_idx[1]]
+    return fold[iseg, param_idx[-2], param_idx[-1]]
 
 
 @njit(cache=True, fastmath=True)
 def load_folds_3d(fold: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
     """Fold shape: (nsegments, njerks, naccels, nfreqs, 2, nbins)."""
-    return fold[iseg, param_idx[0], param_idx[1], param_idx[2]]
+    return fold[iseg, param_idx[-3], param_idx[-2], param_idx[-1]]
 
 
 @njit(cache=True, fastmath=True)
 def load_folds_4d(fold: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
     """Fold shape: (nsegments, nsnap, njerks, naccels, nfreqs, 2, nbins)."""
-    return fold[iseg, param_idx[0], param_idx[1], param_idx[2], param_idx[3]]
+    return fold[iseg, param_idx[-4], param_idx[-3], param_idx[-2], param_idx[-1]]
 
 
 @njit(cache=True, fastmath=True)

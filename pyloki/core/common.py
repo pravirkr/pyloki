@@ -32,21 +32,6 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
     return int(np.round(phase * nbins)) % nbins
 
 
-@njit(cache=True)
-def get_phase_idx_helper(
-    proper_time: float,
-    freq: float,
-    nbins: int,
-    delay: float,
-) -> int:
-    if proper_time >= 0:
-        return get_phase_idx(proper_time, freq, nbins, delay)
-    phase_abs = get_phase_idx(abs(proper_time), freq, nbins, delay)
-    phase_dist = get_phase_idx(2 * abs(proper_time), freq, nbins, delay)
-    phase_neg = phase_abs - phase_dist
-    return phase_neg + nbins if phase_neg < 0 else phase_neg
-
-
 @njit
 def param_step(
     tobs: float,
@@ -55,7 +40,8 @@ def param_step(
     tol: float,
     t_ref: float = 0,
 ) -> float:
-    """Calculate the parameter step size for polynomial search.
+    """
+    Calculate the parameter step size for polynomial search.
 
     Parameters
     ----------
@@ -83,6 +69,20 @@ def param_step(
 
 
 @njit
+def param_step_shift(
+    dparam_1: float,
+    dparam_2: float,
+    tobs: float,
+    tsamp: float,
+    deriv: int,
+    tol: float,
+    t_ref: float = 0,
+) -> float:
+    factor = (tobs - t_ref) ** deriv / (tol * tsamp * math.fact(deriv) * C_VAL)
+    return abs(dparam_1 - dparam_2) * factor
+
+
+@njit
 def freq_step(tobs: int, nbins: int, f_max: float, tol: float) -> float:
     m_cycle = tobs * f_max
     tsamp_min = 1 / (f_max * nbins)
@@ -96,6 +96,20 @@ def freq_step_approx(tobs: int, f_max: float, tsamp: float, tol: float) -> float
 
 
 @njit
+def freq_step_shift(
+    df_1: float,
+    df_2: float,
+    tobs: float,
+    tsamp: float,
+    f_cur: float,
+    tol: float,
+) -> float:
+    m_cycle = tobs * f_cur
+    factor = (m_cycle - 1) / (tol * f_cur**2 * tsamp)
+    return abs(df_1 - df_2) * factor
+
+
+@njit
 def period_step_init(tobs: float, nbins: int, p_min: float, tol: float) -> float:
     m_cycle = tobs / p_min
     tsamp_min = p_min / nbins
@@ -106,6 +120,20 @@ def period_step_init(tobs: float, nbins: int, p_min: float, tol: float) -> float
 def period_step(tobs: float, tsamp: int, p_min: float, tol: float) -> float:
     m_cycle = tobs / p_min
     return tol * (tsamp * 2) / (m_cycle - 1)
+
+
+@njit
+def period_step_shift(
+    dp_1: float,
+    dp_2: float,
+    tobs: float,
+    tsamp: float,
+    p_cur: float,
+    tol: float,
+) -> float:
+    m_cycle = tobs / p_cur
+    factor = (m_cycle - 1) / (tol * (tsamp * 2))
+    return abs(dp_1 - dp_2) * factor
 
 
 @njit(cache=True, fastmath=True)
@@ -144,7 +172,7 @@ def branch_param(
         msg = "Invalid input: ensure param_min < param_cur < param_max."
         raise ValueError(msg)
     if dparam_new > (param_max - param_min) / 2:
-        return np.array([param_cur]), dparam_new
+        return np.array([param_cur]), dparam_cur
     n = 2 + int(np.ceil(dparam_cur / dparam_new))
     if n < 3:
         msg = "Invalid input: ensure dparam_cur > dparam_new."
@@ -192,7 +220,8 @@ def range_param(vmin: float, vmax: float, dv: float) -> np.ndarray:
 
 @njit(cache=True)
 def interpolate_missing(profile: np.ndarray, count: np.ndarray) -> np.ndarray:
-    """Interpolate missing values in a profile.
+    """
+    Interpolate missing values in a profile.
 
     Parameters
     ----------
@@ -218,7 +247,8 @@ def brutefold(
     nsegments: int,
     nbins: int,
 ) -> np.ndarray:
-    """Fold a time series for a given set of frequencies.
+    """
+    Fold a time series for a given set of frequencies.
 
     Parameters
     ----------
@@ -291,7 +321,8 @@ def brutefold_start(
     tsamp: float,
     t_ref: float = 0,
 ) -> np.ndarray:
-    """Fold a time series for a given set of frequencies.
+    """
+    Fold a time series for a given set of frequencies.
 
     Parameters
     ----------
@@ -447,6 +478,10 @@ class SuggestionStruct:
     @property
     def nparams(self) -> int:
         return self.param_sets.shape[1]
+
+    @property
+    def size_lb(self) -> float:
+        return np.log2(self.size)
 
     @property
     def score_max(self) -> float:

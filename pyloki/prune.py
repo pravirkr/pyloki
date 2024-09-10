@@ -372,13 +372,30 @@ class Pruning:
             dtype=object,
         )
 
-    def prune_enumeration(
+    def execute(
         self,
         snr_lim: float,
         ref_seg_list: np.ndarray | None = None,
         *,
         lazy: bool = True,
     ) -> list[tuple[int, SuggestionStruct]]:
+        """
+        Execute the pruning algorithm.
+
+        Parameters
+        ----------
+        snr_lim : float
+            The signal-to-noise ratio limit for the pruning to stop.
+        ref_seg_list : np.ndarray | None, optional
+            The reference segment list to start the pruning algorithm, by default None
+        lazy : bool, optional
+            If True, return the result after the first pass, by default True
+
+        Returns
+        -------
+        list[tuple[int, SuggestionStruct]]
+            A list of tuples containing the reference segment and the suggestion.
+        """
         res = []
         Path(self.logfile).write_text("Pruning log\n")
         if ref_seg_list is None:
@@ -392,8 +409,9 @@ class Pruning:
                 description="Pruning",
                 total=self.dyp.nsegments - 1,
                 get_score=lambda: self.suggestion.score_max,
+                get_leaves=lambda: self.suggestion.size_lb,
             ):
-                self.prune_iter()
+                self.execute_iter()
             with Path(self.logfile).open("a") as f:
                 f.write(f"Pruning complete for ref segment: {ref_seg}\n\n")
             if self.suggestion.size > 0 and np.max(self.suggestion.scores) > snr_lim:
@@ -402,7 +420,7 @@ class Pruning:
                     return res
         return res
 
-    def prune_iter(self) -> None:
+    def execute_iter(self) -> None:
         if self.is_complete:
             return
         self._prune_level += 1
@@ -446,6 +464,7 @@ class Pruning:
         self._suggestion = suggestion
 
     def generate_branching_pattern(self, n_iters: int, isuggest: int = 0) -> np.ndarray:
+        """Need to fix this function."""
         branching_pattern = []
         leaf_param_sets = self.suggestion.param_sets
         coord_cur = self.scheme.get_coord(self.prune_level)
@@ -464,7 +483,7 @@ class Pruning:
             self._prune_funcs: DP_FUNCS_TYPE = PruningTaylorDPFunctions(
                 self.dyp.cfg,
                 self.dyp.param_arr,
-                self.dyp.dparams,
+                self.dyp.dparams_limited,
                 self.dyp.tseg,
                 self.dyp.cfg.prune_poly_order,
             )
@@ -472,7 +491,7 @@ class Pruning:
             self._prune_funcs = PruningChebychevDPFunctions(
                 self.dyp.cfg,
                 self.dyp.param_arr,
-                self.dyp.dparams,
+                self.dyp.dparams_limited,
                 self.dyp.tseg,
                 self.dyp.cfg.prune_poly_order,
                 self.dyp.cfg.prune_n_derivs,

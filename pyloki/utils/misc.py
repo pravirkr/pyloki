@@ -175,15 +175,30 @@ class ScoreColumn(ProgressColumn):
         return Text(f"Score: {self.score:.2f}", style="cyan")
 
 
+class LeavesColumn(ProgressColumn):
+    def __init__(self) -> None:
+        super().__init__()
+        self.leaves = 0.0
+
+    def update_leaves(self, leaves: float) -> None:
+        self.leaves = leaves
+
+    def render(self, task: ProgressType) -> Text:  # noqa: ARG002
+        return Text(f"Leaves: {self.leaves:.2f}", style="cyan")
+
 def prune_track(
     sequence: Sequence[ProgressType] | Iterable[ProgressType],
     description: str = "Working...",
     total: float | None = None,
     get_score: Callable[[], float] | None = None,
+    get_leaves: Callable[[], float] | None = None,
 ) -> Iterable[ProgressType]:
     columns: list[ProgressColumn] = (
         [TextColumn("[progress.description]{task.description}")] if description else []
     )
+
+    score_column = ScoreColumn()
+    leaves_column = LeavesColumn()
     columns.extend(
         (
             BarColumn(),
@@ -191,18 +206,20 @@ def prune_track(
             TextColumn("•"),
             TimeRemainingColumn(elapsed_when_finished=True),
             TextColumn("•"),
+            score_column,
+            TextColumn("•"),
+            leaves_column,
         ),
     )
-    score_column = ScoreColumn()
-    columns.append(score_column)
     progress = Progress(*columns)
-
     task_id = progress.add_task(description, total=total)
 
     def track_progress() -> Iterable[ProgressType]:
         for item in sequence:
             if get_score:
                 score_column.update_score(get_score())
+            if get_leaves:
+                leaves_column.update_leaves(get_leaves())
             progress.update(task_id, advance=1)
             yield item
 

@@ -153,6 +153,11 @@ class DynamicProgramming:
         return self._dparams
 
     @property
+    def dparams_limited(self) -> np.ndarray:
+        """:class:`~numpy.ndarray`: Paramater step sizes at the current FFA level."""
+        return self._dparams_limited
+
+    @property
     def param_arr(self) -> types.ListType[types.Array]:
         """:obj:`list[ndarray]`: Parameter array at the current FFA level."""
         return self._param_arr
@@ -186,6 +191,7 @@ class DynamicProgramming:
         self._fold = fold.astype(self.data_type)
         self._param_arr = param_arr
         self._dparams = dparams
+        self._dparams_limited = self.cfg.get_dparams_limited(self.ffa_level)
         self._tseg = self.cfg.tseg_brute
 
     @Timer(name="ffa_execute", logger=logger.info)
@@ -226,6 +232,7 @@ class DynamicProgramming:
         )
         self._param_arr = param_arr_cur
         self._dparams = dparams
+        self._dparams_limited = self.cfg.get_dparams_limited(self.ffa_level)
         self._tseg *= 2
 
     def get_fold_norm(

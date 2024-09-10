@@ -99,13 +99,8 @@ def ffa_resolve(
         kvec_prev = shift_params(kvec_cur, t_ref_prev)
         pset_prev = kvec_prev[:-1]
         pset_prev[-1] = pset_cur[-1] * (1 + kvec_prev[-2] / C_VAL)
-        delay_rel = -kvec_prev[-1] / C_VAL
-    relative_phase = common.get_phase_idx_helper(
-        t_ref_prev,
-        pset_prev[-1],
-        nbins,
-        delay_rel,
-    )
+        delay_rel = kvec_prev[-1] / C_VAL
+    relative_phase = common.get_phase_idx(t_ref_prev, pset_cur[-1], nbins, delay_rel)
     pindex_prev = np.empty(nparams, dtype=np.int64)
     for ip in range(nparams):
         pindex_prev[ip] = np_utils.find_nearest_sorted_idx(parr_prev[ip], pset_prev[ip])
@@ -143,8 +138,8 @@ def poly_taylor_resolve(
 
     Notes
     -----
-    leaf is referenced to t_ref_init, so we need to shift it to t_ref_cur to get the
-    resolved parameters index and phase shift.
+    leaf is referenced to coord_init, so we need to shift it to coord_add to get the
+    resolved parameters index and relative phase shift.
 
     """
     nparams = len(param_arr)
@@ -176,7 +171,7 @@ def poly_taylor_step(
     tobs: float,
     freq: float,
     tsamp: float,
-    tol: int,
+    tol: float,
 ) -> np.ndarray:
     dparam_opt = np.zeros(nparams)
     dparam_opt[-1] = common.freq_step_approx(tobs, freq, tsamp, tol)
@@ -199,13 +194,29 @@ def split_taylor_params(
     leaf_params = typed.List.empty_list(types.float64[:])
     leaf_dparams = np.empty(nparams, dtype=np.float64)
 
-    effective_tol = tol * tsamp
     for i in range(nparams):
         deriv = nparams - i
-        shift = (
-            (dparam_cur[i] - dparam_opt[i]) / 2 * (tseg_cur) ** deriv / math.fact(deriv)
-        )
-        if shift > effective_tol:
+        if deriv == 1:
+            shift_bin = common.freq_step_shift(
+                dparam_cur[i],
+                dparam_opt[i],
+                tseg_cur,
+                tsamp,
+                param_cur[i],
+                tol,
+            )
+        else:
+            shift_bin = common.param_step_shift(
+                dparam_cur[i],
+                dparam_opt[i],
+                tseg_cur,
+                tsamp,
+                deriv,
+                tol,
+                t_ref=tseg_cur / 2,
+            )
+        # If the delta cause a 1 "bin" shift then we branch the parameter
+        if shift_bin > 1:
             leaf_param, dparam_act = common.branch_param(
                 param_cur[i],
                 dparam_cur[i],
@@ -254,7 +265,13 @@ def poly_taylor_branch2leaves(
     nparams = len(param_cur)
 
     duration = 2 * scale_cur
-    dparam_opt = poly_taylor_step(nparams, duration, param_cur[-1], tsamp, tol)
+    dparam_opt = poly_taylor_step(
+        nparams,
+        duration,
+        param_cur[-1],
+        tsamp,
+        tol,
+    )
     leafs_taylor = split_taylor_params(
         param_cur,
         dparam_cur,

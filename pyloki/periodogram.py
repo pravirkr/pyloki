@@ -53,7 +53,7 @@ class Periodogram:
         best_params = self.find_best_params()
         summary: list[str] = []
         summary += [f"Best S/N: {best_params['snr']:.2f}"]
-        summary += [f"Best Period: {1/best_params['freq']:.2f}"]
+        summary += [f"Best Period: {1/best_params['freq']}"]
         for name in self.param_names:
             if name != "snr":
                 summary += [f"Best {name}: {best_params[name]}"]
@@ -117,7 +117,7 @@ class Periodogram:
 
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
         im = ax.imshow(
-            z.T,
+            z,
             aspect="auto",
             origin="lower",
             extent=(x.min(), x.max(), y.min(), y.max()),
