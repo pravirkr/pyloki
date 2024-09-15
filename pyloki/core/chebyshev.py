@@ -7,7 +7,7 @@ from numba.experimental import jitclass
 from pyloki.config import PulsarSearchConfig
 from pyloki.core import common, defaults
 from pyloki.detection import scoring
-from pyloki.utils import math, np_utils
+from pyloki.utils import math, np_utils, psr_utils
 from pyloki.utils.misc import C_VAL
 
 
@@ -32,7 +32,7 @@ def split_cheb_params(
     for i in range(ncoeffs):
         if abs(dcheb_cur[i]) > effective_tol:
             dcheb_opt[i] = min(dcheb_opt[i], 0.5 * dcheb_cur[i])
-            leaf_param, dparam_act = common.branch_param(
+            leaf_param, dparam_act = psr_utils.branch_param(
                 cheb_coeffs_cur[i],
                 dcheb_cur[i],
                 dcheb_opt[i],
@@ -312,7 +312,7 @@ def poly_chebychev_resolve(
     delay = (d_tcheby - d_tzero) / C_VAL
 
     # phase is measured relative to the phase at 0
-    relative_phase = common.get_phase_idx(coord_add[0], f0, nbins, delay)
+    relative_phase = psr_utils.get_phase_idx(coord_add[0], f0, nbins, delay)
     idx_a = np_utils.find_nearest_sorted_idx(param_arr[-2], new_a)
     idx_f = np_utils.find_nearest_sorted_idx(param_arr[-1], new_f)
     index_prev = np.empty(len(param_arr), dtype=np.int64)

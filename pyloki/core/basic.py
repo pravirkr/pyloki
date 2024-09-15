@@ -7,7 +7,7 @@ from numba.experimental import jitclass
 from pyloki.config import PulsarSearchConfig
 from pyloki.core import common, defaults
 from pyloki.detection import scoring
-from pyloki.utils import math, np_utils
+from pyloki.utils import math, np_utils, psr_utils
 from pyloki.utils.misc import C_VAL
 
 
@@ -90,17 +90,23 @@ def ffa_resolve(
         The resolved parameter set index and the relative phase shift.
     """
     nparams = len(pset_cur)
-    t_ref_prev = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
     if nparams == 1:
+        t_ref_prev = latter * 2 ** (ffa_level - 1) * tseg_brute
         pset_prev, delay_rel = pset_cur, 0
     else:
+        t_ref_prev = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
         kvec_cur = np.zeros(nparams + 1, dtype=np.float64)
         kvec_cur[:-2] = pset_cur[:-1]  # till acceleration
         kvec_prev = shift_params(kvec_cur, t_ref_prev)
         pset_prev = kvec_prev[:-1]
         pset_prev[-1] = pset_cur[-1] * (1 + kvec_prev[-2] / C_VAL)
         delay_rel = kvec_prev[-1] / C_VAL
-    relative_phase = common.get_phase_idx(t_ref_prev, pset_cur[-1], nbins, delay_rel)
+    relative_phase = psr_utils.get_phase_idx(
+        t_ref_prev,
+        pset_cur[-1],
+        nbins,
+        delay_rel,
+    )
     pindex_prev = np.empty(nparams, dtype=np.int64)
     for ip in range(nparams):
         pindex_prev[ip] = np_utils.find_nearest_sorted_idx(parr_prev[ip], pset_prev[ip])
@@ -156,7 +162,7 @@ def poly_taylor_resolve(
     new_f = f0 * (1 + kvec_new[-2] / C_VAL)
     delay = kvec_new[-1] / C_VAL
 
-    relative_phase = common.get_phase_idx(tpoly, f0, nbins, delay)
+    relative_phase = psr_utils.get_phase_idx(tpoly, f0, nbins, delay)
     idx_a = np_utils.find_nearest_sorted_idx(param_arr[-2], new_a)
     idx_f = np_utils.find_nearest_sorted_idx(param_arr[-1], new_f)
     index_prev = np.empty(nparams, dtype=np.int64)
@@ -174,9 +180,15 @@ def poly_taylor_step(
     tol: float,
 ) -> np.ndarray:
     dparam_opt = np.zeros(nparams)
-    dparam_opt[-1] = common.freq_step_approx(tobs, freq, tsamp, tol)
+    dparam_opt[-1] = psr_utils.freq_step_approx(tobs, freq, tsamp, tol)
     for deriv in range(2, nparams + 1):
-        dparam_opt[-deriv] = common.param_step(tobs, tsamp, deriv, tol, t_ref=tobs / 2)
+        dparam_opt[-deriv] = psr_utils.param_step(
+            tobs,
+            tsamp,
+            deriv,
+            tol,
+            t_ref=tobs / 2,
+        )
     return dparam_opt
 
 
@@ -197,7 +209,7 @@ def split_taylor_params(
     for i in range(nparams):
         deriv = nparams - i
         if deriv == 1:
-            shift_bin = common.freq_step_shift(
+            shift_bin = psr_utils.freq_step_shift(
                 dparam_cur[i],
                 dparam_opt[i],
                 tseg_cur,
@@ -206,7 +218,7 @@ def split_taylor_params(
                 tol,
             )
         else:
-            shift_bin = common.param_step_shift(
+            shift_bin = psr_utils.param_step_shift(
                 dparam_cur[i],
                 dparam_opt[i],
                 tseg_cur,
@@ -217,7 +229,7 @@ def split_taylor_params(
             )
         # If the delta cause a 1 "bin" shift then we branch the parameter
         if shift_bin > 1:
-            leaf_param, dparam_act = common.branch_param(
+            leaf_param, dparam_act = psr_utils.branch_param(
                 param_cur[i],
                 dparam_cur[i],
                 dparam_opt[i],

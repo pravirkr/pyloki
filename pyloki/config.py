@@ -4,8 +4,7 @@ import numpy as np
 from numba import typed, types
 from numba.experimental import jitclass
 
-from pyloki.core import common
-from pyloki.utils import math
+from pyloki.utils import math, psr_utils
 
 
 @jitclass(
@@ -162,17 +161,17 @@ class PulsarSearchConfig:
             raise ValueError(msg)
         return typed.List(
             [
-                common.range_param(*self.param_limits[iparam], dparams[iparam])
+                psr_utils.range_param(*self.param_limits[iparam], dparams[iparam])
                 for iparam in range(self.nparams)
             ],
         )
 
     def _freq_step(self, tobs: float) -> float:
-        return common.freq_step(tobs, self.nbins, self.f_max, self.tol)
+        return psr_utils.freq_step(tobs, self.nbins, self.f_max, self.tol)
 
     def _deriv_step(self, tobs: float, deriv: int) -> float:
         t_ref = tobs / 2
-        return common.param_step(tobs, self.tsamp, deriv, self.tol, t_ref=t_ref)
+        return psr_utils.param_step(tobs, self.tsamp, deriv, self.tol, t_ref=t_ref)
 
     def _bseg_brute_default(self) -> int:
         init_levels = 1 if self.nparams == 1 else 5

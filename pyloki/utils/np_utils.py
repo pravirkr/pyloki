@@ -229,3 +229,23 @@ def cpad2len(arr: np.ndarray, size: int) -> np.ndarray:
     padding_needed = size - arr.shape[-1]
     zero_arr = np.zeros(arr.shape[:-1] + (padding_needed,))
     return np.concatenate((arr, zero_arr), axis=-1)
+
+
+@njit(cache=True)
+def interpolate_missing(profile: np.ndarray, count: np.ndarray) -> np.ndarray:
+    """
+    Interpolate missing values in a profile.
+
+    Parameters
+    ----------
+    profile : np.ndarray
+        Profile to interpolate missing values
+    count : np.ndarray
+        Array of bin counts
+
+    """
+    empty_idx = np.where(count == 0)[0]
+    non_empty_idx = np.where(count > 0)[0]
+    if len(non_empty_idx) != 0:
+        profile[empty_idx] = np.interp(empty_idx, non_empty_idx, profile[non_empty_idx])
+    return profile
