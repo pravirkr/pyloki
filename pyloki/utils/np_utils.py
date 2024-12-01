@@ -68,56 +68,33 @@ def downsample_1d(array: np.ndarray, factor: int) -> np.ndarray:
     return np_mean(reshaped_ar, 1)
 
 
-@njit(cache=True, fastmath=True)
-def nb_roll2d(arr: np.ndarray, shift: int) -> np.ndarray:
-    """Roll the 2D array along the second axis (axis=1).
+@njit(cache=True, nogil=True, fastmath=True)
+def nb_roll(
+    arr: np.ndarray,
+    shift: int | tuple[int, ...],
+    axis: int | tuple[int, ...] | None = None,
+) -> np.ndarray:
+    """
+    Roll array elements along a given axis.
+
+    Implemented in rocket-fft. This function is a njit-compiled wrapper
+    around np.roll.
 
     Parameters
     ----------
-    arr : np.ndarray
-        2D array to roll
-    shift : int
+    arr : ndarray
+        Input array
+    shift : int | tuple[int, ...]
         Number of bins to shift
+    axis : int | tuple[int, ...] | None, optional
+        Axis or axes along which to roll, by default None
 
     Returns
     -------
     np.ndarray
-        Rolled array
+        Rolled array with the same shape as `arr`
     """
-    axis = 1
-    res = np.empty_like(arr)
-    arr_size = arr.shape[axis]
-    shift %= arr_size
-    for irow in range(arr.shape[0]):
-        res[irow, shift:] = arr[irow, : arr_size - shift]
-        res[irow, :shift] = arr[irow, arr_size - shift :]
-    return res
-
-
-@njit(cache=True, fastmath=True)
-def nb_roll3d(arr: np.ndarray, shift: int) -> np.ndarray:
-    """Roll the 3D array along the last axis (axis=-1).
-
-    Parameters
-    ----------
-    arr : np.ndarray
-        3D array to roll
-    shift : int
-        Number of bins to shift
-
-    Returns
-    -------
-    np.ndarray
-        Rolled array
-    """
-    axis = -1
-    res = np.empty_like(arr)
-    arr_size = arr.shape[axis]
-    shift %= arr_size
-    for irow in range(arr.shape[0]):
-        res[irow, :, shift:] = arr[irow, :, : arr_size - shift]
-        res[irow, :, :shift] = arr[irow, :, arr_size - shift :]
-    return res
+    return np.roll(arr, shift, axis)
 
 
 @njit(cache=True, fastmath=True)
@@ -249,3 +226,46 @@ def interpolate_missing(profile: np.ndarray, count: np.ndarray) -> np.ndarray:
     if len(non_empty_idx) != 0:
         profile[empty_idx] = np.interp(empty_idx, non_empty_idx, profile[non_empty_idx])
     return profile
+
+
+@njit(cache=True, fastmath=True)
+def lstsq_weighted(
+    design_matrix: np.ndarray,
+    data: np.ndarray,
+    errors: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Perform weighted least squares estimation.
+
+    Parameters
+    ----------
+    design_matrix : np.ndarray
+        The design matrix A.
+    data : np.ndarray
+        The observed data points.
+    errors : np.ndarray
+        The errors of the observed data points.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+        - x_hat: The estimated parameters.
+        - cov_x_hat: The covariance matrix of the estimated parameters.
+        - phi_t_estimated: The estimated data points.
+    """
+    weights = 1.0 / (errors ** 2)
+    w_sqrt = np.sqrt(weights)
+    a_w = design_matrix * w_sqrt[:, np.newaxis]
+    b_w = data * w_sqrt
+
+    x_hat, residuals, rank, s = np.linalg.lstsq(a_w, b_w, rcond=None)
+
+    # Calculate the covariance matrix
+    if rank == design_matrix.shape[1]:  # Full rank
+        cov_x_hat = np.linalg.inv(design_matrix.T @ np.diag(weights) @ design_matrix)
+    else:
+        # Use pseudoinverse if not full rank
+        cov_x_hat = np.linalg.pinv(design_matrix.T @ np.diag(weights) @ design_matrix)
+
+    phi_t_estimated = design_matrix @ x_hat
+
+    return x_hat, cov_x_hat, phi_t_estimated

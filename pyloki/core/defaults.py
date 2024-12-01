@@ -148,7 +148,7 @@ def pack(data: np.ndarray) -> np.ndarray:
 
 @njit(cache=True, fastmath=True)
 def shift(data: np.ndarray, phase_shift: int) -> np.ndarray:
-    return np_utils.nb_roll2d(data, phase_shift)
+    return np_utils.nb_roll(data, phase_shift, axis=-1)
 
 
 @njit(cache=True, fastmath=True)

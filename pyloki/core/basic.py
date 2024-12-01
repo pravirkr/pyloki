@@ -121,8 +121,7 @@ def poly_taylor_resolve(
     coord_init: tuple[float, float],
     nbins: int,
 ) -> tuple[np.ndarray, int]:
-    """
-    Resolve the leaf parameters to find the closest param index and phase shift.
+    """Resolve the leaf parameters to find the closest param index and phase shift.
 
     Parameters
     ----------
@@ -252,8 +251,7 @@ def poly_taylor_branch2leaves(
     poly_order: int,
     param_limits: types.ListType[types.Tuple[float, float]],
 ) -> np.ndarray:
-    """
-    Branch a parameter set to leaves.
+    """Branch a parameter set to leaves.
 
     Parameters
     ----------
@@ -349,8 +347,7 @@ def poly_taylor_suggestion_struct(
     coord_init: tuple[float, float],
     score_func: types.FunctionType,
 ) -> common.SuggestionStruct:
-    """
-    Generate a suggestion struct from a fold segment.
+    """Generate a suggestion struct from a fold segment.
 
     Parameters
     ----------
@@ -358,9 +355,9 @@ def poly_taylor_suggestion_struct(
         The fold segment to generate suggestions for. The shape of the array is
         (n_accel, n_period, 2, n_bins). Parameter dimensions are first two.
     param_arr : types.ListType
-        Parameter array containing the parameter values for each dimension.
+        Parameter values for each dimension (accel, period).
     dparams : np.ndarray
-        Parameter step sizes for each dimension in a 1D array.
+        Parameter step (grid) sizes for each dimension in a 1D array.
     poly_order : int
         The order of the Taylor polynomial.
     coord_init : tuple[float, float]
@@ -374,8 +371,6 @@ def poly_taylor_suggestion_struct(
         Suggestion struct
     """
     n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
-    # \n_param_sets = n_accel * n_period
-    # \param_sets_shape = [n_param_sets, 2]
     param_sets = poly_taylor_leaves(param_arr, dparams, poly_order, coord_init)
     data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
     scores = np.zeros(n_param_sets)

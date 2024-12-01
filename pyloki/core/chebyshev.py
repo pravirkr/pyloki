@@ -137,6 +137,7 @@ def poly_chebyshev_leaves(
         Parameter array for each dimension; only (acceleration, period).
     dparams : np.ndarray
         Parameter step sizes for each dimension. Shape is (poly_order,).
+        - [f, acc, ...]
     poly_order : int
         The order of the Chebyshev polynomial.
     coord_init : tuple[float, float]
@@ -155,7 +156,7 @@ def poly_chebyshev_leaves(
     Conventions for the leaf parameter sets:
     alpha[:-2, 0] -> Chebyshev polynomial coefficients,
     alpha[:-2, 1] -> tolerance on each coefficient,
-    alpha[-2, 0]  -> pulsar period at data start (p0),
+    alpha[-2, 0]  -> pulsar frequency at data start (f0),
     alpha[-1, 0]  -> reference time (from the data start) (t0),
     alpha[-1, 1]  -> scaling (scales the input to the polynomials, so that
                     the polynomials are defined in the range [-1, 1]).
@@ -166,17 +167,18 @@ def poly_chebyshev_leaves(
     conversion_matrix = np.linalg.inv(math.generalized_cheb_pols(poly_order, t0, scale))
 
     params_vec = np.zeros((len(param_cart), poly_order + 1))
-    params_vec[:, 2] = param_cart[:, 0] / 2.0  # acc / 2.0
+    params_vec[:, 2] = param_cart[:, -2] / 2.0  # acc / 2.0
 
     alpha_vec = np.zeros((len(param_cart), poly_order + 3, 2))
     alpha_vec[:, :-2, 0] = np.dot(conversion_matrix.T, params_vec)
-    alpha_vec[:, 0, 0] += (t0 % param_cart[:, 1]) * C_VAL
+    alpha_vec[:, 0, 0] += (t0 % (1 / param_cart[:, -1])) * C_VAL
 
     alpha_vec[:, 0, 1] = 0.0
-    alpha_vec[:, 1, 1] = dparams[0] / param_cart[:, 1] * C_VAL
+    # f = f0(1 + v / C) => dv = df / f0 * C
+    alpha_vec[:, 1, 1] = dparams[0] / param_cart[:, -1] * C_VAL
     alpha_vec[:, 2:-2, 1] = dparams[1:] * np.diag(conversion_matrix)[2:]
 
-    alpha_vec[:, -2, 0] = param_cart[:, 1, 0]  # f0
+    alpha_vec[:, -2, 0] = param_cart[:, -1] # f0
     alpha_vec[:, -1, 0] = t0
     alpha_vec[:, -1, 1] = scale
     return alpha_vec
@@ -191,8 +193,7 @@ def poly_chebychev_suggestion_struct(
     coord_init: tuple[float, float],
     score_func: types.FunctionType,
 ) -> common.SuggestionStruct:
-    """
-    Generate a suggestion struct from a fold segment.
+    """Generate a suggestion struct from a fold segment.
 
     Parameters
     ----------
@@ -214,10 +215,12 @@ def poly_chebychev_suggestion_struct(
     -------
     common.SuggestionStruct
         Suggestion struct
+        - param_sets: The parameter sets (n_param_sets, poly_order + 3, 2).
+        - data: The folded data for each leaf.
+        - scores: The scores for each leaf.
+        - backtracks: The backtracks for each leaf.
     """
     n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
-    # \n_param_sets = n_accel * n_period
-    # \param_sets_shape = [n_param_sets, poly_order + 3, 2]
     param_sets = poly_chebyshev_leaves(param_arr, dparams, poly_order, coord_init)
     data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
     scores = np.zeros(n_param_sets)
@@ -236,7 +239,7 @@ def poly_chebychev_branch2leaves(
 ) -> np.ndarray:
     cheb_coeffs_cur = param_set[0:-2, 0]
     dcheb_cur = param_set[0:-2, 1]
-    p0, _ = param_set[-2]
+    f0, _ = param_set[-2]
     t0_cur, scale_cur = param_set[-1]
 
     dcheb_opt = poly_cheb_step(poly_order, tol, tsamp)
@@ -249,7 +252,7 @@ def poly_chebychev_branch2leaves(
     )
     leaves = np.zeros((len(leafs_cheb), poly_order + 3, 2))
     leaves[:, :-2] = leafs_cheb
-    leaves[:, -2, 0] = p0
+    leaves[:, -2, 0] = f0
     leaves[:, -1, 0] = t0_cur
     leaves[:, -1, 1] = scale_cur
     return leaves
@@ -264,8 +267,7 @@ def poly_chebychev_resolve(
     nbins: int,
     cheb_table: np.ndarray,
 ) -> tuple[np.ndarray, int]:
-    """
-    Resolve the leaf parameters to find the closest param index and phase shift.
+    """Resolve the leaf parameters to find the closest param index and phase shift.
 
     Parameters
     ----------
@@ -329,6 +331,7 @@ def poly_chebychev_transform_matrix(
 ) -> np.ndarray:
     t0_cur, scale_cur = coord_cur
     t0_prev, scale_prev = coord_prev
+    # check the ordering inside the generalized_cheb_pols
     cheb_pols_cur = math.generalized_cheb_pols(poly_order, t0_cur, scale_cur)
     cheb_pols_prev = math.generalized_cheb_pols(poly_order, t0_prev, scale_prev)
     return np.dot(cheb_pols_prev, np.linalg.inv(cheb_pols_cur))
@@ -515,7 +518,6 @@ def prepare_epicyclic_validation_params(
         fit_mat_right[i] = np.dot(dot_mat, mat)
         fit_mat_left[i] = mat.T
     return fit_mat_left, fit_mat_right, epicycle_bound
-
 
 @jitclass(
     spec=[

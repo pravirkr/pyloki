@@ -4,7 +4,73 @@ import numpy as np
 from numba import typed, types
 from numba.experimental import jitclass
 
+from pyloki import kepler
 from pyloki.utils import math, psr_utils
+
+
+class ParamLimits:
+    def __init__(self, limits: types.ListType[types.Tuple[float, float]]) -> None:
+        self.limits = limits
+
+    @classmethod
+    def from_taylor(
+        cls,
+        freq: tuple[float, float],
+        accel: tuple[float, float] | None = None,
+        jerk: tuple[float, float] | None = None,
+        snap: tuple[float, float] | None = None,
+    ) -> ParamLimits:
+        default_limit = (0.0, 0.0)
+        all_params = [snap, jerk, accel, freq]
+        last_non_none = next(
+            i for i, param in enumerate(all_params) if param is not None
+        )
+        out = [
+            param if param is not None else default_limit
+            for param in all_params[last_non_none:]
+        ]
+        out = [(float(min_val), float(max_val)) for min_val, max_val in out]
+
+        return cls(typed.List(out))
+
+    @classmethod
+    def from_circular(
+        cls,
+        freq: tuple[float, float],
+        x_orb: float,
+        p_orb_min: float,
+        poly_order: int,
+    ) -> ParamLimits:
+        out = typed.List([(float(freq[0]), float(freq[1]))])
+        omega_orb_max = 2 * np.pi / p_orb_min
+        for i in range(2, poly_order + 1):
+            coeff = x_orb * omega_orb_max**i
+            out.insert(0, (-coeff, coeff))
+        return cls(out)
+
+    @classmethod
+    def from_keplerian(
+        cls,
+        freq: tuple[float, float],
+        x_orb: float,
+        p_orb_min: float,
+        ecc_max: float,
+        poly_order: int,
+        tobs: float,
+    ) -> ParamLimits:
+        out = typed.List([(float(freq[0]), float(freq[1]))])
+        omega_orb_max = 2 * np.pi / p_orb_min
+        n_rad = tobs * omega_orb_max
+        bounds = kepler.find_max_deriv_bounds(
+            x_orb,
+            n_rad,
+            ecc_max,
+            poly_order + 1,
+            omega_orb_max,
+        )
+        for bound in bounds:
+            out.insert(0, (-bound, bound))
+        return cls(out)
 
 
 @jitclass(

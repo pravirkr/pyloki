@@ -147,38 +147,46 @@ def branch_param(
     param_cur: float,
     dparam_cur: float,
     dparam_new: float,
-    param_min: float,
-    param_max: float,
+    param_min: float = -np.inf,
+    param_max: float = np.inf,
 ) -> tuple[np.ndarray, float]:
-    """
-    Refine a parameter range around a current value with a new step size.
+    """Refine a parameter range around a current value with a finer step size.
+
+    This function generates a new array of parameter values around a current
+    parameter value with a finer step size.
 
     Parameters
     ----------
     param_cur : float
-        current parameter value (center of the range)
+        The current parameter value (center of the range).
     dparam_cur : float
-        current parameter step size (half-width of the range)
+        The current parameter step size (half-width of current range).
     dparam_new : float
-        new parameter step size (half-width of the new range)
-    param_min : float
-        minimum value of the parameter range
-    param_max : float
-        maximum value of the parameter range
+        The desired new parameter step size (half-width of finer range).
+    param_min : float, optional
+        The minimum allowable parameter value, by default -np.inf.
+    param_max : float, optional
+        The maximum allowable parameter value, by default np.inf.
 
     Returns
     -------
     tuple[np.ndarray, float]
-        Array of new parameter values and the actual new parameter step size
+        Array of new parameter values and the actual new parameter step size used.
+
+    Raises
+    ------
+    ValueError
+        If the input parameters are invalid.
     """
-    if not (dparam_cur > 0 and dparam_new > 0):
+    if dparam_cur <= 0 or dparam_new <= 0:
         msg = "dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
-    if not (param_min <= param_cur <= param_max):
-        msg = "Invalid input: ensure param_min < param_cur < param_max."
+    if param_cur < param_min or param_cur > param_max:
+        msg = "param_cur must be within [param_min, param_max]."
         raise ValueError(msg)
     if dparam_new > (param_max - param_min) / 2:
-        return np.array([param_cur]), dparam_cur
+        # If the desired new step size is too large, return the current value
+        return np.array([param_cur]), dparam_new
     n = 2 + int(np.ceil(dparam_cur / dparam_new))
     if n < 3:
         msg = "Invalid input: ensure dparam_cur > dparam_new."

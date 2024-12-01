@@ -33,8 +33,9 @@ logger = get_logger(__name__)
     ],
 )
 class SnailScheme:
-    """
-    A class to describe the indexing scheme used in the pruning algorithm.
+    """A class to describe the indexing scheme used in the pruning algorithm.
+
+    The scheme allow for "middle-out" enumeration of the segments.
 
     Parameters
     ----------
@@ -266,9 +267,11 @@ class Pruning:
     dyp : DynamicProgramming
         An instance of the DynamicProgramming class.
     threshold_scheme : np.ndarray
-        An array of thresholds for each pruning level.
+        An array of thresholds for each pruning level. Thresholds should
+        maximise the Prob(detecting signal) / (computational complexity) ratio.
     max_sugg : int, optional
-        Maximum number of suggestions to keep, by default 2**17
+        Maximum suggestions to store in memory (to avoid tree explosion),
+        by default 2**17
     kind : {"taylor", "chebyshev"}, optional
         The kind of pruning algorithm to use, by default "taylor"
     """
@@ -341,13 +344,12 @@ class Pruning:
 
     @Timer(name="prune_initialize", logger=logger.info)
     def initialize(self, ref_seg: int = 12) -> None:
-        """
-        Initialize the pruning algorithm.
+        """Initialize the pruning algorithm.
 
         Parameters
         ----------
         ref_seg : int, optional
-            The reference segment to start the pruning algorithm, by default 12
+            The reference segment to start the pruning algorithm, by default 12.
 
         Notes
         -----
@@ -379,8 +381,7 @@ class Pruning:
         *,
         lazy: bool = True,
     ) -> list[tuple[int, SuggestionStruct]]:
-        """
-        Execute the pruning algorithm.
+        """Execute the pruning algorithm.
 
         Parameters
         ----------

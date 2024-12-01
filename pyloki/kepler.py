@@ -189,8 +189,7 @@ def find_derivative_connections(
     deg: int,
     res: float = 0.05,
 ) -> list[np.ndarray]:
-    """
-    Find polynomial fits for various orbital configurations.
+    """Find polynomial fits for various orbital configurations.
 
     Parameters
     ----------
@@ -229,8 +228,7 @@ def find_max_deriv_bounds(
     deg: int,
     p_orb: float = 2 * np.pi,
 ) -> np.ndarray:
-    """
-    Find the maximum bounds for the derivatives of a keplerian orbit.
+    """Find the maximum bounds for the derivatives of a keplerian orbit.
 
     Parameters
     ----------
@@ -573,3 +571,49 @@ class PredictionTableGenerator:
             )
 
         return coord_function
+
+
+@attrs.define(auto_attribs=True, slots=True, kw_only=True)
+class KeplerianParamLimits:
+    p_pul: tuple[float, float]
+    p_orb: tuple[float, float]
+    x_orb: tuple[float, float]
+    ecc: tuple[float, float]
+    phi_plus_om: tuple[float, float]
+    phi_minus_om: tuple[float, float]
+
+    @property
+    def omega_orb(self) -> tuple[float, float]:
+        return 2 * np.pi / self.p_orb[1], 2 * np.pi / self.p_orb[0]
+
+    def generate_grid(self, tol: float, tsamp: float, tobs: float) -> tuple:
+        tol_time = tol * tsamp
+        d_p_pul = 0.5 * tol_time / (tobs / self.p_pul[0])
+        d_e = tol_time / self.x_orb[1]
+        d_x = tol_time / (1 + self.ecc[1])
+        d_phi_plus_om_ecc = 1.0 / (self.x_orb[1] / tol_time)
+        d_omega_orb = d_phi_plus_om_ecc / tobs
+        d_phi_minus_om_ecc = tol_time / self.x_orb[1] / self.ecc[1]
+        periods = np.arange(*self.p_pul, d_p_pul)
+        eccs = np.arange(*self.ecc, d_e)
+        x_orbs = np.arange(*self.x_orb, d_x)
+        omega_orbs = np.arange(*self.omega_orb, d_omega_orb)
+        phi_plus_oms = np.arange(*self.phi_plus_om, d_phi_plus_om_ecc)
+        phi_minus_oms = np.arange(*self.phi_minus_om, d_phi_minus_om_ecc)
+        grid = np.meshgrid(
+            periods,
+            eccs,
+            x_orbs,
+            omega_orbs,
+            phi_plus_oms,
+            phi_minus_oms,
+            indexing="ij",
+        )
+        # Calculate derived parameters
+        cur_p_orbs = 2 * np.pi / grid[3]
+        cur_phis = (grid[4] + grid[5]) / 2.0
+        cur_omega_eccs = (grid[4] - grid[5]) / 2.0
+        return np.stack(
+            [grid[0], cur_p_orbs, grid[2], grid[1], cur_omega_eccs, cur_phis],
+            axis=-1,
+        )

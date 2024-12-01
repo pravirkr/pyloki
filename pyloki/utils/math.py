@@ -105,22 +105,36 @@ def gen_chebyshev_polys_table_np(order: int, n_derivs: int) -> np.ndarray:
 
 @njit(cache=True, fastmath=True)
 def gen_chebyshev_polys_table(order_max: int, n_derivs: int) -> np.ndarray:
-    """
-    Generate table of Chebyshev polynomials of the first kind and their derivatives.
+    """Generate table of Chebyshev polynomials of the first kind and their derivatives.
+
+    This function uses the recurrence relation for Chebyshev polynomials to efficiently
+    generate a table of polynomials up to the specified maximum order, along with
+    their derivatives up to the specified order.
 
     Parameters
     ----------
     order_max : int
-        The maximum order of the polynomials (T_0, T_1, ..., T_order_max)
+        The maximum order of the polynomials to generate (T_0, T_1, ..., T_order_max).
     n_derivs : int
         The number of derivatives to generate for each polynomial (0th derivative
-        is the polynomial itself)
+        is the polynomial itself).
 
     Returns
     -------
     np.ndarray
         A 3D array of shape (n_derivs + 1, order_max + 1, order_max + 1) containing the
-        coefficients of the polynomials.
+        coefficients of the polynomials and their derivatives.
+        The array is indexed as [i_deriv, i_order, i_coeff].
+
+    Notes
+    -----
+    The Chebyshev polynomials of the first kind are defined as:
+    T_0(x) = 1
+    T_1(x) = x
+    T_{n+1}(x) = 2x * T_n(x) - T_{n-1}(x) for n > 1
+
+    The derivatives are computed using the chain rule and the properties of Chebyshev
+    polynomials.
     """
     tab = np.zeros((n_derivs + 1, order_max + 1, order_max + 1), dtype=np.float32)
     tab[0, 0, 0] = 1.0
@@ -138,14 +152,46 @@ def gen_chebyshev_polys_table(order_max: int, n_derivs: int) -> np.ndarray:
     return tab
 
 
+@njit(cache=True, fastmath=True)
+def gen_design_matrix_taylor(
+    t_vals: np.ndarray,
+    order_max: int,
+) -> np.ndarray:
+    """
+    Generate the design matrix for a Taylor series.
+
+    Parameters
+    ----------
+    t_val : float
+        The value at which to evaluate the Taylor series.
+    order_max : int
+        The maximum order of the Taylor series.
+
+    Returns
+    -------
+    np.ndarray
+        A 2D array (len(t_vals), order + 1) design matrix.
+    """
+    t_vals = np.atleast_1d(t_vals)
+    n_points = len(t_vals)
+    mat = np.zeros((n_points, order_max + 1), dtype=np.float32)
+    for i, t_val in enumerate(t_vals):
+        for j in range(order_max + 1):
+            mat[i, j] = t_val**j / fact(j)
+    return mat
+
+
 @njit(fastmath=True)
 def generalized_cheb_pols(poly_order: int, t0: float, scale: float) -> np.ndarray:
     """Generate table of generalized Chebyshev polynomials.
 
+    This function computes the coefficients of generalized Chebyshev polynomials,
+    which are defined as Chebyshev polynomials with a shifted and scaled domain.
+
     Parameters
     ----------
     poly_order : int
-        The maximum order of the polynomials (upto T_poly_order)
+        The maximum order of the polynomials to generate (upto T_poly_order)
     t0 : float
         Shifted origin of the polynomials.
     scale : float
@@ -155,7 +201,8 @@ def generalized_cheb_pols(poly_order: int, t0: float, scale: float) -> np.ndarra
     -------
     np.ndarray
         A 2D array of shape (poly_order + 1, poly_order + 1) containing the coefficients
-        of the polynomials.
+        of the generalized Chebyshev polynomials.
+        The array is indexed as [i_order, i_coeff].
 
     Notes
     -----
@@ -165,16 +212,17 @@ def generalized_cheb_pols(poly_order: int, t0: float, scale: float) -> np.ndarra
     """
     cheb_pols = gen_chebyshev_polys_table(poly_order, 0)[0]
 
+    # scale the polynomials
+    scale_factor = (1.0 / scale) ** np.arange(poly_order + 1, dtype=np.float32)
+    scaled_pols = cheb_pols * scale_factor
+
     # Shift the origin to t0
-    cheb_pols_shifted = np.zeros_like(cheb_pols)
+    shifted_pols = np.zeros_like(scaled_pols)
     for iorder in range(poly_order + 1):
         iterms = np.arange(iorder + 1, dtype=np.float32)
         shifted = nbinom(iorder, iterms) * (-t0 / scale) ** (iorder - iterms)
-        cheb_pols_shifted[iorder, : len(shifted)] = shifted
-    pols = np.dot(cheb_pols, cheb_pols_shifted)
-    # scale the polynomials
-    pols *= scale ** (-np.arange(poly_order + 1, dtype=np.float32))
-    return pols
+        shifted_pols[iorder, : len(shifted)] = shifted
+    return np.dot(scaled_pols, shifted_pols)
 
 
 def gen_power_series_table_np(order_max: int, n_derivs: int) -> np.ndarray:
