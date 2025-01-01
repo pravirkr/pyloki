@@ -10,18 +10,29 @@ from numba import njit
 def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
     """Find the index of the closest value in a sorted array.
 
+    In case of a tie, the index of the smaller value is returned.
+    Behaviour is undefined if the array is not sorted.
+
     Parameters
     ----------
     array : np.ndarray
-        Sorted array
+        Sorted array. Must contain at least one element.
     value : float
-        Value to search for
+        Value to search for.
 
     Returns
     -------
     int
-        Index of the closest value in the array
+        Index of the closest value in the array.
+
+    Raises
+    ------
+    ValueError
+        If the array is empty
     """
+    if len(array) == 0:
+        msg = "Array must not be empty"
+        raise ValueError(msg)
     idx = int(np.searchsorted(array, value, side="left"))
     if idx > 0 and (
         idx == len(array) or abs(value - array[idx - 1]) <= abs(value - array[idx])
@@ -252,7 +263,7 @@ def lstsq_weighted(
         - cov_x_hat: The covariance matrix of the estimated parameters.
         - phi_t_estimated: The estimated data points.
     """
-    weights = 1.0 / (errors ** 2)
+    weights = 1.0 / (errors**2)
     w_sqrt = np.sqrt(weights)
     a_w = design_matrix * w_sqrt[:, np.newaxis]
     b_w = data * w_sqrt

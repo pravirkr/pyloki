@@ -226,7 +226,7 @@ def find_max_deriv_bounds(
     n_rad: float,
     ecc: float,
     deg: int,
-    p_orb: float = 2 * np.pi,
+    p_orb_min: float = 2 * np.pi,
 ) -> np.ndarray:
     """Find the maximum bounds for the derivatives of a keplerian orbit.
 
@@ -240,15 +240,15 @@ def find_max_deriv_bounds(
         Orbital eccentricity.
     deg : int
         Degree of the polynomial fit.
-    p_orb : float, optional
-        Orbital period, by default 2 * np.pi
+    p_orb_min : float, optional
+        Minimum orbital period (in seconds), by default 2 * np.pi
 
     Returns
     -------
     np.ndarray
         Array of the maximum bounds for the derivatives.
     """
-    omega = 2 * np.pi / p_orb
+    omega = 2 * np.pi / p_orb_min
     fits = find_derivative_connections(a, n_rad, ecc, deg, res=0.1)
     factors = np.array([omega**i * math.fact(i) for i in range(deg + 1)])
     return np.max(fits, axis=0) * C_VAL * factors
@@ -550,8 +550,8 @@ class PredictionTableGenerator:
         for d in self.data:
             dic[coord_function(d)] = [*dic.get(coord_function(d), []), tuple(d)]
 
-        for key in dic:
-            ar = np.array(dic[key])
+        for key, value in dic.items():
+            ar = np.array(value)
             dic[key] = list(map(tuple, zip(np.min(ar, 0), np.max(ar, 0))))
 
         return dic, coord_function

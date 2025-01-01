@@ -33,8 +33,7 @@ def unify_fold(
     dp_funcs: FFASearchDPFunctions,
     load_func: Callable[[np.ndarray, int, np.ndarray], np.ndarray],
 ) -> None:
-    """
-    Unify the fold by combining the two folds from the previous level.
+    """Unify the fold by combining the two folds from the previous level.
 
     Parameters
     ----------
@@ -82,8 +81,7 @@ def unify_fold(
 
 
 class DynamicProgramming:
-    """
-    Dynamic Programming class for the FFA search.
+    """Dynamic Programming class for the FFA search.
 
     Parameters
     ----------
@@ -240,15 +238,14 @@ class DynamicProgramming:
         iseg: int = 0,
         param_idx: tuple | None = None,
     ) -> np.ndarray:
-        """
-        Get the normalized fold for the given segment and parameter index.
+        """Get the normalized fold for the given segment and parameter index.
 
         Parameters
         ----------
         iseg : int, optional
-            Segment index, by default 0
+            Segment index, by default 0.
         param_idx : tuple | None, optional
-            Parameter index, by default None
+            Parameter index, by default None.
 
         Returns
         -------
@@ -262,16 +259,15 @@ class DynamicProgramming:
         return fold[..., 0, :] / np.sqrt(fold[..., 1, :])
 
     def get_complexity(self) -> list[int]:
-        """
-        Get the complexity (number of parameters to search) per ffa level.
+        """Get the complexity (number of parameters to search) per ffa level.
 
         Returns
         -------
         list[int]
-            List with the complexity per FFA level
+            List with the complexity per FFA level.
         """
         complexity = []
-        for ffa_level in range(self.niters_ffa + 1):
+        for ffa_level in range(self.cfg.niters_ffa + 1):
             dparams = self.dp_funcs.step(ffa_level)
             complexity.append(
                 int(np.prod([len(p) for p in self.cfg.get_param_arr(dparams)])),

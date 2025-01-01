@@ -156,8 +156,7 @@ def pruning_iteration(
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     sugg_max: int = 2**17,
 ) -> tuple[SuggestionStruct, types.DictType[str, int]]:
-    """
-    Perform a single iteration of the pruning algorithm.
+    """Perform a single iteration of the pruning algorithm.
 
     Parameters
     ----------
@@ -255,8 +254,7 @@ def pruning_iteration(
 
 
 class Pruning:
-    """
-    Pruning class to perform the pruning algorithm on the dynamic programming.
+    """A class to perform the pruning algorithm on the FFA search results.
 
     Time is linearly advancing. The algorithm starts with a reference segment
     and iteratively prunes the parameter space based on the scores of the
@@ -271,9 +269,9 @@ class Pruning:
         maximise the Prob(detecting signal) / (computational complexity) ratio.
     max_sugg : int, optional
         Maximum suggestions to store in memory (to avoid tree explosion),
-        by default 2**17
+        by default 2**17.
     kind : {"taylor", "chebyshev"}, optional
-        The kind of pruning algorithm to use, by default "taylor"
+        The kind of pruning algorithm to use, by default "taylor".
     """
 
     def __init__(
@@ -464,15 +462,25 @@ class Pruning:
         self._backtrack_arr[self.prune_level, : suggestion.size] = suggestion.backtracks
         self._suggestion = suggestion
 
-    def generate_branching_pattern(self, n_iters: int, isuggest: int = 0) -> np.ndarray:
-        """Need to fix this function."""
+    def get_branching_pattern(self, n_iters: int, isuggest: int = 0) -> np.ndarray:
+        """Get the branching pattern of the pruning algorithm."""
         branching_pattern = []
-        leaf_param_sets = self.suggestion.param_sets
-        coord_cur = self.scheme.get_coord(self.prune_level)
+        prune_level = 0
+        fold_segment = self.prune_funcs.load(self.dyp.fold, self.scheme.ref_idx)
+        coord = self.scheme.get_coord(prune_level)
+        leaf = self.prune_funcs.suggest(fold_segment, coord).param_sets[isuggest]
         for _ in range(1, n_iters + 1):
-            leaves_arr = self.prune_funcs.branch(leaf_param_sets[isuggest], coord_cur)
+            prune_level += 1
+            coord_cur = self.scheme.get_coord(prune_level)
+            coord_prev = self.scheme.get_coord(prune_level - 1)
+            trans_matrix = self.prune_funcs.get_transform_matrix(coord_cur, coord_prev)
+            leaves_arr = self.prune_funcs.branch(leaf, coord_cur)
             branching_pattern.append(len(leaves_arr))
-            leaf_param_sets = leaves_arr
+            leaf = self.prune_funcs.transform(
+                leaves_arr[isuggest],
+                coord_cur,
+                trans_matrix,
+            )
         return np.array(branching_pattern)
 
     def _setup_pruning(self, kind: str) -> None:

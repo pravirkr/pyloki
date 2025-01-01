@@ -20,6 +20,28 @@ def ffa_init(
     nbins: int,
     tsamp: float,
 ) -> np.ndarray:
+    """Initialize the fold for the FFA search.
+
+    Parameters
+    ----------
+    ts_e : np.ndarray
+        Time series (signal) intensity.
+    ts_v : np.ndarray
+        Time series variance.
+    param_arr : types.ListType
+        Parameter array for each dimension.
+    bseg_brute : int
+        Brute force segment size in bins.
+    nbins : int
+        Number of bins in the folded profile.
+    tsamp : float
+        Sampling time of the data.
+
+    Returns
+    -------
+    np.ndarray
+        Initial fold for the FFA search.
+    """
     freq_arr = param_arr[-1]
     t_ref = bseg_brute * tsamp / 2
     return common.brutefold_start(
@@ -34,27 +56,26 @@ def ffa_init(
 
 
 @njit(cache=True, fastmath=True)
-def shift_params(param_vec: np.ndarray, tj_minus_ti: float) -> np.ndarray:
-    """
-    Shift the parameters to a new reference time.
+def shift_params(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
+    """Shift the kinematic parameters to a new reference time.
 
     Parameters
     ----------
     param_vec : np.ndarray
-        Parameter vector [..., a, v, d]
-    tj_minus_ti : float
-        Reference time to shift the parameters to. t_ref = t_j - t_i
+        Parameter vector [..., a, v, d] at reference time t_i.
+    delta_t : float
+        The time difference (t_j - t_i) to shift the parameters by.
 
     Returns
     -------
     np.ndarray
-        Parameters at the new reference time.
+        Parameter vector at the new reference time t_j.
     """
     nparams = len(param_vec)
     powers = np.tril(np.arange(nparams)[:, np.newaxis] - np.arange(nparams))
     # Calculate the transformation matrix (taylor coefficients)
-    coeffs = tj_minus_ti**powers / math.fact(powers) * np.tril(np.ones_like(powers))
-    return np.dot(coeffs, param_vec)
+    t_mat = delta_t**powers / math.fact(powers) * np.tril(np.ones_like(powers))
+    return np.dot(t_mat, param_vec)
 
 
 @njit(cache=True, fastmath=True)
@@ -66,8 +87,7 @@ def ffa_resolve(
     tseg_brute: float,
     nbins: int,
 ) -> tuple[np.ndarray, int]:
-    """
-    Resolve the parameters of the current iter among the previous iter parameters.
+    """Resolve the parameters of the current iter among the previous iter parameters.
 
     Parameters
     ----------
@@ -306,8 +326,7 @@ def poly_taylor_leaves(
     poly_order: int,
     coord_init: tuple[float, float],
 ) -> np.ndarray:
-    """
-    Generate the leaf parameter sets for Taylor polynomials.
+    """Generate the leaf parameter sets for Taylor polynomials.
 
     Parameters
     ----------
@@ -406,8 +425,7 @@ def generate_branching_pattern(
 
 @jitclass(spec=[("cfg", PulsarSearchConfig.class_type.instance_type)])
 class FFASearchDPFunctions:
-    """
-    A container class for the functions used in the FFA search.
+    """A container class for the functions used in the FFA search.
 
     Parameters
     ----------
@@ -424,6 +442,7 @@ class FFASearchDPFunctions:
         ts_v: np.ndarray,
         param_arr: types.ListType[types.Array],
     ) -> np.ndarray:
+        """Receives the data and parameter array and returns the initial fold."""
         return ffa_init(
             ts_e,
             ts_v,
@@ -434,6 +453,7 @@ class FFASearchDPFunctions:
         )
 
     def step(self, ffa_level: int) -> np.ndarray:
+        """Return the parameter step sizes (..., da, df) for the current level."""
         return self.cfg.get_dparams(ffa_level)
 
     def resolve(
@@ -443,6 +463,7 @@ class FFASearchDPFunctions:
         ffa_level: int,
         latter: int,
     ) -> tuple[np.ndarray, int]:
+        """Resolve the current parameters among the previous level parameters."""
         return ffa_resolve(
             pset_cur,
             parr_prev,
@@ -453,12 +474,18 @@ class FFASearchDPFunctions:
         )
 
     def add(self, data_tail: np.ndarray, data_head: np.ndarray) -> np.ndarray:
+        """Addition rule for the FFA search."""
         return defaults.add(data_tail, data_head)
 
     def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:  # noqa: ARG002
+        """Bit packing rule for the FFA search."""
         return defaults.pack(data)
 
     def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
+        """Shift the data by a phase shift.
+
+        Can we handle non-integer phase shifts?
+        """
         return defaults.shift(data, phase_shift)
 
 
@@ -547,18 +574,10 @@ class PruningTaylorDPFunctions:
     def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
         return defaults.shift(data, phase_shift)
 
-    def validate(
-        self,
-        leaves: np.ndarray,
-        coord_valid: tuple[float, float],  # noqa: ARG002
-        validation_params: tuple[np.ndarray, np.ndarray, float],  # noqa: ARG002
-    ) -> np.ndarray:
-        return leaves
-
     def transform(
         self,
         leaf: np.ndarray,
-        coord_ref: tuple[float, float],  # noqa: ARG002
+        coord_cur: tuple[float, float],  # noqa: ARG002
         trans_matrix: np.ndarray,  # noqa: ARG002
     ) -> np.ndarray:
         return leaf
@@ -568,7 +587,17 @@ class PruningTaylorDPFunctions:
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
     ) -> np.ndarray:
+        coord_cur = (self.tseg_ffa * coord_cur[0], self.tseg_ffa * coord_cur[1])
+        coord_prev = (self.tseg_ffa * coord_prev[0], self.tseg_ffa * coord_prev[1])
         return defaults.get_trans_matrix(coord_cur, coord_prev)
+
+    def validate(
+        self,
+        leaves: np.ndarray,
+        coord_valid: tuple[float, float],  # noqa: ARG002
+        validation_params: tuple[np.ndarray, np.ndarray, float],  # noqa: ARG002
+    ) -> np.ndarray:
+        return leaves
 
     def get_validation_params(
         self,

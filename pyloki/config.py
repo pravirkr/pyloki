@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 from numba import typed, types
 from numba.experimental import jitclass
@@ -9,8 +11,51 @@ from pyloki.utils import math, psr_utils
 
 
 class ParamLimits:
+    """Class to hold the search parameter limits/bounds.
+
+    Parameters
+    ----------
+    limits : types.ListType[types.Tuple[float, float]]
+        List of tuples with the min and max values for each search parameter.
+        Should be in the order: ..., jerk, accel, freq.
+        Paramaters are defined at t=t_c (center of the observation).
+    """
+
     def __init__(self, limits: types.ListType[types.Tuple[float, float]]) -> None:
         self.limits = limits
+
+    def get_cheby_limits(
+        self,
+        tobs: float,
+    ) -> types.ListType[types.Tuple[float, float]]:
+        """Get the corresponding Chebyshev coefficient bounds.
+
+        The order is reversed from the Taylor coefficients.
+
+        Parameters
+        ----------
+        tobs : float
+            Total observation time (in seconds).
+
+        Returns
+        -------
+        types.ListType[types.Tuple[float, float]]
+            List of tuples with the Chebyshev coefficient bounds.
+            Should be in the order: [freq, alpha_0, alpha_1, ..., alpha_n], where
+            n is the highest polynomial order in the search.
+        """
+        t_s = tobs / 2
+        # Get kinematic terms only (ignore freq), in increasing derivative order
+        d_limits = self.limits[:-1][::-1]
+        d_limits = [(0, 0), (0, 0), *d_limits]
+        d_corners = np.array(list(itertools.product(*list(d_limits))))
+        alpha_corners = np.vstack(
+            [math.taylor_to_cheby(d_vec, t_s) for d_vec in d_corners],
+        )
+        alpha_bounds = list(
+            zip(np.min(alpha_corners, axis=0), np.max(alpha_corners, axis=0)),
+        )
+        return typed.List([self.limits[-1], *alpha_bounds])
 
     @classmethod
     def from_taylor(
@@ -20,6 +65,24 @@ class ParamLimits:
         jerk: tuple[float, float] | None = None,
         snap: tuple[float, float] | None = None,
     ) -> ParamLimits:
+        """Generate search parameter limits from Taylor series kinematic parameters.
+
+        Parameters
+        ----------
+        freq : tuple[float, float]
+            Frequency range to search (min, max).
+        accel : tuple[float, float] | None, optional
+            Acceleration range to search (min, max), by default None
+        jerk : tuple[float, float] | None, optional
+            Jerk range to search (min, max), by default None
+        snap : tuple[float, float] | None, optional
+            Snap range to search (min, max), by default None
+
+        Returns
+        -------
+        ParamLimits
+            Object with the search parameter limits.
+        """
         default_limit = (0.0, 0.0)
         all_params = [snap, jerk, accel, freq]
         last_non_none = next(
@@ -41,6 +104,24 @@ class ParamLimits:
         p_orb_min: float,
         poly_order: int,
     ) -> ParamLimits:
+        """Generate search parameter limits from circular orbit parameters.
+
+        Parameters
+        ----------
+        freq : tuple[float, float]
+            Frequency range to search (min, max).
+        x_orb : float
+            Projected semi-major axis of the orbit, a * sin(i) / c (in light-sec).
+        p_orb_min : float
+            Minimum orbital period (in seconds).
+        poly_order : int
+            Highest polynomial order to include in the search.
+
+        Returns
+        -------
+        ParamLimits
+            Object with the search parameter limits.
+        """
         out = typed.List([(float(freq[0]), float(freq[1]))])
         omega_orb_max = 2 * np.pi / p_orb_min
         for i in range(2, poly_order + 1):
@@ -58,6 +139,28 @@ class ParamLimits:
         poly_order: int,
         tobs: float,
     ) -> ParamLimits:
+        """Generate search parameter limits from Keplerian orbit parameters.
+
+        Parameters
+        ----------
+        freq : tuple[float, float]
+            Frequency range to search (min, max).
+        x_orb : float
+            Projected semi-major axis of the orbit, a * sin(i) / c (in light-sec).
+        p_orb_min : float
+            Minimum orbital period (in seconds).
+        ecc_max : float
+            Maximum eccentricity of the orbit.
+        poly_order : int
+            Highest polynomial order to include in the search.
+        tobs : float
+            Total observation time (in seconds).
+
+        Returns
+        -------
+        ParamLimits
+            Object with the search parameter limits.
+        """
         out = typed.List([(float(freq[0]), float(freq[1]))])
         omega_orb_max = 2 * np.pi / p_orb_min
         n_rad = tobs * omega_orb_max
@@ -66,7 +169,7 @@ class ParamLimits:
             n_rad,
             ecc_max,
             poly_order + 1,
-            omega_orb_max,
+            p_orb_min,
         )
         for bound in bounds:
             out.insert(0, (-bound, bound))
@@ -173,18 +276,17 @@ class PulsarSearchConfig:
         return self.param_limits[-1][1]
 
     def get_dparams(self, ffa_level: int) -> np.ndarray:
-        """
-        Get the parameter step sizes for the given FFA level.
+        """Get the parameter step sizes for the given FFA level.
 
         Parameters
         ----------
         ffa_level : int
-            FFA level for which to compute the parameter steps
+            FFA level for which to compute the parameter steps.
 
         Returns
         -------
         np.ndarray
-            Array with the parameter step sizes
+            Array with the parameter step sizes.
         """
         tseg_cur = 2**ffa_level * self.tseg_brute
         dparams = np.zeros(self.nparams, dtype=np.float64)
@@ -241,7 +343,7 @@ class PulsarSearchConfig:
 
     def _bseg_brute_default(self) -> int:
         init_levels = 1 if self.nparams == 1 else 5
-        levels = int(np.log2(self.nsamps * self.tsamp * self.f_max) - init_levels)
+        levels = int(np.log2(self.nsamps * self.tsamp * self.f_min) - init_levels)
         return int(self.nsamps / 2**levels)
 
     def _bseg_ffa_default(self) -> int:

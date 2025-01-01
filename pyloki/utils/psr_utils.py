@@ -9,17 +9,16 @@ from pyloki.utils.misc import C_VAL
 
 @vectorize(nopython=True, cache=True)
 def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> int:
-    """
-    Calculate the phase index of the proper time in the folded profile.
+    """Calculate the phase index of the proper time in the folded profile.
 
     Parameters
     ----------
     proper_time : float
         Proper time of the signal in time units.
     freq : float
-        Frequency of the signal in Hz.
+        Frequency of the signal in Hz. Must be positive.
     nbins : int
-        Number of bins in the folded profile.
+        Number of bins in the folded profile. Must be positive.
     delay : float
         Signal delay due to pulsar binary motion in time units.
 
@@ -35,7 +34,11 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
         msg = "Number of bins must be positive."
         raise ValueError(msg)
     phase = ((proper_time + delay) * freq) % 1
-    return int(np.round(phase * nbins)) % nbins
+    # phase is in [0, 1). Round and wrap to ensure it is in [0, nbins).
+    iphase = int(phase * nbins + 0.5)
+    if iphase == nbins:
+        return 0
+    return iphase
 
 
 @njit
@@ -152,8 +155,9 @@ def branch_param(
 ) -> tuple[np.ndarray, float]:
     """Refine a parameter range around a current value with a finer step size.
 
-    This function generates a new array of parameter values around a current
-    parameter value with a finer step size.
+    This function creates a new array of parameter values centered on a specified
+    current value with a desired new step size. The new range is guaranteed to be
+    within the specified minimum and maximum parameter values.
 
     Parameters
     ----------
@@ -179,10 +183,10 @@ def branch_param(
         If the input parameters are invalid.
     """
     if dparam_cur <= 0 or dparam_new <= 0:
-        msg = "dparam_cur and dparam_new must be positive."
+        msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
     if param_cur < param_min or param_cur > param_max:
-        msg = "param_cur must be within [param_min, param_max]."
+        msg = f"param_cur must be within [param_min, param_max], got {param_cur}."
         raise ValueError(msg)
     if dparam_new > (param_max - param_min) / 2:
         # If the desired new step size is too large, return the current value
@@ -201,8 +205,11 @@ def branch_param(
 
 @njit(cache=True, fastmath=True)
 def range_param(vmin: float, vmax: float, dv: float) -> np.ndarray:
-    """
-    Return a range of parameters with a given step size.
+    """Generate an evenly spaced array of values between vmin and vmax.
+
+    Endpoints are excluded. Spacing is uniform, though not guaranteed to be
+    exactly dv if (vmax - vmin) is not a multiple of dv. It ensures symmetry
+    at the cost of a slightly different spacing than dv.
 
     Parameters
     ----------
@@ -211,17 +218,12 @@ def range_param(vmin: float, vmax: float, dv: float) -> np.ndarray:
     vmax : float
         Maximum value of the parameter range.
     dv : float
-        Step size of the parameter range.
+        Desired step size. Actual spacing may differ slightly.
 
     Returns
     -------
     np.ndarray
-        Array of parameter values.
-
-    Notes
-    -----
-    Correctly stepping a parameter is a non-trivial ugly question.
-    Make sure this is right another time.
+        Array of parameter values uniformly spaced between vmin and vmax.
     """
     if not (vmin < vmax and dv > 0):
         msg = "Invalid input: ensure vmin < vmax and dv > 0."

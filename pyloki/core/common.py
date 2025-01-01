@@ -17,8 +17,7 @@ def brutefold(
     nsegments: int,
     nbins: int,
 ) -> np.ndarray:
-    """
-    Fold a time series for a given set of frequencies.
+    """Fold a time series for a given set of frequencies.
 
     Parameters
     ----------
@@ -91,30 +90,29 @@ def brutefold_start(
     tsamp: float,
     t_ref: float = 0,
 ) -> np.ndarray:
-    """
-    Fold a time series for a given set of frequencies.
+    """Fold a time series for a given set of frequencies.
 
     Parameters
     ----------
     ts_e : np.ndarray
-        Time series signal (intensity)
+        Time series signal (intensity).
     ts_v : np.ndarray
-        Time series variance
+        Time series variance.
     freq_arr : np.ndarray
-        Frequency array to fold the time series
+        Array of frequencies to fold the time series.
     segment_len : int
-        Length of each folded segment
+        Length of the segment (in samples) to fold.
     nbins : int
-        Number of bins in the folded profile
+        Number of bins in the folded profile.
     tsamp : float
-        Sampling time of the time series
+        Sampling time of the time series.
     t_ref : float, optional
-        Reference time in segment e.g. start, middle, etc. (default: 0)
+        Reference time in segment e.g. start, middle, etc. (default: 0).
 
     Returns
     -------
     np.ndarray
-        Folded time series with shape (nsegments, nfreqs, 2, nbins)
+        Folded time series with shape (nsegments, nfreqs, 2, nbins).
     """
     nfreqs = len(freq_arr)
     nsamples = len(ts_e)
@@ -134,8 +132,9 @@ def brutefold_start(
         segment_start = iseg * segment_len
         ts_e_seg = ts_e[segment_start : segment_start + segment_len]
         ts_v_seg = ts_v[segment_start : segment_start + segment_len]
+        segment_len_actual = len(ts_e_seg)
         for ifreq in range(nfreqs):
-            for isamp in range(segment_len):
+            for isamp in range(segment_len_actual):
                 iphase = phase_map[ifreq, isamp]
                 fold[iseg, ifreq, 0, iphase] += ts_e_seg[isamp]
                 fold[iseg, ifreq, 1, iphase] += ts_v_seg[isamp]

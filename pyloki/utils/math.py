@@ -8,6 +8,8 @@ from numba.extending import get_cython_function_address
 from numpy import polynomial
 from scipy import stats
 
+from pyloki.utils import np_utils
+
 addr = get_cython_function_address("scipy.special.cython_special", "binom")
 functype = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double, ctypes.c_double)
 cbinom_func = functype(addr)
@@ -105,7 +107,7 @@ def gen_chebyshev_polys_table_np(order: int, n_derivs: int) -> np.ndarray:
 
 @njit(cache=True, fastmath=True)
 def gen_chebyshev_polys_table(order_max: int, n_derivs: int) -> np.ndarray:
-    """Generate table of Chebyshev polynomials of the first kind and their derivatives.
+    """Generate Chebyshev polynomials of the first kind and their derivatives.
 
     This function uses the recurrence relation for Chebyshev polynomials to efficiently
     generate a table of polynomials up to the specified maximum order, along with
@@ -114,21 +116,21 @@ def gen_chebyshev_polys_table(order_max: int, n_derivs: int) -> np.ndarray:
     Parameters
     ----------
     order_max : int
-        The maximum order of the polynomials to generate (T_0, T_1, ..., T_order_max).
+        The highest polynomial order to generate (T_0, T_1, ..., T_order_max).
     n_derivs : int
-        The number of derivatives to generate for each polynomial (0th derivative
+        The number of derivatives to compute for each polynomial (0th derivative
         is the polynomial itself).
 
     Returns
     -------
     np.ndarray
-        A 3D array of shape (n_derivs + 1, order_max + 1, order_max + 1) containing the
-        coefficients of the polynomials and their derivatives.
+        A 3D array with shape (n_derivs + 1, order_max + 1, order_max + 1)
+        containing the coefficients of the polynomials and their derivatives.
         The array is indexed as [i_deriv, i_order, i_coeff].
 
     Notes
     -----
-    The Chebyshev polynomials of the first kind are defined as:
+    Chebyshev polynomials of the first kind are defined by:
     T_0(x) = 1
     T_1(x) = x
     T_{n+1}(x) = 2x * T_n(x) - T_{n-1}(x) for n > 1
@@ -183,7 +185,7 @@ def gen_design_matrix_taylor(
 
 @njit(fastmath=True)
 def generalized_cheb_pols(poly_order: int, t0: float, scale: float) -> np.ndarray:
-    """Generate table of generalized Chebyshev polynomials.
+    """Generate a set of generalized Chebyshev polynomials.
 
     This function computes the coefficients of generalized Chebyshev polynomials,
     which are defined as Chebyshev polynomials with a shifted and scaled domain.
@@ -191,11 +193,11 @@ def generalized_cheb_pols(poly_order: int, t0: float, scale: float) -> np.ndarra
     Parameters
     ----------
     poly_order : int
-        The maximum order of the polynomials to generate (upto T_poly_order)
+        The maximum order of the polynomials to generate (T_0 through T_poly_order).
     t0 : float
-        Shifted origin of the polynomials.
+        Shift parameter or the center of the domain for the polynomials.
     scale : float
-        Scaling factor for the polynomials.
+        Scale parameter for the domain of the polynomials.
 
     Returns
     -------
@@ -246,3 +248,337 @@ def gen_power_series_table_np(order_max: int, n_derivs: int) -> np.ndarray:
 @njit(cache=True, fastmath=True)
 def is_power_of_two(n: int) -> bool:
     return (n != 0) and (n & (n - 1) == 0)
+
+
+@njit
+def compute_connection_coefficient_s(k: int, m: int) -> float:
+    """Compute the connection coefficient S_{k,m}.
+
+    Parameters
+    ----------
+    k : int
+        Power series exponent, x^k.
+    m : int
+        Order of the Chebyshev polynomial, T_m(x).
+
+    Returns
+    -------
+    float
+        Connection coefficient S_{k,m}.
+    """
+    # Check if k-m is even and m <= k
+    if k < 0 or m < 0 or m > k or (k - m) % 2 != 0:
+        return 0.0
+    n = (k - m) // 2
+    deltam0 = 1 if m == 0 else 0
+    return 2 ** (1 - k - deltam0) * nbinom(k, n)
+
+
+@njit
+def compute_connection_coefficient_r(k: int, m: int) -> float:
+    """Compute the connection coefficient R_{k,m}.
+
+    Parameters
+    ----------
+    k : int
+        Order of the Chebyshev polynomial, T_k(x).
+    m : int
+        Power series exponent, x^m.
+
+    Returns
+    -------
+    float
+        Connection coefficient R_{k,m}.
+    """
+    if k < 0 or m < 0 or m > k or (k - m) % 2 != 0:
+        return 0.0
+    if m == 0 and k % 2 == 0:
+        return (-1) ** (k // 2)
+    n = (k - m) // 2
+    r = (k + m) // 2
+    return ((-1) ** n) * (2 ** (m - 1)) * (2 * k / (k + m)) * nbinom(r, n)
+
+
+@njit
+def compute_transformation_coefficient_c(n: int, k: int, p: float, q: float) -> float:
+    """Compute the transformation coefficient C_{n,k}(p,q).
+
+    Parameters
+    ----------
+    n : int
+        Order of the source Chebyshev polynomial, T_n(x).
+    k : int
+        Order of the target Chebyshev polynomial, T_k(x).
+    p : float
+        Scale factor ratio b/d.
+    q : float
+        Translation factor (a-c)/d.
+
+    Returns
+    -------
+    float
+        Transformation coefficient C_{n,k}(p,q) for Chebyshev basis change.
+    """
+    if k > n:
+        return 0.0
+    result = 0.0
+    for m in range(k, n + 1):
+        r_nm = compute_connection_coefficient_r(n, m)
+        inner_sum = 0.0
+        for i in range(k, m + 1):
+            s_ik = compute_connection_coefficient_s(i, k)
+            term = nbinom(m, i) * p**i * q ** (m - i) * s_ik
+            inner_sum += term
+        result += r_nm * inner_sum
+    return result
+
+
+@njit
+def compute_connection_matrix_s(k_max: int) -> np.ndarray:
+    """Compute the connection coefficient matrix S.
+
+    Parameters
+    ----------
+    k_max : int
+        Maximum order for both power series and Chebyshev polynomials.
+
+    Returns
+    -------
+    np.ndarray
+        Matrix S where S[k,m] contains the connection coefficient S_{k,m}.
+        Shape is (k_max + 1, k_max + 1).
+        Lower triangular matrix since S_{k,m} = 0 for m > k.
+    """
+    if k_max < 0:
+        msg = "k_max must be a non-negative integer."
+        raise ValueError(msg)
+    s_mat = np.zeros((k_max + 1, k_max + 1), dtype=np.float32)
+    for k in range(k_max + 1):
+        for m in range(k + 1):
+            s_mat[k, m] = compute_connection_coefficient_s(k, m)
+    return s_mat
+
+
+@njit
+def compute_connection_matrix_r(k_max: int) -> np.ndarray:
+    """Compute the connection coefficient matrix R.
+
+    Parameters
+    ----------
+    k_max : int
+        Maximum order for both power series and Chebyshev polynomials.
+
+    Returns
+    -------
+    np.ndarray
+        Matrix R where R[k,m] contains the connection coefficient R_{k,m}.
+        Shape is (k_max + 1, k_max + 1).
+        Lower triangular matrix since R_{k,m} = 0 for m > k.
+    """
+    r_mat = np.zeros((k_max + 1, k_max + 1), dtype=np.float32)
+    for k in range(k_max + 1):
+        for m in range(k + 1):
+            r_mat[k, m] = compute_connection_coefficient_r(k, m)
+    return r_mat
+
+
+@njit
+def poly_chebyshev_transform_matrix(
+    poly_order: int,
+    tc1: float,
+    ts1: float,
+    tc2: float,
+    ts2: float,
+) -> np.ndarray:
+    """Compute the transformation coefficient matrix C.
+
+    Parameters
+    ----------
+    poly_order : int
+        Maximum order for Chebyshev bases (k_max).
+    tc1 : float
+        Center of the domain for the input Chebyshev polynomials.
+    ts1 : float
+        Scale factor for the input Chebyshev polynomials.
+    tc2 : float
+        Center of the domain for the output Chebyshev polynomials.
+    ts2 : float
+        Scale factor for the output Chebyshev polynomials.
+
+    Returns
+    -------
+    np.ndarray
+        Matrix C where C[n,k] contains the transformation coefficient C_{n,k}(p,q).
+        Shape is (k_max + 1, k_max + 1).
+    """
+    k_max = poly_order
+    if k_max < 0:
+        msg = "k_max must be a non-negative integer."
+        raise ValueError(msg)
+    if ts1 <= 0 or ts2 <= 0:
+        msg = "ts1 and ts2 must be positive."
+        raise ValueError(msg)
+    p = ts2 / ts1
+    q = (tc2 - tc1) / ts1
+    c_mat = np.zeros((k_max + 1, k_max + 1), dtype=np.float32)
+    for n in range(k_max + 1):
+        for k in range(k_max + 1):
+            c_mat[n, k] = compute_transformation_coefficient_c(n, k, p, q)
+    return c_mat
+
+
+def taylor_to_cheby(d_vec: np.ndarray, t_s: float) -> np.ndarray:
+    r"""Transform Taylor series coefficients to Chebyshev coefficients.
+
+    Parameters
+    ----------
+    d_vec : np.ndarray
+        Taylor series coefficients [d_0, d_1, ..., d_k_max]
+        where d_k is coefficient of (t - t_c)^k/k!.
+    t_s : float
+        Scale factor for the transformation, typically half the time span.
+
+    Returns
+    -------
+    np.ndarray
+        Chebyshev coefficients [\alpha_0, \alpha_1, ..., \alpha_k_max].
+    """
+    if t_s <= 0:
+        msg = "t_s must be a positive."
+        raise ValueError(msg)
+    k_max = len(d_vec) - 1
+    s_mat = compute_connection_matrix_s(k_max)
+    k_range = np.arange(k_max + 1, dtype=np.int64)
+    k_factorial = np.array([fact(k) for k in k_range], dtype=np.float32)
+    d_scaled = d_vec * t_s**k_range / k_factorial
+    return np.dot(s_mat.T, d_scaled)
+
+
+def cheby_to_taylor(alpha_vec: np.ndarray, t_s: float) -> np.ndarray:
+    r"""Transform Chebyshev coefficients to Taylor series coefficients.
+
+    Parameters
+    ----------
+    alpha_vec : np.ndarray
+        Chebyshev coefficients [\alpha_0, \alpha_1, ..., \alpha_k_max].
+    t_s : float
+        Scale factor for the transformation, typically half the time span.
+
+    Returns
+    -------
+    np.ndarray
+        Taylor series coefficients [d_0, d_1, ..., d_k_max]
+        where d_k is coefficient of (t - t_c)^k/k!.
+    """
+    if t_s <= 0:
+        msg = "t_s must be a positive."
+        raise ValueError(msg)
+    k_max = len(alpha_vec) - 1
+    r_mat = compute_connection_matrix_r(k_max)
+    k_range = np.arange(k_max + 1, dtype=np.int64)
+    k_factorial = np.array([fact(k) for k in k_range], dtype=np.float32)
+    scaled_param = alpha_vec * k_factorial / t_s**k_range
+    return np.dot(r_mat.T, scaled_param)
+
+
+@njit(cache=True, fastmath=True)
+def cheby2taylor(
+    param_vec: np.ndarray,
+    t_eval: float,
+    t0: float,
+    scale: float,
+    deriv_index: int,
+    cheb_table: np.ndarray,
+    eff_deg: int = -3,
+) -> np.ndarray:
+    r"""Get Taylor series coefficients from Chebyshev coefficients.
+
+    Parameters
+    ----------
+    param_vec : np.ndarray
+        Chebyshev coefficients [\alpha_0, \alpha_1, ..., \alpha_k_max].
+    t_eval : float
+        Time at which to evaluate the polynomial.
+    t0 : float
+        Reference time of the polynomial (t_c).
+    scale : float
+        Scale of the polynomial (t_s).
+    deriv_index : int
+        Index of the derivative to evaluate (k-th derivative).
+    cheb_table : np.ndarray
+        Precomputed Chebyshev polynomials and their derivatives.
+    eff_deg : int, optional
+        Effective degree of the polynomial, by default -3.
+
+    Returns
+    -------
+    np.ndarray
+        The value of the polynomial at the given time.
+
+    Notes
+    -----
+    The effective degree is -3 by default as this value reproduces (after +1) the -2
+    (which is the last coefficient by convention).
+    """
+    table = cheb_table[deriv_index]
+    x = (t_eval - t0) / scale
+    coeffs = param_vec[: eff_deg + 1]
+    eff_deg = len(coeffs) - 1 if eff_deg < 0 else eff_deg
+    pol = np.sum(coeffs[:, np.newaxis] * table[:, : eff_deg + 1], axis=0)
+    polyval = np.polynomial.polynomial.polyval(x, pol)
+    return polyval / scale**deriv_index
+
+
+@njit(cache=True, fastmath=True)
+def find_small_polys(
+    degree: int,
+    error_bound: int,
+    oversampling: int = 4,
+    npoints: int = 128,
+    max_violations: int = 12,
+) -> tuple[list, float, float]:
+    """Find small polynomials in the phase space.
+
+    Enumerate the phase space of all polynomials up to a certain resolution to find the
+    volume of small polynomials. The volume roughly fits the expected volume from using
+    the basis of Chebyshev polynomials.
+
+    Parameters
+    ----------
+    degree : int
+        Maximum degree of the polynomials.
+    error_bound : int
+        Maximum allowed deviation from zero.
+    oversampling : int, optional
+        Factor to increase density of coefficient sampling, by default 4.
+    npoints : int, optional
+        Number of points to evaluate the polynomials, by default 128.
+    max_violations : int, optional
+        Maximum number of points allowed to exceed the error bound, by default 12.
+
+    Returns
+    -------
+    tuple[list, float, float]
+        - good_poly: List of small polynomials.
+        - point_volume: Volume of a single point in the phase space.
+        - volume_factor: Factor to scale the point volume to the total volume.
+    """
+    test_points = np.linspace(-1, 1, npoints)
+    phase_space = np_utils.cartesian_prod(
+        [
+            np.linspace(
+                -(degree - 1) * error_bound,
+                (degree - 1) * error_bound,
+                2 * (degree - 1) * oversampling,
+            )
+            for _ in range(degree)
+        ],
+    )
+    point_volume = (2 * (degree - 1)) ** degree / len(phase_space)
+    x_matrix = test_points[:, np.newaxis] ** np.arange(degree)
+    poly_values = np.dot(x_matrix, phase_space.T)
+    # Find good polynomials
+    good_poly_mask = np.sum(np.abs(poly_values) > error_bound, axis=0) < max_violations
+    good_poly = phase_space[good_poly_mask]
+    volume_factor = point_volume * len(good_poly) / 2**degree
+    return good_poly, point_volume, volume_factor

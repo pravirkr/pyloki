@@ -51,85 +51,13 @@ def effective_degree(pol_coeffs: np.ndarray, eps: float) -> int:
 
 
 @njit(cache=True, fastmath=True)
-def find_small_polys(
-    deg: int,
-    err: int,
-    over_samp: int = 4,
-) -> tuple[list, float, float]:
-    """Enumerate the phase space of all polynomials up to a certain resolution.
-
-    To find the volume of small polynomials. The volume roughly fits the expected
-    volume from using the basis of chebychev polynomials.
-
-    """
-    test_range = np.linspace(-1, 1, 128)
-    phase_space = np_utils.cartesian_prod(
-        [
-            np.linspace(-(deg - 1) * err, (deg - 1) * err, 2 * (deg - 1) * over_samp)
-            for _ in range(deg)
-        ],
-    )
-    point_volume = (2 * (deg - 1)) ** deg / len(phase_space)
-    x_matrix = test_range[:, np.newaxis] ** np.arange(deg)
-    poly_values = np.dot(x_matrix, phase_space.T)
-    # Find good polynomials
-    good_poly_mask = np.sum(np.abs(poly_values) > err, 0) < 12
-    good_poly = phase_space[good_poly_mask]
-    volume_factor = point_volume * len(good_poly) / 2**deg
-    return good_poly, point_volume, volume_factor
-
-
-@njit(cache=True, fastmath=True)
-def chebychev_poly_evaluate(
-    cheb_table: np.ndarray,
-    t_minus_t0: float,
-    param_set: np.ndarray,
-    deriv_index: int,
-    eff_deg: int = -3,
-) -> np.ndarray:
-    """Evaluate a Chebyshev polynomial at a given time.
-
-    Parameters
-    ----------
-    cheb_table : np.ndarray
-        Precomputed Chebyshev polynomials and their derivatives.
-    t_minus_t0 : float
-        Time at which to evaluate the polynomial.
-    param_set : np.ndarray
-        Parameter set with Chebyshev coefficients.
-    deriv_index : int
-        Index of the derivative to evaluate.
-    eff_deg : int, optional
-        Effective degree of the polynomial, by default -3.
-
-    Returns
-    -------
-    np.ndarray
-        The value of the polynomial at the given time.
-
-    Notes
-    -----
-    The effective degree is -3 by default as this value reproduces (after +1) the -2
-    (which is the last coefficient by convention).
-    """
-    tab = cheb_table[deriv_index]
-    scale = param_set[-1, 1]
-    coeffs = param_set[: eff_deg + 1, 0]
-    eff_deg = len(coeffs) - 1 if eff_deg < 0 else eff_deg
-    pol = np.sum(coeffs[:, np.newaxis] * tab[:, : eff_deg + 1], axis=0)
-    polyval = np.polynomial.polynomial.polyval(t_minus_t0 / scale, pol)
-    return polyval / scale**deriv_index
-
-
-@njit(cache=True, fastmath=True)
 def poly_chebyshev_leaves(
     param_arr: types.ListType,
     dparams: np.ndarray,
     poly_order: int,
     coord_init: tuple[float, float],
 ) -> np.ndarray:
-    """
-    Generate the leaf parameter sets for Chebyshev polynomials.
+    """Generate the leaf parameter sets for Chebyshev polynomials.
 
     Parameters
     ----------
@@ -155,12 +83,10 @@ def poly_chebyshev_leaves(
     -----
     Conventions for the leaf parameter sets:
     alpha[:-2, 0] -> Chebyshev polynomial coefficients,
-    alpha[:-2, 1] -> tolerance on each coefficient,
+    alpha[:-2, 1] -> Tolerance (step size) on each coefficient,
     alpha[-2, 0]  -> pulsar frequency at data start (f0),
-    alpha[-1, 0]  -> reference time (from the data start) (t0),
-    alpha[-1, 1]  -> scaling (scales the input to the polynomials, so that
-                    the polynomials are defined in the range [-1, 1]).
-
+    alpha[-1, 0]  -> reference time from the data start (t_c),
+    alpha[-1, 1]  -> scaling, so that Chebyshev polys are fixed to [-1,1] (t_s).
     """
     t0, scale = coord_init
     param_cart = np_utils.cartesian_prod(param_arr)
@@ -178,14 +104,14 @@ def poly_chebyshev_leaves(
     alpha_vec[:, 1, 1] = dparams[0] / param_cart[:, -1] * C_VAL
     alpha_vec[:, 2:-2, 1] = dparams[1:] * np.diag(conversion_matrix)[2:]
 
-    alpha_vec[:, -2, 0] = param_cart[:, -1] # f0
+    alpha_vec[:, -2, 0] = param_cart[:, -1]  # f0
     alpha_vec[:, -1, 0] = t0
     alpha_vec[:, -1, 1] = scale
     return alpha_vec
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebychev_suggestion_struct(
+def poly_chebyshev_suggestion_struct(
     fold_segment: np.ndarray,
     param_arr: types.ListType,
     dparams: np.ndarray,
@@ -231,7 +157,7 @@ def poly_chebychev_suggestion_struct(
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebychev_branch2leaves(
+def poly_chebyshev_branch2leaves(
     param_set: np.ndarray,
     tol: float,
     tsamp: float,
@@ -259,7 +185,7 @@ def poly_chebychev_branch2leaves(
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebychev_resolve(
+def poly_chebyshev_resolve(
     leaf: np.ndarray,
     param_arr: types.ListType,
     coord_add: tuple[float, float],
@@ -293,25 +219,24 @@ def poly_chebychev_resolve(
     -----
     leaf is referenced to t0, so we need to shift it to t_ref_add and t_ref_init
     to get the resolved parameters index and phase shift.
-    Check if the t_ref should be in the middle of the segment.
 
     """
-    t0, _ = leaf[-1]
-    tcheby = coord_add[0] - t0
-    tzero = coord_init[0] - t0
-
-    eff_deg = effective_degree(leaf[:-2, 0], 1000)
-    a_tcheby = chebychev_poly_evaluate(cheb_table, tcheby, leaf, 2, eff_deg)
-    v_tcheby = chebychev_poly_evaluate(cheb_table, tcheby, leaf, 1, eff_deg)
-    v_tzero = chebychev_poly_evaluate(cheb_table, tzero, leaf, 1, eff_deg)
-    d_tcheby = chebychev_poly_evaluate(cheb_table, tcheby, leaf, 0, eff_deg)
-    d_tzero = chebychev_poly_evaluate(cheb_table, tzero, leaf, 0, eff_deg)
-
+    t0, scale = leaf[-1]
+    t_add = coord_add[0]
+    t_init = coord_init[0]
+    param_vec = leaf[:-2, 0]
     f0 = leaf[-2, 0]
 
-    new_a = a_tcheby
-    new_f = f0 * (1 + (v_tcheby - v_tzero) / C_VAL)
-    delay = (d_tcheby - d_tzero) / C_VAL
+    eff_deg = effective_degree(param_vec, 1000)
+    a_t_add = math.cheby2taylor(param_vec, t_add, t0, scale, 2, cheb_table, eff_deg)
+    v_t_add = math.cheby2taylor(param_vec, t_add, t0, scale, 1, cheb_table, eff_deg)
+    v_t_init = math.cheby2taylor(param_vec, t_init, t0, scale, 1, cheb_table, eff_deg)
+    d_t_add = math.cheby2taylor(param_vec, t_add, t0, scale, 0, cheb_table, eff_deg)
+    d_t_init = math.cheby2taylor(param_vec, t_init, t0, scale, 0, cheb_table, eff_deg)
+
+    new_a = a_t_add
+    new_f = f0 * (1 + (v_t_add - v_t_init) / C_VAL)
+    delay = (d_t_add - d_t_init) / C_VAL
 
     # phase is measured relative to the phase at 0
     relative_phase = psr_utils.get_phase_idx(coord_add[0], f0, nbins, delay)
@@ -324,7 +249,7 @@ def poly_chebychev_resolve(
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebychev_transform_matrix(
+def poly_chebyshev_transform_matrix(
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
     poly_order: int,
@@ -338,7 +263,7 @@ def poly_chebychev_transform_matrix(
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebychev_transform(
+def poly_chebyshev_transform(
     leaf: np.ndarray,
     coord_ref: tuple[float, float],
     trans_matrix: np.ndarray,
@@ -359,7 +284,7 @@ def poly_chebychev_transform(
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebychev_validate(
+def poly_chebyshev_validate(
     leaves: np.ndarray,
     t_ref_add: float,
     t_ref_init: float,
@@ -404,8 +329,19 @@ def leaf_validate_physical(
     cheb_table: np.ndarray,
     period_bounds: np.ndarray,
 ) -> bool:
-    eff_degree = effective_degree(leaf[:-2, 0], 1000)
-    values = chebychev_poly_evaluate(cheb_table, time_arr, leaf, 0, eff_degree)
+    t0, scale = leaf[-1]
+    param_vec = leaf[:-2, 0]
+    p0 = 1 / leaf[-2, 0]
+    eff_degree = effective_degree(param_vec, 1000)
+    values = math.cheby2taylor(
+        param_vec,
+        time_arr,
+        t0,
+        scale,
+        0,
+        cheb_table,
+        eff_degree,
+    )
     med = np.median(values)
     st = np.std(values)
     max_diff = np.max(values) - med
@@ -417,14 +353,15 @@ def leaf_validate_physical(
     )
     is_epicycle_fit = epicycle_err < validation_params[2]
     if max_diff < 3.2 * st and min_diff < 3.2 * st and is_epicycle_fit:
-        p0 = leaf[-2, 0]
         good = True
         for deriv_index in range(1, len(deriv_bounds)):
-            values = chebychev_poly_evaluate(
-                cheb_table,
+            values = math.cheby2taylor(
+                param_vec,
                 time_arr,
-                leaf,
+                t0,
+                scale,
                 deriv_index,
+                cheb_table,
                 eff_degree,
             )
             if deriv_index == 1:
@@ -519,6 +456,7 @@ def prepare_epicyclic_validation_params(
         fit_mat_left[i] = mat.T
     return fit_mat_left, fit_mat_right, epicycle_bound
 
+
 @jitclass(
     spec=[
         ("cfg", PulsarSearchConfig.class_type.instance_type),
@@ -549,8 +487,7 @@ class PruningChebychevDPFunctions:
         self.cheb_table = math.gen_chebyshev_polys_table(poly_order, n_derivs)
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
-        """
-        Load the data for the given segment index from the folded data structure.
+        """Load the data for the given segment index from the folded data structure.
 
         Parameters
         ----------
@@ -583,9 +520,25 @@ class PruningChebychevDPFunctions:
         coord_add: tuple[float, float],
         coord_init: tuple[float, float],
     ) -> tuple[np.ndarray, int]:
+        """Resolve the leaf parameters to find the closest param index and phase shift.
+
+        Parameters
+        ----------
+        leaf : np.ndarray
+            Current leaf parameter set.
+        coord_add : tuple[float, float]
+            Time coordinate of the added segment.
+        coord_init : tuple[float, float]
+            Time coordinate of the starting segment.
+
+        Returns
+        -------
+        tuple[np.ndarray, int]
+            The resolved parameter index and the relative phase shift.
+        """
         coord_add = (coord_add[0] * self.tseg_ffa, coord_add[1] * self.tseg_ffa)
         coord_init = (coord_init[0] * self.tseg_ffa, coord_init[1] * self.tseg_ffa)
-        return poly_chebychev_resolve(
+        return poly_chebyshev_resolve(
             leaf,
             self.param_arr,
             coord_add,
@@ -599,8 +552,7 @@ class PruningChebychevDPFunctions:
         param_set: np.ndarray,
         coord_cur: tuple[float, float],
     ) -> np.ndarray:
-        """
-        Branch the current parameter set into the finer grid of parameters (leaves).
+        """Branch the current parameter set into the finer grid of parameters (leaves).
 
         Parameters
         ----------
@@ -613,7 +565,7 @@ class PruningChebychevDPFunctions:
             The branched parameter set.
         """
         coord_cur = (coord_cur[0] * self.tseg_ffa, coord_cur[1] * self.tseg_ffa)
-        return poly_chebychev_branch2leaves(
+        return poly_chebyshev_branch2leaves(
             param_set,
             self.cfg.tol,
             self.cfg.tsamp,
@@ -625,8 +577,7 @@ class PruningChebychevDPFunctions:
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
     ) -> common.SuggestionStruct:
-        """
-        Generate an initial suggestion struct for the starting segment.
+        """Generate an initial suggestion struct for the starting segment.
 
         Parameters
         ----------
@@ -641,18 +592,24 @@ class PruningChebychevDPFunctions:
             The initial suggestion struct for the segment.
         """
         coord_init = (coord_init[0] * self.tseg_ffa, coord_init[1] * self.tseg_ffa)
-        return poly_chebychev_suggestion_struct(
+        dparams = np.array(
+            [self.dparams[-1], self.dparams[-2]]  # df, da
+            + [
+                2 * self.cfg.deriv_bounds[k] / math.fact(k)
+                for k in range(3, self.poly_order + 1)
+            ],
+        )
+        return poly_chebyshev_suggestion_struct(
             fold_segment,
             self.param_arr,
-            self.dparams,
+            dparams,
             self.poly_order,
             coord_init,
             self.score,
         )
 
     def score(self, combined_res: np.ndarray) -> float:
-        """
-        Calculate the statistical detection score of the combined fold.
+        """Calculate the statistical detection score of the combined fold.
 
         Parameters
         ----------
@@ -680,14 +637,52 @@ class PruningChebychevDPFunctions:
     def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
         return defaults.shift(data, phase_shift)
 
+    def transform(
+        self,
+        leaf: np.ndarray,
+        coord_cur: tuple[float, float],
+        trans_matrix: np.ndarray,
+    ) -> np.ndarray:
+        """Transform the leaf parameters to the new coordinate system.
+
+        Parameters
+        ----------
+        leaf : np.ndarray
+            Current leaf parameter set.
+        coord_cur : tuple[float, float]
+            The new coordinate to transform the leaf to.
+        trans_matrix : np.ndarray
+            The transformation matrix to apply.
+
+        Returns
+        -------
+        np.ndarray
+            The transformed leaf parameter set.
+        """
+        coord_cur = (self.tseg_ffa * coord_cur[0], self.tseg_ffa * coord_cur[1])
+        return poly_chebyshev_transform(leaf, coord_cur, trans_matrix)
+
+    def get_transform_matrix(
+        self,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> np.ndarray:
+        """Get the transformation matrix between two coordinate systems."""
+        coord_cur = (self.tseg_ffa * coord_cur[0], self.tseg_ffa * coord_cur[1])
+        coord_prev = (self.tseg_ffa * coord_prev[0], self.tseg_ffa * coord_prev[1])
+        return poly_chebyshev_transform_matrix(
+            coord_cur,
+            coord_prev,
+            self.poly_order,
+        )
+
     def validate(
         self,
         leaves: np.ndarray,
         coord_valid: tuple[float, float],
         validation_params: tuple[np.ndarray, np.ndarray, float],
     ) -> np.ndarray:
-        """
-        Validate which of the leaves are physical.
+        """Validate which of the leaves are physical.
 
         Parameters
         ----------
@@ -712,7 +707,7 @@ class PruningChebychevDPFunctions:
         """
         t_ref_add = self.tseg_ffa * coord_valid[1]
         t_ref_init = self.tseg_ffa * coord_valid[0]
-        return poly_chebychev_validate(
+        return poly_chebyshev_validate(
             leaves,
             t_ref_add,
             t_ref_init,
@@ -724,34 +719,11 @@ class PruningChebychevDPFunctions:
             self.period_bounds,
         )
 
-    def transform(
-        self,
-        leaf: np.ndarray,
-        coord_cur: tuple[float, float],
-        trans_matrix: np.ndarray,
-    ) -> np.ndarray:
-        coord_cur = (self.tseg_ffa * coord_cur[0], self.tseg_ffa * coord_cur[1])
-        return poly_chebychev_transform(leaf, coord_cur, trans_matrix)
-
-    def get_transform_matrix(
-        self,
-        coord_cur: tuple[float, float],
-        coord_prev: tuple[float, float],
-    ) -> np.ndarray:
-        coord_cur = (self.tseg_ffa * coord_cur[0], self.tseg_ffa * coord_cur[1])
-        coord_prev = (self.tseg_ffa * coord_prev[0], self.tseg_ffa * coord_prev[1])
-        return poly_chebychev_transform_matrix(
-            coord_cur,
-            coord_prev,
-            self.poly_order,
-        )
-
     def get_validation_params(
         self,
         coord_add: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray, float]:
-        """
-        Prepare the validation parameters for the epicyclic validation.
+        """Prepare the validation parameters for the epicyclic validation.
 
         Parameters
         ----------

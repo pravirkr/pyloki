@@ -8,8 +8,7 @@ from pyloki.utils import np_utils
 
 @njit(cache=True, fastmath=True)
 def load_folds_1d(fold: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
-    """
-    Load the fold from the input structure (1D-case).
+    """Load the fold from the input structure (1D-case).
 
     Parameters
     ----------
@@ -30,8 +29,7 @@ def load_folds_1d(fold: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndar
 
 @njit(cache=True, fastmath=True)
 def load_folds_2d(fold: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
-    """
-    Load the fold from the input structure (2D-case).
+    """Load the fold from the input structure (2D-case).
 
     Parameters
     ----------
@@ -89,8 +87,7 @@ def load_prune_folds_4d(fold: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
 def set_ffa_load_func(
     nparams: int,
 ) -> Callable[[np.ndarray, int, np.ndarray], np.ndarray]:
-    """
-    Set the appropriate load function based on the number of parameters.
+    """Set the appropriate load function based on the number of parameters.
 
     Parameters
     ----------
