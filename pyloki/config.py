@@ -8,6 +8,7 @@ from numba.experimental import jitclass
 
 from pyloki import kepler
 from pyloki.utils import math, psr_utils
+from pyloki.utils.misc import C_VAL
 
 
 class ParamLimits:
@@ -99,7 +100,7 @@ class ParamLimits:
     @classmethod
     def from_circular(
         cls,
-        freq: tuple[float, float],
+        freq: float,
         x_orb: float,
         p_orb_min: float,
         poly_order: int,
@@ -108,10 +109,11 @@ class ParamLimits:
 
         Parameters
         ----------
-        freq : tuple[float, float]
-            Frequency range to search (min, max).
+        freq : float
+            Expected frequency of the orbit (in Hz).
         x_orb : float
-            Projected semi-major axis of the orbit, a * sin(i) / c (in light-sec).
+            Projected orbital radius, a * sin(i) / c (in light-sec).
+            0.005 * ((m_p + m_c) * p_orb**2)**(1/3) * m_c/(m_p + m_c)
         p_orb_min : float
             Minimum orbital period (in seconds).
         poly_order : int
@@ -122,12 +124,45 @@ class ParamLimits:
         ParamLimits
             Object with the search parameter limits.
         """
-        out = typed.List([(float(freq[0]), float(freq[1]))])
         omega_orb_max = 2 * np.pi / p_orb_min
-        for i in range(2, poly_order + 1):
-            coeff = x_orb * omega_orb_max**i
-            out.insert(0, (-coeff, coeff))
-        return cls(out)
+        max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
+        bounds = [(-d, d) for d in max_derivs[2:][::-1]]
+        freq_shift = max_derivs[1] / C_VAL
+        bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
+        return cls(typed.List(bounds))
+
+    @classmethod
+    def from_upper(
+        cls,
+        freq: float,
+        d_max: float,
+        d_order: int,
+        p_orb_min: float,
+    ) -> ParamLimits:
+        """Generate search parameter limits from maximum derivative.
+
+        Parameters
+        ----------
+        freq : float
+            Expected frequency of the orbit (in Hz).
+        d_max : float
+            Maximum value of the highest derivative.
+        d_order : int
+            Order of the highest derivative (e.g. 3 for jerk).
+        p_orb_min : float
+            Minimum orbital period (in seconds).
+
+        Returns
+        -------
+        ParamLimits
+            Object with the search parameter limits.
+        """
+        omega_orb_max = 2 * np.pi / p_orb_min
+        max_derivs = d_max * omega_orb_max ** np.arange(-d_order, 1)
+        bounds = [(-d, d) for d in max_derivs[2:][::-1]]
+        freq_shift = max_derivs[1] / C_VAL
+        bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
+        return cls(typed.List(bounds))
 
     @classmethod
     def from_keplerian(
@@ -275,8 +310,30 @@ class PulsarSearchConfig:
         """:obj:`float`: Maximum frequency value to search."""
         return self.param_limits[-1][1]
 
+    def get_dparams_f(self, ffa_level: int) -> np.ndarray:
+        """Get the step sizes for frequency and its derivatives.
+
+        Parameters
+        ----------
+        ffa_level : int
+            FFA level for which to compute the parameter steps.
+
+        Returns
+        -------
+        np.ndarray
+            Array with the step sizes in decreasing derivative order.
+        """
+        tseg_cur = 2**ffa_level * self.tseg_brute
+        return psr_utils.poly_taylor_step_f(
+            self.nparams,
+            tseg_cur,
+            self.nbins,
+            self.tol,
+            t_ref=tseg_cur / 2,
+        )
+
     def get_dparams(self, ffa_level: int) -> np.ndarray:
-        """Get the parameter step sizes for the given FFA level.
+        """Get the step sizes for the search parameters.
 
         Parameters
         ----------
@@ -289,11 +346,14 @@ class PulsarSearchConfig:
             Array with the parameter step sizes.
         """
         tseg_cur = 2**ffa_level * self.tseg_brute
-        dparams = np.zeros(self.nparams, dtype=np.float64)
-        dparams[-1] = self._freq_step(tseg_cur)
-        for deriv in range(2, self.nparams + 1):
-            dparams[-deriv] = self._deriv_step(tseg_cur, deriv)
-        return dparams
+        return psr_utils.poly_taylor_step_d(
+            self.nparams,
+            tseg_cur,
+            self.nbins,
+            self.tol,
+            self.f_max,
+            t_ref=tseg_cur / 2,
+        )
 
     def get_dparams_limited(self, ffa_level: int) -> np.ndarray:
         dparams = self.get_dparams(ffa_level)
@@ -369,7 +429,7 @@ class PulsarSearchConfig:
             msg = f"bseg_ffa must be greater than bseg_brute, got {self.bseg_ffa}"
             raise ValueError(msg)
 
-        if self.nparams < 1 or self.nparams > 4:
+        if self.nparams < 1:  # or self.nparams > 4:
             msg = f"param_limits must have 1-4 elements, got {self.nparams}"
             raise ValueError(msg)
         for _, (val_min, val_max) in enumerate(self.param_limits):

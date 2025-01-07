@@ -62,7 +62,10 @@ def trials_scheme(nstages: int, nparams: int, trials_start: int = 1) -> np.ndarr
     """
     nsegments = nstages + 1
     complexity_scaling = np.sum(np.arange(nparams) + 1)
-    trials = trials_start * np.arange(1, nsegments + 1) ** complexity_scaling
+
+    # Convert to float64 before power operation
+    base = np.arange(1, nsegments + 1, dtype=np.float64)
+    trials = trials_start * np.power(base, complexity_scaling)
     return stats.norm.isf(1 / trials)[1:]
 
 

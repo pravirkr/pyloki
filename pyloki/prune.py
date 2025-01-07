@@ -128,7 +128,7 @@ class PruneStats:
     def surv_frac(self) -> float:
         return np.round(self.n_leaves_surv / self.n_leaves, 2)
 
-    def update(self, stats_dict: dict[str, int]) -> None:
+    def update(self, stats_dict: dict[str, float]) -> None:
         for key, value in stats_dict.items():
             setattr(self, key, value)
 
@@ -155,7 +155,7 @@ def pruning_iteration(
     prune_level: int,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     sugg_max: int = 2**17,
-) -> tuple[SuggestionStruct, types.DictType[str, int]]:
+) -> tuple[SuggestionStruct, types.DictType[str, int], types.DictType[str, float]]:
     """Perform a single iteration of the pruning algorithm.
 
     Parameters
@@ -188,6 +188,8 @@ def pruning_iteration(
     n_leaves = 0
     n_leaves_phy = 0
     n_branches = sugg.size
+    score_min = np.inf
+    score_max = -np.inf
 
     # Get the useful precomputed values: coord_cur := coord_prev + coord_add
     coord_init = scheme.get_coord(0)
@@ -224,6 +226,8 @@ def pruning_iteration(
             )
             combined_res = prune_funcs.add(sugg.folds[isuggest], partial_res)
             score = prune_funcs.score(combined_res)
+            score_min = min(score_min, score)
+            score_max = max(score_max, score)
 
             if score >= threshold:
                 sugg_new.param_sets[iparam] = prune_funcs.transform(
@@ -244,13 +248,17 @@ def pruning_iteration(
                     iparam = sugg_new.actual_size
 
     sugg_new = sugg_new.trim_empty(iparam)
-    stats = {
+    stats_int = {
         "n_branches": n_branches,
         "n_leaves": n_leaves,
         "n_leaves_phy": n_leaves_phy,
         "n_leaves_surv": sugg_new.size,
     }
-    return sugg_new, stats
+    stats_float = {
+        "score_min": score_min,
+        "score_max": score_max,
+    }
+    return sugg_new, stats_int, stats_float
 
 
 class Pruning:
@@ -329,6 +337,10 @@ class Pruning:
         return self._suggestion
 
     @property
+    def pstats(self) -> PruneStats:
+        return self._pstats
+
+    @property
     def t_ref(self) -> float:
         return self.scheme.ref * self.prune_funcs.tseg_ffa
 
@@ -371,6 +383,23 @@ class Pruning:
             (self.dyp.fold.shape[0], 3),
             dtype=object,
         )
+        self._pstats = PruneStats(
+            level=self.prune_level,
+            seg_idx=self.scheme.get_idx(self.prune_level),
+            threshold=0,
+        )
+        self._pstats.update(
+            {
+                "n_branches": self.suggestion.size,
+                "n_leaves": self.suggestion.size,
+                "n_leaves_phy": self.suggestion.size,
+                "n_leaves_surv": self.suggestion.size,
+                "score_min": self.suggestion.score_min,
+                "score_max": self.suggestion.score_max,
+            },
+        )
+        with Path(self.logfile).open("a") as f:
+            f.write(self.pstats.get_summary())
 
     def execute(
         self,
@@ -426,12 +455,7 @@ class Pruning:
         seg_idx_cur = self.scheme.get_idx(self.prune_level)
         fold_segment = self.prune_funcs.load(self.dyp.fold, seg_idx_cur)
         threshold = self.threshold_scheme[self.prune_level]
-        pstats = PruneStats(
-            level=self.prune_level,
-            seg_idx=seg_idx_cur,
-            threshold=threshold,
-        )
-        suggestion, stats = pruning_iteration(
+        suggestion, stats1, stats2 = pruning_iteration(
             self.suggestion,
             fold_segment,
             self.prune_funcs,
@@ -441,18 +465,17 @@ class Pruning:
             self.load_func,
             self.max_sugg,
         )
-        pstats.update(stats)
-        pstats.update(
+        self._pstats.update(stats1)
+        self._pstats.update(stats2)
+        self._pstats.update(
             {
                 "level": self.prune_level,
                 "seg_idx": seg_idx_cur,
                 "threshold": threshold,
-                "score_min": suggestion.score_min,
-                "score_max": suggestion.score_max,
             },
         )
         with Path(self.logfile).open("a") as f:
-            f.write(pstats.get_summary())
+            f.write(self.pstats.get_summary())
         if suggestion.size == 0:
             self._complete = True
             self._suggestion = suggestion

@@ -41,108 +41,95 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
     return iphase
 
 
-@njit
-def param_step(
+@njit(cache=True, fastmath=True)
+def poly_taylor_step_f(
+    nparams: int,
     tobs: float,
-    tsamp: float,
-    deriv: int,
-    tol: float,
+    fold_bins: int,
+    tol_bins: float,
     t_ref: float = 0,
-) -> float:
-    """
-    Calculate the parameter step size for polynomial search.
+) -> np.ndarray:
+    """Grid size for frequency and its derivatives {f_k, ..., f}.
 
     Parameters
     ----------
+    nparams : int
+        Number of parameters in the Taylor expansion.
     tobs : float
-        Total observation time of the segment in seconds.
-    tsamp : float
-        Sampling time of the segment in seconds.
-    deriv : int
-        Derivative of the parameter (2: acceleration, 3: jerk, etc.)
-    tol : float
-        Tolerance parameter for the polynomial search (in bins).
+        Total observation time in seconds.
+    fold_bins : int
+        Number of bins in the folded profile.
+    tol_bins : float, optional
+        Tolerance parameter, eta in bins, by default 1.
     t_ref : float, optional
-        Reference time in segment e.g. start, middle, etc. (default: 0)
+        Reference time in segment e.g. tobs/2, etc., by default 0.
 
     Returns
     -------
     float
-        Optimal parameter step size
+        Optimal frequency and its derivative step size in reverse order.
     """
-    if deriv < 2:
-        msg = "deriv must be >= 2"
-        raise ValueError(msg)
-    dparam = tsamp * math.fact(deriv) * C_VAL / (tobs - t_ref) ** deriv
-    return tol * dparam
+    dparams_f = np.zeros(nparams, dtype=np.float64)
+    dphi = tol_bins / fold_bins
+    k = np.arange(nparams)
+    dparams_f = dphi * math.fact(k + 1) / (tobs - t_ref) ** (k + 1)
+    return dparams_f[::-1]
 
 
-@njit
-def param_step_shift(
-    dparam_1: float,
-    dparam_2: float,
+@njit(cache=True, fastmath=True)
+def poly_taylor_step_d(
+    nparams: int,
     tobs: float,
-    tsamp: float,
-    deriv: int,
-    tol: float,
+    fold_bins: int,
+    tol_bins: float,
+    f_max: float,
     t_ref: float = 0,
-) -> float:
-    factor = (tobs - t_ref) ** deriv / (tol * tsamp * math.fact(deriv) * C_VAL)
-    return abs(dparam_1 - dparam_2) * factor
+) -> np.ndarray:
+    """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion."""
+    dparams_f = poly_taylor_step_f(nparams, tobs, fold_bins, tol_bins, t_ref)
+    dparams = np.zeros(nparams, dtype=np.float64)
+    dparams[-1] = dparams_f[-1]
+    dparams[:-1] = dparams_f[:-1] * C_VAL / f_max
+    return dparams
 
 
 @njit
-def freq_step(tobs: int, nbins: int, f_max: float, tol: float) -> float:
-    m_cycle = tobs * f_max
-    tsamp_min = 1 / (f_max * nbins)
-    return tol * f_max**2 * tsamp_min / (m_cycle - 1)
+def split_f(
+    df_old: float,
+    df_new: float,
+    tobs_new: float,
+    k: int,
+    fold_bins: float,
+    tol_bins: float,
+    t_ref: float = 0,
+) -> bool:
+    """Check if a parameter {f_k} should be split."""
+    factor = (tobs_new - t_ref) ** (k + 1) * fold_bins / math.fact(k + 1)
+    return abs(df_old - df_new) * factor > tol_bins
 
 
 @njit
-def freq_step_approx(tobs: int, f_max: float, tsamp: float, tol: float) -> float:
-    m_cycle = tobs * f_max
-    return tol * f_max**2 * tsamp / (m_cycle - 1)
-
-
-@njit
-def freq_step_shift(
-    df_1: float,
-    df_2: float,
-    tobs: float,
-    tsamp: float,
+def poly_taylor_shift_d(
+    dparam_old: np.ndarray,
+    dparam_new: np.ndarray,
+    tobs_new: float,
+    fold_bins: float,
     f_cur: float,
-    tol: float,
-) -> float:
-    m_cycle = tobs * f_cur
-    factor = (m_cycle - 1) / (tol * f_cur**2 * tsamp)
-    return abs(df_1 - df_2) * factor
+    t_ref: float = 0,
+) -> np.ndarray:
+    """Compute the bin shift for parameters {d_k,... d_2, f}."""
+    nparams = len(dparam_old)
+    k = np.arange(nparams - 1, -1, -1)
+    factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / math.fact(k + 1)
+    factors[:-1] *= f_cur / C_VAL
+    return np.abs(dparam_old - dparam_new) * factors
 
 
 @njit
-def period_step_init(tobs: float, nbins: int, p_min: float, tol: float) -> float:
+def period_step(tobs: float, nbins: int, p_min: float, tol: float) -> float:
     m_cycle = tobs / p_min
     tsamp_min = p_min / nbins
     return tol * tsamp_min / (m_cycle - 1)
-
-
-@njit
-def period_step(tobs: float, tsamp: int, p_min: float, tol: float) -> float:
-    m_cycle = tobs / p_min
-    return tol * (tsamp * 2) / (m_cycle - 1)
-
-
-@njit
-def period_step_shift(
-    dp_1: float,
-    dp_2: float,
-    tobs: float,
-    tsamp: float,
-    p_cur: float,
-    tol: float,
-) -> float:
-    m_cycle = tobs / p_cur
-    factor = (m_cycle - 1) / (tol * (tsamp * 2))
-    return abs(dp_1 - dp_2) * factor
 
 
 @njit(cache=True, fastmath=True)

@@ -191,67 +191,33 @@ def poly_taylor_resolve(
 
 
 @njit(cache=True, fastmath=True)
-def poly_taylor_step(
-    nparams: int,
-    tobs: float,
-    freq: float,
-    tsamp: float,
-    tol: float,
-) -> np.ndarray:
-    dparam_opt = np.zeros(nparams)
-    dparam_opt[-1] = psr_utils.freq_step_approx(tobs, freq, tsamp, tol)
-    for deriv in range(2, nparams + 1):
-        dparam_opt[-deriv] = psr_utils.param_step(
-            tobs,
-            tsamp,
-            deriv,
-            tol,
-            t_ref=tobs / 2,
-        )
-    return dparam_opt
-
-
-@njit(cache=True, fastmath=True)
 def split_taylor_params(
     param_cur: np.ndarray,
     dparam_cur: np.ndarray,
-    dparam_opt: np.ndarray,
-    tseg_cur: float,
-    tol: float,
-    tsamp: float,
+    dparam_new: np.ndarray,
+    tseg_new: float,
+    fold_bins: int,
+    tol_bins: float,
     param_limits: types.ListType[types.Tuple[float, float]],
 ) -> np.ndarray:
     nparams = len(param_cur)
     leaf_params = typed.List.empty_list(types.float64[:])
     leaf_dparams = np.empty(nparams, dtype=np.float64)
+    shift_bins = psr_utils.poly_taylor_shift_d(
+        dparam_cur,
+        dparam_new,
+        tseg_new,
+        fold_bins,
+        param_cur[-1],
+        t_ref=tseg_new / 2,
+    )
 
     for i in range(nparams):
-        deriv = nparams - i
-        if deriv == 1:
-            shift_bin = psr_utils.freq_step_shift(
-                dparam_cur[i],
-                dparam_opt[i],
-                tseg_cur,
-                tsamp,
-                param_cur[i],
-                tol,
-            )
-        else:
-            shift_bin = psr_utils.param_step_shift(
-                dparam_cur[i],
-                dparam_opt[i],
-                tseg_cur,
-                tsamp,
-                deriv,
-                tol,
-                t_ref=tseg_cur / 2,
-            )
-        # If the delta cause a 1 "bin" shift then we branch the parameter
-        if shift_bin > 1:
+        if shift_bins[i] > tol_bins:
             leaf_param, dparam_act = psr_utils.branch_param(
                 param_cur[i],
                 dparam_cur[i],
-                dparam_opt[i],
+                dparam_new[i],
                 param_limits[i][0],
                 param_limits[i][1],
             )
@@ -266,8 +232,8 @@ def split_taylor_params(
 def poly_taylor_branch2leaves(
     param_set: np.ndarray,
     coord_cur: tuple[float, float],
-    tol: float,
-    tsamp: float,
+    fold_bins: int,
+    tol_bins: float,
     poly_order: int,
     param_limits: types.ListType[types.Tuple[float, float]],
 ) -> np.ndarray:
@@ -295,20 +261,20 @@ def poly_taylor_branch2leaves(
     nparams = len(param_cur)
 
     duration = 2 * scale_cur
-    dparam_opt = poly_taylor_step(
+    dparam_opt = psr_utils.poly_taylor_step_d(
         nparams,
         duration,
+        fold_bins,
+        tol_bins,
         param_cur[-1],
-        tsamp,
-        tol,
     )
     leafs_taylor = split_taylor_params(
         param_cur,
         dparam_cur,
         dparam_opt,
         duration,
-        tol,
-        tsamp,
+        fold_bins,
+        tol_bins,
         param_limits,
     )
     leaves = np.zeros((len(leafs_taylor), poly_order + 2, 2))
@@ -541,8 +507,8 @@ class PruningTaylorDPFunctions:
         return poly_taylor_branch2leaves(
             param_set,
             coord_cur,
+            self.cfg.nbins,
             self.cfg.tol,
-            self.cfg.tsamp,
             self.poly_order,
             self.cfg.param_limits,
         )
