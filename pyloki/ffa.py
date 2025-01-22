@@ -161,6 +161,12 @@ class DynamicProgramming:
         return self._param_arr
 
     @property
+    def param_arr_dict(self) -> dict[str, np.ndarray]:
+        """:obj:`dict`: Dictionary of parameter arrays at the current FFA level."""
+        param_names = self.cfg.param_names
+        return {f"{param_names[i]}": p for i, p in enumerate(self.param_arr)}
+
+    @property
     def nparam_vol(self) -> int:
         """:obj:`int`: Total complexity (parameter volume) at the current FFA level."""
         return int(np.prod([len(p) for p in self.param_arr])) if self.param_arr else 0

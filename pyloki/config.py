@@ -101,9 +101,10 @@ class ParamLimits:
     def from_circular(
         cls,
         freq: float,
-        x_orb: float,
-        p_orb_min: float,
         poly_order: int,
+        p_orb_min: float,
+        m_c: float,
+        m_p: float = 1.4,
     ) -> ParamLimits:
         """Generate search parameter limits from circular orbit parameters.
 
@@ -111,13 +112,14 @@ class ParamLimits:
         ----------
         freq : float
             Expected frequency of the orbit (in Hz).
-        x_orb : float
-            Projected orbital radius, a * sin(i) / c (in light-sec).
-            0.005 * ((m_p + m_c) * p_orb**2)**(1/3) * m_c/(m_p + m_c)
-        p_orb_min : float
-            Minimum orbital period (in seconds).
         poly_order : int
             Highest polynomial order to include in the search.
+        p_orb_min : float
+            Minimum orbital period (in seconds).
+        m_c : float
+            Mass of the companion (in solar masses).
+        m_p : float, optional
+            Mass of the pulsar (in solar masses), by default 1.4.
 
         Returns
         -------
@@ -125,6 +127,8 @@ class ParamLimits:
             Object with the search parameter limits.
         """
         omega_orb_max = 2 * np.pi / p_orb_min
+        # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
+        x_orb = 0.005 * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
         max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
         bounds = [(-d, d) for d in max_derivs[2:][::-1]]
         freq_shift = max_derivs[1] / C_VAL
@@ -134,45 +138,55 @@ class ParamLimits:
     @classmethod
     def from_upper(
         cls,
-        freq: float,
-        d_max: float,
-        d_order: int,
-        p_orb_min: float,
+        true_params: list[float],
+        d_range: tuple[float, float],
+        t_obs: float,
     ) -> ParamLimits:
-        """Generate search parameter limits from maximum derivative.
+        """Generate search parameter limits from upper bounds.
 
         Parameters
         ----------
-        freq : float
-            Expected frequency of the orbit (in Hz).
-        d_max : float
-            Maximum value of the highest derivative.
-        d_order : int
-            Order of the highest derivative (e.g. 3 for jerk).
-        p_orb_min : float
-            Minimum orbital period (in seconds).
+        true_params : list[float]
+            True values of the search parameters.
+        d_range : tuple[float, float]
+            Range of the upper parameter to search (min, max).
+        t_obs : float
+            Total observation time (in seconds).
 
         Returns
         -------
         ParamLimits
             Object with the search parameter limits.
         """
-        omega_orb_max = 2 * np.pi / p_orb_min
-        max_derivs = d_max * omega_orb_max ** np.arange(-d_order, 1)
-        bounds = [(-d, d) for d in max_derivs[2:][::-1]]
-        freq_shift = max_derivs[1] / C_VAL
-        bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
+        nparams = len(true_params)
+        dvec = np.zeros(nparams + 1, dtype=np.float64)
+        dvec[1:-2] = true_params[1:-1]  # till acceleration
+        dvec[0] = d_range[0]
+        dvec_min_up = psr_utils.shift_params(dvec, t_obs / 2)
+        dvec_min_low = psr_utils.shift_params(dvec, -t_obs / 2)
+        dvec[0] = d_range[1]
+        dvec_max_up = psr_utils.shift_params(dvec, t_obs / 2)
+        dvec_max_low = psr_utils.shift_params(dvec, -t_obs / 2)
+        dvec_bound_low = np.minimum(dvec_min_low, dvec_max_low)
+        dvec_bound_up = np.maximum(dvec_min_up, dvec_max_up)
+        bounds_d = [(low, up) for low, up in zip(dvec_bound_low, dvec_bound_up)]
+        bounds = bounds_d[:-2]
+        freq_shift = dvec_bound_up[-2] / C_VAL
+        bounds.append(
+            (true_params[-1] * (1 - freq_shift), true_params[-1] * (1 + freq_shift)),
+        )
         return cls(typed.List(bounds))
 
     @classmethod
     def from_keplerian(
         cls,
         freq: tuple[float, float],
-        x_orb: float,
+        poly_order: int,
         p_orb_min: float,
         ecc_max: float,
-        poly_order: int,
         tobs: float,
+        m_c: float,
+        m_p: float = 1.4,
     ) -> ParamLimits:
         """Generate search parameter limits from Keplerian orbit parameters.
 
@@ -180,16 +194,18 @@ class ParamLimits:
         ----------
         freq : tuple[float, float]
             Frequency range to search (min, max).
-        x_orb : float
-            Projected semi-major axis of the orbit, a * sin(i) / c (in light-sec).
+        poly_order : int
+            Highest polynomial order to include in the search.
         p_orb_min : float
             Minimum orbital period (in seconds).
         ecc_max : float
             Maximum eccentricity of the orbit.
-        poly_order : int
-            Highest polynomial order to include in the search.
         tobs : float
             Total observation time (in seconds).
+        m_c : float
+            Mass of the companion (in solar masses).
+        m_p : float, optional
+            Mass of the pulsar (in solar masses), by default 1.4.
 
         Returns
         -------
@@ -198,6 +214,8 @@ class ParamLimits:
         """
         out = typed.List([(float(freq[0]), float(freq[1]))])
         omega_orb_max = 2 * np.pi / p_orb_min
+        # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
+        x_orb = 0.005 * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
         n_rad = tobs * omega_orb_max
         bounds = kepler.find_max_deriv_bounds(
             x_orb,
@@ -218,6 +236,8 @@ class ParamLimits:
         ("nbins", types.i8),
         ("tol", types.f8),
         ("param_limits", types.ListType(types.Tuple([types.f8, types.f8]))),
+        ("ducy_max", types.f8),
+        ("wtsp", types.f8),
         ("bseg_brute", types.i8),
         ("bseg_ffa", types.i8),
         ("prune_poly_order", types.i8),
@@ -225,8 +245,7 @@ class ParamLimits:
     ],
 )
 class PulsarSearchConfig:
-    """
-    Class to hold the configuration for the polynomial search.
+    """Class to hold the configuration for the polynomial search.
 
     Parameters
     ----------
@@ -241,6 +260,10 @@ class PulsarSearchConfig:
         (in units of bins across the pulsar ducy)
     param_limits : types.ListType[types.Tuple[float, float]]
         List of tuples with the min and max values for each search parameter
+    ducy_max : float, optional
+        Maximum duty cycle to search for, by default 0.2.
+    wtsp : float, optional
+        Spacing factor between consecutive boxcar widths, by default 1.5.
     bseg_brute : int, optional
         Segment length (in bins) at the end of brute-fold stage. If not
         provided (i.e = 0), a default value is used.
@@ -264,6 +287,8 @@ class PulsarSearchConfig:
         nbins: int,
         tol: float,
         param_limits: types.ListType[types.Tuple[float, float]],
+        ducy_max: float = 0.2,
+        wtsp: float = 1.5,
         bseg_brute: int = 0,
         bseg_ffa: int = 0,
         prune_poly_order: int = 3,
@@ -274,6 +299,8 @@ class PulsarSearchConfig:
         self.nbins = nbins
         self.tol = tol
         self.param_limits = param_limits
+        self.ducy_max = ducy_max
+        self.wtsp = wtsp
         self.bseg_brute = bseg_brute if bseg_brute != 0 else self._bseg_brute_default()
         self.bseg_ffa = bseg_ffa if bseg_ffa != 0 else self._bseg_ffa_default()
         self.prune_poly_order = prune_poly_order
@@ -299,6 +326,12 @@ class PulsarSearchConfig:
     def nparams(self) -> int:
         """:obj:`int`: Number of parameters in the search."""
         return len(self.param_limits)
+
+    @property
+    def param_names(self) -> list[str]:
+        """:obj:`list[str]`: Names of the search parameters."""
+        default_names = ["snap", "jerk", "accel", "freq"]
+        return default_names[-self.nparams :]
 
     @property
     def f_min(self) -> float:
@@ -366,8 +399,7 @@ class PulsarSearchConfig:
         return dparams_lim
 
     def get_param_arr(self, dparams: np.ndarray) -> types.ListType[types.Array]:
-        """
-        Get the parameter ranges for the given parameter steps.
+        """Get the parameter ranges for the given parameter steps.
 
         Parameters
         ----------

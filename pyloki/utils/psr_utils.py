@@ -113,7 +113,7 @@ def poly_taylor_shift_d(
     dparam_old: np.ndarray,
     dparam_new: np.ndarray,
     tobs_new: float,
-    fold_bins: float,
+    fold_bins: int,
     f_cur: float,
     t_ref: float = 0,
 ) -> np.ndarray:
@@ -130,6 +130,29 @@ def period_step(tobs: float, nbins: int, p_min: float, tol: float) -> float:
     m_cycle = tobs / p_min
     tsamp_min = p_min / nbins
     return tol * tsamp_min / (m_cycle - 1)
+
+
+@njit(cache=True, fastmath=True)
+def shift_params(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
+    """Shift the kinematic taylor parameters to a new reference time.
+
+    Parameters
+    ----------
+    param_vec : np.ndarray
+        Parameter vector [..., a, v, d] at reference time t_i.
+    delta_t : float
+        The time difference (t_j - t_i) to shift the parameters by.
+
+    Returns
+    -------
+    np.ndarray
+        Parameter vector at the new reference time t_j.
+    """
+    nparams = len(param_vec)
+    powers = np.tril(np.arange(nparams)[:, np.newaxis] - np.arange(nparams))
+    # Calculate the transformation matrix (taylor coefficients)
+    t_mat = delta_t**powers / math.fact(powers) * np.tril(np.ones_like(powers))
+    return np.dot(t_mat, param_vec)
 
 
 @njit(cache=True, fastmath=True)

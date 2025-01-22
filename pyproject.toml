@@ -69,7 +69,7 @@ select = ["ALL"]
 ignore = ["D1", "ANN1", "ANN003", "PLR2004", "PD901", "G004"]
 
 [tool.ruff.lint.pylint]
-max-args = 10
+max-args = 15
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"

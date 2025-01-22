@@ -7,7 +7,7 @@ from numba.experimental import jitclass
 from pyloki.config import PulsarSearchConfig
 from pyloki.core import common, defaults
 from pyloki.detection import scoring
-from pyloki.utils import math, np_utils, psr_utils
+from pyloki.utils import np_utils, psr_utils
 from pyloki.utils.misc import C_VAL
 
 
@@ -56,29 +56,6 @@ def ffa_init(
 
 
 @njit(cache=True, fastmath=True)
-def shift_params(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
-    """Shift the kinematic parameters to a new reference time.
-
-    Parameters
-    ----------
-    param_vec : np.ndarray
-        Parameter vector [..., a, v, d] at reference time t_i.
-    delta_t : float
-        The time difference (t_j - t_i) to shift the parameters by.
-
-    Returns
-    -------
-    np.ndarray
-        Parameter vector at the new reference time t_j.
-    """
-    nparams = len(param_vec)
-    powers = np.tril(np.arange(nparams)[:, np.newaxis] - np.arange(nparams))
-    # Calculate the transformation matrix (taylor coefficients)
-    t_mat = delta_t**powers / math.fact(powers) * np.tril(np.ones_like(powers))
-    return np.dot(t_mat, param_vec)
-
-
-@njit(cache=True, fastmath=True)
 def ffa_resolve(
     pset_cur: np.ndarray,
     parr_prev: np.ndarray,
@@ -115,12 +92,12 @@ def ffa_resolve(
         pset_prev, delay_rel = pset_cur, 0
     else:
         t_ref_prev = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
-        kvec_cur = np.zeros(nparams + 1, dtype=np.float64)
-        kvec_cur[:-2] = pset_cur[:-1]  # till acceleration
-        kvec_prev = shift_params(kvec_cur, t_ref_prev)
-        pset_prev = kvec_prev[:-1]
-        pset_prev[-1] = pset_cur[-1] * (1 + kvec_prev[-2] / C_VAL)
-        delay_rel = kvec_prev[-1] / C_VAL
+        dvec_cur = np.zeros(nparams + 1, dtype=np.float64)
+        dvec_cur[:-2] = pset_cur[:-1]  # till acceleration
+        dvec_prev = psr_utils.shift_params(dvec_cur, t_ref_prev)
+        pset_prev = dvec_prev[:-1]
+        pset_prev[-1] = pset_cur[-1] * (1 + dvec_prev[-2] / C_VAL)
+        delay_rel = dvec_prev[-1] / C_VAL
     relative_phase = psr_utils.get_phase_idx(
         t_ref_prev,
         pset_cur[-1],
@@ -173,7 +150,7 @@ def poly_taylor_resolve(
 
     kvec_cur = np.zeros(nparams + 1, dtype=np.float64)
     kvec_cur[:-2] = leaf[:-3, 0]  # till acceleration
-    kvec_new = shift_params(kvec_cur, tpoly)
+    kvec_new = psr_utils.shift_params(kvec_cur, tpoly)
 
     f0 = leaf[-3, 0]
 
@@ -267,6 +244,7 @@ def poly_taylor_branch2leaves(
         fold_bins,
         tol_bins,
         param_cur[-1],
+        t_ref=duration / 2,
     )
     leafs_taylor = split_taylor_params(
         param_cur,

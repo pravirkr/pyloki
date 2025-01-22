@@ -15,8 +15,7 @@ def ffa_search(
     tseries: TimeSeries,
     search_cfg: PulsarSearchConfig,
 ) -> tuple[DynamicProgramming, Periodogram]:
-    """
-    Perform a Fast Folding Algorithm search on a time series.
+    """Perform a Fast Folding Algorithm search on a time series.
 
     Parameters
     ----------
@@ -36,12 +35,12 @@ def ffa_search(
     folds = dyp.get_fold_norm()
     widths = scoring.generate_box_width_trials(
         search_cfg.nbins,
-        ducy_max=0.2,
-        spacing_factor=1,
+        ducy_max=search_cfg.ducy_max,
+        spacing_factor=search_cfg.wtsp,
     )
     snrs = scoring.boxcar_snr(folds, widths)
     pgram = Periodogram(
-        params={"width": widths, "freq": dyp.param_arr[-1]},
+        params={"width": widths, **dyp.param_arr_dict},
         snrs=snrs,
         tobs=tseries.tobs,
     )
