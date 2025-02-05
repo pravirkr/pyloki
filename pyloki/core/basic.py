@@ -87,11 +87,10 @@ def ffa_resolve(
         The resolved parameter set index and the relative phase shift.
     """
     nparams = len(pset_cur)
+    t_ref_prev = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
     if nparams == 1:
-        t_ref_prev = latter * 2 ** (ffa_level - 1) * tseg_brute
         pset_prev, delay_rel = pset_cur, 0
     else:
-        t_ref_prev = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
         dvec_cur = np.zeros(nparams + 1, dtype=np.float64)
         dvec_cur[:-2] = pset_cur[:-1]  # till acceleration
         dvec_prev = psr_utils.shift_params(dvec_cur, t_ref_prev)
@@ -347,23 +346,38 @@ def poly_taylor_suggestion_struct(
 def generate_branching_pattern(
     param_arr: types.ListType,
     dparams: np.ndarray,
+    param_limits: types.ListType[types.Tuple[float, float]],
     tchunk_ffa: float,
-    nsegments: int,
-    tol: float,
-    tsamp: float,
-    isuggest: int,
+    nstages: int,
+    fold_bins: int,
+    tol_bins: float,
+    isuggest: int = 0,
 ) -> np.ndarray:
-    leaf_param_sets = common.get_leaves(param_arr, dparams)
+    """Generate the branching pattern for the pruning Taylor search.
+
+    Returns
+    -------
+    np.ndarray
+        Branching pattern for the pruning Taylor search.
+        1D array containing the initial number of trees and the subsequent branching
+        pattern for each level.
+    """
+    poly_order = len(dparams)
+    leaf = poly_taylor_leaves(param_arr, dparams, poly_order, (0, tchunk_ffa))[isuggest]
     branching_pattern = []
-    for prune_level in range(1, nsegments):
-        tchunk_cur = tchunk_ffa * (prune_level + 1)  # noqa: F841
+    for prune_level in range(1, nstages + 1):
+        duration = tchunk_ffa * (prune_level + 1)
+        coord_cur = (0, duration / 2)
         leaves_arr = poly_taylor_branch2leaves(
-            leaf_param_sets[isuggest],
-            tol,
-            tsamp,
+            leaf,
+            coord_cur,
+            fold_bins,
+            tol_bins,
+            poly_order,
+            param_limits,
         )
         branching_pattern.append(len(leaves_arr))
-        leaf_param_sets = leaves_arr
+        leaf = leaves_arr[isuggest]
     return np.array(branching_pattern)
 
 

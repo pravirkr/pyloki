@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from matplotlib import pyplot as plt
+from matplotlib.ticker import FormatStrFormatter
 from numba import njit, typed, types
 from numba.experimental import jitclass
 from rich.progress import track
@@ -29,44 +30,37 @@ def bound_scheme(nstages: int, snr_bound: float) -> np.ndarray:
     Parameters
     ----------
     nstages : int
-        Number of stages in the threshold scheme
+        Number of stages in the threshold scheme.
     snr_bound : float
-        Upper bound on the target S/N
+        Upper bound on the target S/N.
 
     Returns
     -------
     np.ndarray
-        Thresholds for each iteration
+        Thresholds for each stage.
     """
     nsegments = nstages + 1
     thresh_sn2 = np.arange(1, nsegments + 1) * snr_bound**2 / nsegments
     return np.sqrt(thresh_sn2[1:])
 
 
-def trials_scheme(nstages: int, nparams: int, trials_start: int = 1) -> np.ndarray:
-    """Threshold scheme using the number of param trials.
+def trials_scheme(branching_pattern: np.ndarray, trials_start: int = 1) -> np.ndarray:
+    """Threshold scheme using the FAR of the tree.
 
     Parameters
     ----------
-    nstages : int
-        Number of stages in the threshold scheme
-    nparams : int
-        Number of search parameters
+    branching_pattern : np.ndarray
+        Branching pattern for each stage.
     trials_start : int
-        Starting number of trials, by default 1
+        Starting number of trials at stage 0, by default 1.
 
     Returns
     -------
     np.ndarray
-        Thresholds for each iteration
+        Thresholds for each stage.
     """
-    nsegments = nstages + 1
-    complexity_scaling = np.sum(np.arange(nparams) + 1)
-
-    # Convert to float64 before power operation
-    base = np.arange(1, nsegments + 1, dtype=np.float64)
-    trials = trials_start * np.power(base, complexity_scaling)
-    return stats.norm.isf(1 / trials)[1:]
+    trials = np.cumprod(branching_pattern) * trials_start
+    return stats.norm.isf(1 / trials)
 
 
 @njit(cache=True, fastmath=True)
@@ -105,15 +99,15 @@ def simulate_folds(
     folds : np.ndarray
         2D Array of folded data with shape (ntrials, nbins).
     var_cur : float
-        Current variance of the noise.
+        Current variance of the noise in the folded profiles.
     template : np.ndarray
         Normalized template of the signal with the same units as the bias_snr.
     bias_snr : float, optional
-        Bias signal-to-noise ratio
+        Bias signal-to-noise ratio.
     var_add : float, optional
-        Variance of the added noise, by default 1
+        Variance of the added noise, by default 1.
     ntrials : int, optional
-        Number of trials, by default 1024
+        Number of trials, by default 1024.
 
     Returns
     -------
@@ -127,9 +121,9 @@ def simulate_folds(
     for irepeat in range(repeat_factor):
         folds_sim[irepeat * ntrials_prev : (irepeat + 1) * ntrials_prev] = folds
     noise = rng.normal(0, np.sqrt(var_add), (ntrials, nbins)).astype(folds.dtype)
-    folds_sim += noise + bias_snr * template
-    var_cur += var_add
-    return folds_sim, var_cur
+    folds_sim += noise + (bias_snr * template)
+    var_sim = var_cur + var_add
+    return folds_sim, var_sim
 
 
 @njit(fastmath=True)
@@ -146,7 +140,7 @@ def measure_success(
     folds : np.ndarray
         2D Array of folded data with shape (ntrials, nbins).
     var_cur : float
-        Current variance of the noise.
+        Current variance of the noise in the folded profiles.
     snr_thresh : float
         Signal-to-noise ratio threshold.
     ducy_max : float, optional
@@ -242,8 +236,6 @@ class SaveState:
         return self.complexity_cumul / self.success_h1_cumul
 
 
-# Perhaps we need a multi-state class that keep tracks of the path per success
-# probability so we can guarantee it does not plunge below 5% per trial.
 @jitclass(
     spec=[
         ("success_h0", types.f4),
@@ -252,7 +244,7 @@ class SaveState:
         ("complexity_cumul", types.f4),
         ("success_h1_cumul", types.f4),
         ("nbranches", types.f4),
-        ("backtrack", types.ListType(types.Tuple((types.f8, types.f8)))),
+        ("backtrack", types.ListType(types.Tuple((types.f4, types.f4)))),
     ],
 )
 class State:
@@ -261,20 +253,20 @@ class State:
     Parameters
     ----------
     success_h0 : float, optional
-        Success probability of the H0 profiles, by default 1
+        Success probability for H0 hypothesis, by default 1.
     success_h1 : float, optional
-        Success probability of the H1 profiles, by default 1
+        Success probability for H1 hypothesis, by default 1.
     complexity : float, optional
-        Survival complexity for H0, by default 1
+        Number of options for H0 hypothesis, by default 1.
     complexity_cumul : float, optional
-        Cumulative survival complexity of the scheme, by default 1
+        Cumulative complexity/number of options for H0 hypothesis, by default 1.
     success_h1_cumul : float, optional
-        Cumulative success probability of the H1 profiles, by default 1
+        Cumulative success/survival probability for H1 hypothesis, by default 1.
     nbranches : float, optional
-        Number of branches, by default 1
+        Number of branches for the current stage, by default 1.
     backtrack : typed.List[tuple[float, float]], optional
         List of the thresholds and success probabilities for the backtrack,
-        by default None
+        by default None.
     """
 
     def __init__(
@@ -286,7 +278,7 @@ class State:
         success_h1_cumul: float = 1,
         nbranches: float = 1,
         backtrack: typed.List[tuple[float, float]] = typed.List.empty_list(  # noqa: B008
-            types.Tuple((types.f8, types.f8)),  # noqa: B008
+            types.Tuple((types.f4, types.f4)),  # noqa: B008
         ),
     ) -> None:
         self.success_h0 = success_h0
@@ -308,8 +300,8 @@ class State:
         success_h1: float,
         nbranches: int,
     ) -> State:
+        complexity_cumul = self.complexity_cumul + (self.complexity * nbranches)
         complexity = self.complexity * nbranches * success_h0
-        complexity_cumul = self.complexity_cumul + complexity
         success_h1_cumul = self.success_h1_cumul * success_h1
         backtrack = self.backtrack.copy()
         backtrack.append((threshold, success_h1_cumul))
@@ -437,18 +429,18 @@ class StatesInfo:
         pruning_complexity = self.get_info("complexity_cumul")[-1]
         total_cost = self.get_info("cost")[-1]
         mean_exp_bp = 2 ** (np.mean(np.log2(branching_pattern)))
-        noptions = np.sum(np.log2(branching_pattern))
-        nindependent = len(self.thresholds) / self.thresholds[-1]
-        total_survive_prob = 1 - (1 - survive_prob) ** nindependent
+        n_options = np.sum(np.log2(branching_pattern))
+        n_independent = len(self.thresholds) / self.thresholds[-1]
+        total_survive_prob = 1 - (1 - survive_prob) ** n_independent
 
         info_str = "Threshold scheme summary:\n"
         info_str += f"Branching mean exponential growth: {mean_exp_bp:.2f}\n"
         info_str += f"Branching max exponential growth: {max(branching_pattern)}\n"
-        info_str += f"Total enumerated options: {noptions:.2f}\n"
+        info_str += f"Total enumerated options: {n_options:.2f}\n"
         info_str += f"Pruning complexity: {pruning_complexity:.2f}\n"
         info_str += f"Crude survival probability: {survive_prob:.2f}\n"
         info_str += f"Total cost: {total_cost:.2f}\n"
-        info_str += f"Number of independent trials: {nindependent:.2f}\n"
+        info_str += f"Number of independent trials: {n_independent:.2f}\n"
         info_str += f"Total survival probability: {total_survive_prob:.2f}"
         print(info_str)  # noqa: T201
 
@@ -471,7 +463,6 @@ class DynamicThresholdScheme:
         self,
         branching_pattern: np.ndarray,
         template: np.ndarray,
-        nparams: int,
         ntrials: int = 1024,
         nprobs: int = 10,
         snr_final: float = 8,
@@ -480,10 +471,10 @@ class DynamicThresholdScheme:
         beam_width: float = 0.7,
     ) -> None:
         self.rng = np.random.default_rng()
-        self.ntrials = ntrials
         self.branching_pattern = branching_pattern
-        self.snr_final = snr_final
         self.template = template / np.sqrt(np.sum(template**2))
+        self.ntrials = ntrials
+        self.snr_final = snr_final
         self.ducy_max = ducy_max
         self.beam_width = beam_width
 
@@ -498,7 +489,7 @@ class DynamicThresholdScheme:
         self.folds_out = np.empty((self.nthresholds, self.nprobs), dtype=object)
         self.guess_path = np.minimum(
             bound_scheme(self.nstages, self.snr_final),
-            trials_scheme(self.nstages, nparams, 1),
+            trials_scheme(self.branching_pattern, trials_start=1),
         )
         self.init()
 
@@ -528,9 +519,9 @@ class DynamicThresholdScheme:
         )[0]
 
     def init(self) -> None:
-        var_init = 2.0
+        var_init = 1.0
         folds = np.zeros((self.ntrials, len(self.template)), dtype=np.float32)
-        folds_h0, var_h0 = simulate_folds(
+        folds_h0, _ = simulate_folds(
             folds,
             0,
             self.template,
@@ -539,7 +530,7 @@ class DynamicThresholdScheme:
             var_add=var_init,
             ntrials_min=self.ntrials,
         )
-        folds_h1, var_h1 = simulate_folds(
+        folds_h1, _ = simulate_folds(
             folds,
             0,
             self.template,
@@ -549,7 +540,7 @@ class DynamicThresholdScheme:
             ntrials_min=self.ntrials,
         )
         state = State()
-        fold_state = Folds(folds_h0, folds_h1, var_h1)
+        fold_state = Folds(folds_h0, folds_h1, var_init)
         thresholds_idx = self.get_current_thresholds_idx(0)
         for ithres in thresholds_idx:
             cur_state, cur_fold_state = state.gen_next_using_thresh(
@@ -566,13 +557,13 @@ class DynamicThresholdScheme:
             self.states[0, ithres, iprob] = cur_state
             self.folds_in[ithres, iprob] = cur_fold_state
 
-    def run(self, thres_neigh: int = 20) -> None:
+    def run(self, thres_neigh: int = 21) -> None:
         for istage in track(range(1, self.nstages), description="Running stages"):
             self.run_stage(istage, thres_neigh)
             self.folds_in = self.folds_out
             self.folds_out = np.empty((self.nthresholds, self.nprobs), dtype=object)
 
-    def run_stage(self, istage: int, thres_neigh: int = 10) -> None:
+    def run_stage(self, istage: int, thres_neigh: int = 11) -> None:
         beam_idx_cur = self.get_current_thresholds_idx(istage)
         beam_idx_prev = self.get_current_thresholds_idx(istage - 1)
         for ibeam_cur in range(len(beam_idx_cur)):
@@ -752,13 +743,31 @@ class DynamicThresholdSchemeAnalyser:
         states: np.ndarray,
         thresholds: np.ndarray,
         probs: np.ndarray,
+        branching_pattern: np.ndarray,
+        guess_path: np.ndarray,
+        beam_width: float,
     ) -> None:
         self.states = states
         self.thresholds = thresholds
         self.probs = probs
+        self.branching_pattern = branching_pattern
+        self.guess_path = guess_path
+        self.beam_width = beam_width
         self.nstages, self.nthresholds, self.nprobs = states.shape
 
     def backtrack_best(self, min_probs: list[float] | None) -> list[StatesInfo]:
+        """Backtrack the best paths in the threshold scheme.
+
+        Parameters
+        ----------
+        min_probs : list[float] | None
+            Minimum success probability for the best path, by default None.
+
+        Returns
+        -------
+        list[StatesInfo]
+            List of the best paths as StatesInfo objects.
+        """
         if min_probs is None:
             min_probs = [self.probs[0]]
         final_states = [state for state in self.states[-1].ravel() if state is not None]
@@ -778,6 +787,18 @@ class DynamicThresholdSchemeAnalyser:
         return backtrack_states_info
 
     def backtrack_all(self, min_prob: float) -> list[StatesInfo]:
+        """Backtrack all paths in the threshold scheme that meet the minimum success.
+
+        Parameters
+        ----------
+        min_prob : float
+            Minimum success probability for the best path.
+
+        Returns
+        -------
+        list[StatesInfo]
+            List of the best paths as StatesInfo objects.
+        """
         final_states = [
             state
             for state in self.states[-1].ravel()
@@ -794,44 +815,74 @@ class DynamicThresholdSchemeAnalyser:
             backtrack_states_info.append(StatesInfo(backtrack_states))
         return backtrack_states_info
 
-    def plot_paths(self, best_min_prob: float, min_prob: float) -> plt.Figure:
+    def plot_paths(self, best_prob: float, min_prob: float) -> plt.Figure:
         paths = self.backtrack_all(min_prob)
-        best_path = self.backtrack_best(min_probs=[best_min_prob])[0]
+        best_path = self.backtrack_best(min_probs=[best_prob])[0]
         set_seaborn(**{"lines.linewidth": 1.5})
         fig, ([ax1, ax2], [ax3, ax4]) = plt.subplots(2, 2, figsize=(12, 8))  # type: ignore[misc]
-        x = np.arange(self.nstages)
+        x = np.arange(1, self.nstages + 1)
 
-        label = f"Best: P(H1) = {best_min_prob:.2f}"
+        label = f"Best: P(H1) = {best_prob:.2f}"
         for path in paths:
-            ax1.plot(x, path.thresholds, "b-", alpha=0.2)
-        ax1.plot(x, best_path.thresholds, "r-", label=label)
-        ax1.set_xlabel("Segment iteration")
-        ax1.set_ylabel("S/N")
+            ax1.plot(x, path.thresholds**2, "b-", alpha=0.2)
+        ax1.plot(x, best_path.thresholds**2, "r-", label=label)
+        ax1.plot(x, self.guess_path**2, color="navy", ls="--", label="Guess path")
+        upper_bound = np.minimum(self.guess_path + self.beam_width, self.thresholds[-1])
+        lower_bound = np.maximum(self.guess_path - self.beam_width, 0)
+        ax1.fill_between(
+            x,
+            lower_bound**2,
+            upper_bound**2,
+            color="cornflowerblue",
+            alpha=0.2,
+            label="Beam width",
+        )
+        ax1.set_xlabel("Pruning stage")
+        ax1.set_ylabel("S/N squared")
         ax1.set_title("Threshold scheme")
-        ax1.legend()
+        ax1.legend(fontsize="small")
+        ax1.set_ylim(-0.5, self.thresholds[-1] ** 2 + 0.5)
         for ax, info, title, ylabel in [
-            (ax2, "complexity", "Complexity (False Alarm)", "Number of {H_{0} options"),
+            (
+                ax2,
+                "complexity",
+                "False Alarm",
+                r"Number of $H_{0}$ options",
+            ),
             (
                 ax3,
                 "complexity_cumul",
-                "Cumulative complexity (False Alarm)",
-                "Cumulative {H_{0} options",
+                r"Cumulative complexity $H_{0}$",
+                r"Cumulative $H_{0}$ complexity",
             ),
             (
                 ax4,
                 "success_h1_cumul",
-                "Cumulative Success (H1)",
+                r"Cumulative Success $H_{1}$",
                 "Detection Probability",
             ),
         ]:
             for path in paths:
                 ax.plot(x, path.get_info(info), "b-", alpha=0.2)
             ax.plot(x, best_path.get_info(info), "r-", label="Best path")
-            ax.set_xlabel("Segment iteration")
+            ax.set_xlabel("Pruning stage")
             ax.set_ylabel(ylabel)
             ax.set_title(title)
             ax.set_yscale("log")
-        ax2.set_ylim(bottom=0.05)
+        ax2_current_ylim = ax2.get_ylim()
+        ax2.plot(
+            x,
+            np.cumprod(self.branching_pattern),
+            color="k",
+            ls="--",
+            label="Total options",
+        )
+        ax2.set_ylim(bottom=0.05, top=ax2_current_ylim[1])
+        ax2.legend(fontsize="small", loc="upper right")
+        # Show grid in probability plots
+        for pval in self.probs[1:]:
+            ax4.axhline(y=pval, color="gray", alpha=0.15, linestyle="-", zorder=0)
+        ax4.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
         plt.tight_layout()
         return fig
 
@@ -878,6 +929,8 @@ class DynamicThresholdSchemeAnalyser:
             branching_pattern = f["branching_pattern"][:]
             thresholds = f["thresholds"][:]
             probs = f["probs"][:]
+            guess_path = f["guess_path"][:]
+            beam_width = f.attrs["beam_width"]
             nstages = len(branching_pattern)
             nthresholds = len(thresholds)
             nprobs = len(probs)
@@ -904,44 +957,21 @@ class DynamicThresholdSchemeAnalyser:
                     list(backtrack),
                 )
                 start = end
-        return cls(re_states, thresholds, probs)
-
-    @classmethod
-    def from_file1(cls, filename: str) -> DynamicThresholdSchemeAnalyser:
-        """Load a DynamicThresholdScheme object from an hdf5 file."""
-        with h5py.File(filename, "r") as f:
-            branching_pattern = f["branching_pattern"][:]
-            thresholds = f["thresholds"][:]
-            probs = f["probs"][:]
-            nstages = len(branching_pattern)
-            nthresholds = len(thresholds)
-            nprobs = len(probs)
-            states = np.empty((nstages, nthresholds, nprobs), dtype=object)
-            states_group = f["states"]
-            for istage in range(nstages):
-                stage_group = states_group[f"stage_{istage}"]
-                for ithres in range(nthresholds):
-                    threshold_group = stage_group[f"threshold_{ithres}"]
-                    for iprob in range(nprobs):
-                        if f"prob_{iprob}" in threshold_group:
-                            state_group = threshold_group[f"prob_{iprob}"]
-                            states[istage, ithres, iprob] = SaveState(
-                                state_group.attrs["success_h0"],
-                                state_group.attrs["success_h1"],
-                                state_group.attrs["complexity"],
-                                state_group.attrs["complexity_cumul"],
-                                state_group.attrs["success_h1_cumul"],
-                                state_group.attrs["nbranches"],
-                                state_group.attrs["backtrack"],
-                            )
-        return cls(states, thresholds, probs)
+        return cls(
+            re_states,
+            thresholds,
+            probs,
+            branching_pattern,
+            guess_path,
+            beam_width,
+        )
 
 
 def determine_scheme(
     survive_probs: np.ndarray,
     branching_pattern: np.ndarray,
-    prof: np.ndarray,
-    ntrials: int = 1024,
+    profile: np.ndarray,
+    ntrials: int = 2048,
     snr_final: float = 8,
     ducy_max: float = 0.2,
 ) -> StatesInfo:
@@ -949,30 +979,30 @@ def determine_scheme(
         msg = "Number of survive_probs must match the number of stages"
         raise ValueError(msg)
 
-    var_init = 2.0
+    var_init = 1.0
     nstages = len(branching_pattern)
-    prof = prof / np.sqrt(np.sum(prof**2))
+    template = profile / np.sqrt(np.sum(profile**2))
     bias_snr = snr_final / np.sqrt(nstages + 1)
     rng = np.random.default_rng()
     states: list[State] = []
     fold_states: list[Folds] = []
-    folds = np.zeros((ntrials, len(prof)), dtype=np.float32)
-    folds_h0, var_h0 = simulate_folds(folds, 0, prof, rng, 0, var_init, ntrials)
-    folds_h1, var_h1 = simulate_folds(folds, 0, prof, rng, bias_snr, var_init, ntrials)
+    folds = np.zeros((ntrials, len(template)), dtype=np.float32)
+    folds_h0, _ = simulate_folds(folds, 0, template, rng, 0, var_init, ntrials)
+    folds_h1, _ = simulate_folds(folds, 0, template, rng, bias_snr, var_init, ntrials)
     initial_state = State()
-    initial_fold_state = Folds(folds_h0, folds_h1, var_h1)
+    initial_fold_state = Folds(folds_h0, folds_h1, var_init)
     for istage in range(nstages):
         prev_state = initial_state if istage == 0 else states[istage - 1]
         prev_fold_state = initial_fold_state if istage == 0 else fold_states[istage - 1]
         if istage > 0 and prev_fold_state.is_empty:
-            logger.info("Path not viable, stopping")
+            logger.info("Path not viable, No trials survived, stopping")
             break
         cur_state, cur_fold_state = prev_state.gen_next_using_surv_prob(
             prev_fold_state,
             survive_probs[istage],
             branching_pattern[istage],
             bias_snr,
-            prof,
+            template,
             rng,
             ntrials,
             ducy_max,
@@ -985,14 +1015,14 @@ def determine_scheme(
 def evaluate_scheme(
     thresholds: np.ndarray,
     branching_pattern: np.ndarray,
-    prof: np.ndarray,
-    ntrials: int = 1024,
+    profile: np.ndarray,
+    ntrials: int = 2048,
     snr_final: float = 8,
     ducy_max: float = 0.2,
 ) -> StatesInfo:
-    var_init = 2.0
+    var_init = 1.0
     nstages = len(branching_pattern)
-    prof = prof / np.sqrt(np.sum(prof**2))
+    template = profile / np.sqrt(np.sum(profile**2))
     bias_snr = snr_final / np.sqrt(nstages + 1)
     rng = np.random.default_rng()
     if len(thresholds) != nstages:
@@ -1000,23 +1030,23 @@ def evaluate_scheme(
         raise ValueError(msg)
     states: list[State] = []
     fold_states: list[Folds] = []
-    folds = np.zeros((ntrials, len(prof)), dtype=np.float32)
-    folds_h0, var_h0 = simulate_folds(folds, 0, prof, rng, 0, var_init, ntrials)
-    folds_h1, var_h1 = simulate_folds(folds, 0, prof, rng, bias_snr, var_init, ntrials)
+    folds = np.zeros((ntrials, len(template)), dtype=np.float32)
+    folds_h0, _ = simulate_folds(folds, 0, template, rng, 0, var_init, ntrials)
+    folds_h1, _ = simulate_folds(folds, 0, template, rng, bias_snr, var_init, ntrials)
     initial_state = State()
-    initial_fold_state = Folds(folds_h0, folds_h1, var_h1)
+    initial_fold_state = Folds(folds_h0, folds_h1, var_init)
     for istage in range(nstages):
         prev_state = initial_state if istage == 0 else states[istage - 1]
         prev_fold_state = initial_fold_state if istage == 0 else fold_states[istage - 1]
         if istage > 0 and prev_fold_state.is_empty:
-            logger.info("Path not viable, stopping")
+            logger.info("Path not viable, No trials survived, stopping")
             break
         cur_state, cur_fold_state = prev_state.gen_next_using_thresh(
             prev_fold_state,
             thresholds[istage],
             branching_pattern[istage],
             bias_snr,
-            prof,
+            template,
             rng,
             ntrials,
             ducy_max,

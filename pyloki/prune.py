@@ -454,7 +454,7 @@ class Pruning:
         self._prune_level += 1
         seg_idx_cur = self.scheme.get_idx(self.prune_level)
         fold_segment = self.prune_funcs.load(self.dyp.fold, seg_idx_cur)
-        threshold = self.threshold_scheme[self.prune_level]
+        threshold = self.threshold_scheme[self.prune_level - 1]
         suggestion, stats1, stats2 = pruning_iteration(
             self.suggestion,
             fold_segment,
@@ -485,15 +485,13 @@ class Pruning:
         self._backtrack_arr[self.prune_level, : suggestion.size] = suggestion.backtracks
         self._suggestion = suggestion
 
-    def get_branching_pattern(self, n_iters: int, isuggest: int = 0) -> np.ndarray:
+    def get_branching_pattern(self, nstages: int, isuggest: int = 0) -> np.ndarray:
         """Get the branching pattern of the pruning algorithm."""
         branching_pattern = []
-        prune_level = 0
         fold_segment = self.prune_funcs.load(self.dyp.fold, self.scheme.ref_idx)
-        coord = self.scheme.get_coord(prune_level)
+        coord = self.scheme.get_coord(0)
         leaf = self.prune_funcs.suggest(fold_segment, coord).param_sets[isuggest]
-        for _ in range(1, n_iters + 1):
-            prune_level += 1
+        for prune_level in range(1, nstages + 1):
             coord_cur = self.scheme.get_coord(prune_level)
             coord_prev = self.scheme.get_coord(prune_level - 1)
             trans_matrix = self.prune_funcs.get_transform_matrix(coord_cur, coord_prev)

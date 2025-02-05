@@ -426,13 +426,6 @@ class PulsarSearchConfig:
             ],
         )
 
-    def _freq_step(self, tobs: float) -> float:
-        return psr_utils.freq_step(tobs, self.nbins, self.f_max, self.tol)
-
-    def _deriv_step(self, tobs: float, deriv: int) -> float:
-        t_ref = tobs / 2
-        return psr_utils.param_step(tobs, self.tsamp, deriv, self.tol, t_ref=t_ref)
-
     def _bseg_brute_default(self) -> int:
         init_levels = 1 if self.nparams == 1 else 5
         levels = int(np.log2(self.nsamps * self.tsamp * self.f_min) - init_levels)
