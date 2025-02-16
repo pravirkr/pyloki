@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 import attrs
 import numpy as np
@@ -18,6 +18,8 @@ from pyloki.utils.misc import get_logger, prune_track
 from pyloki.utils.timing import Timer
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pyloki.ffa import DynamicProgramming
 
 DP_FUNCS_TYPE = PruningTaylorDPFunctions | PruningChebychevDPFunctions

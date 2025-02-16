@@ -4,12 +4,12 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.offsetbox import AnchoredText
 from sigpyproc.core import filters as sig_filters
+from sigpyproc.viz.styles import PlotTable
 
 from pyloki.core import common
 from pyloki.detection.scoring import boxcar_snr_1d
 from pyloki.simulation.modulate import type_to_mods
 from pyloki.utils import np_utils
-from pyloki.utils.plotter import Table
 
 
 class TimeSeries:
@@ -59,7 +59,9 @@ class TimeSeries:
     ) -> np.ndarray:
         cycles = int(self.tobs * freq)
         if cycles < 1:
-            msg = f"Period ({1/freq}) is less than the total data length ({self.tobs})"
+            msg = (
+                f"Period ({1 / freq}) is less than the total data length ({self.tobs})"
+            )
             raise ValueError(msg)
         if nsubints < 1 or nsubints > cycles:
             msg = f"subints must be >= 1 and <= {cycles}"
@@ -128,19 +130,23 @@ class TimeSeries:
         axsubints = plt.subplot(grid[0, 1])
         axprofile = plt.subplot(grid[1, :])
         ducy = sig_boxcar.best_temp.width / len(ephem_fold)
-        table = Table(
-            col_off=[0.01, 0.75],
+        table = PlotTable(
+            col_offsets={
+                "name": 0.01,
+                "value": 0.75,
+                "unit": 0.85,
+            },
             top_margin=0.1,
             line_height=0.12,
-            fontsize=12,
+            font_size=12,
         )
-        table.add_row(["Tsamp", f"{self.dt*1e3:.3f}"])
-        table.add_row(["Period", 1 / freq])
-        table.add_row(["Accel", mod_kwargs.get("acc", 0)])
-        table.add_row(["Jerk", mod_kwargs.get("jerk", 0)])
-        table.add_row(["Snap", mod_kwargs.get("snap", 0)])
-        table.add_row(["Width", sig_boxcar.best_temp.width])
-        table.add_row(["Ducy", f"{ducy:.3f}"])
+        table.add_entry("Tsamp", f"{self.dt * 1e3:.3f}")
+        table.add_entry("Period", 1 / freq)
+        table.add_entry("Accel", mod_kwargs.get("acc", 0))
+        table.add_entry("Jerk", mod_kwargs.get("jerk", 0))
+        table.add_entry("Snap", mod_kwargs.get("snap", 0))
+        table.add_entry("Width", sig_boxcar.best_temp.width)
+        table.add_entry("Ducy", f"{ducy:.3f}")
         table.plot(axtable)
 
         axsubints.imshow(

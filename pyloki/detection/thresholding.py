@@ -15,11 +15,11 @@ from numba import njit, typed, types
 from numba.experimental import jitclass
 from rich.progress import track
 from scipy import stats
+from sigpyproc.viz.styles import set_seaborn
 
 from pyloki.detection import scoring
 from pyloki.utils import np_utils
 from pyloki.utils.misc import get_logger
-from pyloki.utils.plotter import set_seaborn
 
 logger = get_logger(__name__)
 
@@ -415,7 +415,7 @@ class StatesInfo:
     @property
     def thresholds(self) -> np.ndarray:
         """Get list of thresholds for this scheme."""
-        thresh, _ = zip(*self.entries[-1].backtrack)
+        thresh, _ = zip(*self.entries[-1].backtrack, strict=False)
         return np.array(thresh)
 
     def get_info(self, key: str) -> list:

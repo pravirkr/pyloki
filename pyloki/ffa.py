@@ -11,7 +11,7 @@ from pyloki.utils.misc import get_logger
 from pyloki.utils.timing import Timer
 
 if TYPE_CHECKING:
-    from typing import Callable
+    from collections.abc import Callable
 
     from numpy import typing as npt
 

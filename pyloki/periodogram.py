@@ -45,7 +45,7 @@ class Periodogram:
         best_indices = self.find_best_indices()
         best_params = {
             str(name): self.data.coords[name].to_numpy()[idx]
-            for name, idx in zip(self.data.dims, best_indices)
+            for name, idx in zip(self.data.dims, best_indices, strict=False)
         }
         return {"snr": best_snr, **best_params}
 

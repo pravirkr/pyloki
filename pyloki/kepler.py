@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING
 
 import attrs
 import numpy as np
@@ -10,6 +10,9 @@ from scipy import optimize
 
 from pyloki.utils import math
 from pyloki.utils.misc import C_VAL
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def semi_major_axis(mass: float, p_orb: float) -> float:
@@ -294,7 +297,7 @@ def keplerian_derivative_bounds(
     )
 
 
-def simulate_keplerian_orbit(  # noqa: PLR0913
+def simulate_keplerian_orbit(
     t_arr: np.ndarray,
     n_orbits: int,
     rng: np.random.Generator,
@@ -308,8 +311,7 @@ def simulate_keplerian_orbit(  # noqa: PLR0913
     om_range: tuple[float, float] = (0, 2 * np.pi),
     eps: float = 1e-5,
 ) -> np.ndarray:
-    """
-    Simulate examples of keplerian orbits with random parameters.
+    """Simulate examples of keplerian orbits with random parameters.
 
     Parameters
     ----------
@@ -552,7 +554,7 @@ class PredictionTableGenerator:
 
         for key, value in dic.items():
             ar = np.array(value)
-            dic[key] = list(map(tuple, zip(np.min(ar, 0), np.max(ar, 0))))
+            dic[key] = list(map(tuple, zip(np.min(ar, 0), np.max(ar, 0), strict=False)))
 
         return dic, coord_function
 
@@ -573,7 +575,7 @@ class PredictionTableGenerator:
         return coord_function
 
 
-@attrs.define(auto_attribs=True, slots=True, kw_only=True)
+@attrs.frozen(auto_attribs=True, kw_only=True)
 class KeplerianParamLimits:
     p_pul: tuple[float, float]
     p_orb: tuple[float, float]

@@ -4,20 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyloki"
-version = "0.5.0"
+version = "0.6.0"
 description = "Detecting Pulsars"
 readme = "README.md"
 authors = [
     { name = "Pravir Kumar", email = "pravirka@gmail.com" },
     { name = "Barak Zackay", email = "bzackay@gmail.com" },
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: MacOS :: MacOS X",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
@@ -55,10 +54,15 @@ docs = ["sphinx", "sphinx-book-theme", "sphinx-click", "myst-nb"]
 develop = ["ruff"]
 
 [tool.ruff]
-include = ["pyproject.toml", "pyloki/**/*.py"]
+include = [
+    "pyproject.toml",
+    "pyloki/**/*.py",
+    "tests/**/*.py",
+    "examples/**/*.ipynb",
+]
 line-length = 88
 indent-width = 4
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.format]
 quote-style = "double"

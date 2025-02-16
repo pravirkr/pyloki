@@ -43,7 +43,8 @@ def ffa_init(
         Initial fold for the FFA search.
     """
     freq_arr = param_arr[-1]
-    t_ref = bseg_brute * tsamp / 2
+    nparams = len(param_arr)
+    t_ref = 0 if nparams == 1 else bseg_brute * tsamp / 2
     return common.brutefold_start(
         ts_e,
         ts_v,
@@ -87,10 +88,11 @@ def ffa_resolve(
         The resolved parameter set index and the relative phase shift.
     """
     nparams = len(pset_cur)
-    t_ref_prev = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
     if nparams == 1:
+        t_ref_prev = latter * 2 ** (ffa_level - 1) * tseg_brute
         pset_prev, delay_rel = pset_cur, 0
     else:
+        t_ref_prev = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
         dvec_cur = np.zeros(nparams + 1, dtype=np.float64)
         dvec_cur[:-2] = pset_cur[:-1]  # till acceleration
         dvec_prev = psr_utils.shift_params(dvec_cur, t_ref_prev)

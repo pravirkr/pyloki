@@ -44,7 +44,7 @@ def get_indices(
     np.ndarray
         The indices of the folded time series
     """
-    if isinstance(periods, (float, int)):
+    if isinstance(periods, float | int):
         periods = [periods]
     periods = np.asarray(periods)
     factor = nbins / periods[:, np.newaxis]

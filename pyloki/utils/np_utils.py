@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numba import njit
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @njit(cache=True, fastmath=True)

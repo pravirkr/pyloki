@@ -25,7 +25,7 @@ class PulseSignalConfig:
     ducy : float, optional
         Duty cycle of the pulse (FWTM) in fractional phase, by default 0.1
         For slow pulsars, ducy ~ 0.03, for millisecond pulsars, ducy ~ 0.1 - 0.3
-    over_sampling : int, optional
+    os : int, optional
         Over sampling factor for the folded phase bins, by default 1
     mod_type : str, optional
         Type of modulation, by default "derivative"
@@ -38,13 +38,13 @@ class PulseSignalConfig:
     nsamps: int = 2**21
     snr: float = 100
     ducy: float = 0.1
-    over_sampling: float = 1.0
+    os: float = 1.0
     mod_type: str = "derivative"
-    mod_kwargs: dict | None = None
+    mod_kwargs: dict[str, float] = attrs.Factory(dict)
     _mod_func: modulate.DerivativeModulating = attrs.field(init=False, repr=False)
 
     def __attrs_post_init__(self) -> None:
-        self._set_mod_func(self.mod_type, self.mod_kwargs)
+        self._mod_func = modulate.type_to_mods["derivative"](**self.mod_kwargs)
         self._check()
 
     @property
@@ -65,7 +65,7 @@ class PulseSignalConfig:
     @property
     def fold_bins(self) -> int:
         """Number of phase bins in the folded profile."""
-        return int(self.period / self.dt / self.over_sampling)
+        return int(self.period / self.dt / self.os)
 
     @property
     def fold_bins_ideal(self) -> int:
@@ -110,15 +110,6 @@ class PulseSignalConfig:
         signal += rng.normal(0, stdnoise, self.nsamps)
         signal_v = np.ones(self.nsamps) * stdnoise**2
         return TimeSeries(signal, signal_v, self.dt)
-
-    def _set_mod_func(
-        self,
-        mod_type: str = "derivative",
-        mod_kwargs: dict | None = None,
-    ) -> None:
-        if mod_kwargs is None:
-            mod_kwargs = {}
-        self._mod_func = modulate.type_to_mods[mod_type](**mod_kwargs)
 
     def _check(self) -> None:
         if self.ducy <= 0 or self.ducy >= 1:

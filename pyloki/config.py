@@ -54,7 +54,11 @@ class ParamLimits:
             [math.taylor_to_cheby(d_vec, t_s) for d_vec in d_corners],
         )
         alpha_bounds = list(
-            zip(np.min(alpha_corners, axis=0), np.max(alpha_corners, axis=0)),
+            zip(
+                np.min(alpha_corners, axis=0),
+                np.max(alpha_corners, axis=0),
+                strict=False,
+            ),
         )
         return typed.List([self.limits[-1], *alpha_bounds])
 
@@ -169,7 +173,9 @@ class ParamLimits:
         dvec_max_low = psr_utils.shift_params(dvec, -t_obs / 2)
         dvec_bound_low = np.minimum(dvec_min_low, dvec_max_low)
         dvec_bound_up = np.maximum(dvec_min_up, dvec_max_up)
-        bounds_d = [(low, up) for low, up in zip(dvec_bound_low, dvec_bound_up)]
+        bounds_d = [
+            (low, up) for low, up in zip(dvec_bound_low, dvec_bound_up, strict=False)
+        ]
         bounds = bounds_d[:-2]
         freq_shift = dvec_bound_up[-2] / C_VAL
         bounds.append(
@@ -357,12 +363,13 @@ class PulsarSearchConfig:
             Array with the step sizes in decreasing derivative order.
         """
         tseg_cur = 2**ffa_level * self.tseg_brute
+        t_ref = 0 if self.nparams == 1 else tseg_cur / 2
         return psr_utils.poly_taylor_step_f(
             self.nparams,
             tseg_cur,
             self.nbins,
             self.tol,
-            t_ref=tseg_cur / 2,
+            t_ref=t_ref,
         )
 
     def get_dparams(self, ffa_level: int) -> np.ndarray:
@@ -379,13 +386,14 @@ class PulsarSearchConfig:
             Array with the parameter step sizes.
         """
         tseg_cur = 2**ffa_level * self.tseg_brute
+        t_ref = 0 if self.nparams == 1 else tseg_cur / 2
         return psr_utils.poly_taylor_step_d(
             self.nparams,
             tseg_cur,
             self.nbins,
             self.tol,
             self.f_max,
-            t_ref=tseg_cur / 2,
+            t_ref=t_ref,
         )
 
     def get_dparams_limited(self, ffa_level: int) -> np.ndarray:

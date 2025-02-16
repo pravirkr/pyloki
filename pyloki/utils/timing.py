@@ -5,12 +5,14 @@ import statistics
 import time
 from collections import defaultdict
 from contextlib import ContextDecorator
-from typing import Callable, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import attrs
 import numpy as np
 from numba import njit
-from typing_extensions import Self
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Access the _PyTime_AsSecondsDouble and _PyTime_GetSystemClock functions from pythonapi
 get_system_clock = ctypes.pythonapi._PyTime_GetSystemClock  # noqa: SLF001
