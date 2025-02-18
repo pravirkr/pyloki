@@ -140,6 +140,8 @@ def shift_params(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
     ----------
     param_vec : np.ndarray
         Parameter vector [..., a, v, d] at reference time t_i.
+        Could also be a 2D array of shape (N, n) where N is the number of vectors
+        and n is the number of parameters.
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
 
@@ -148,11 +150,12 @@ def shift_params(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
     np.ndarray
         Parameter vector at the new reference time t_j.
     """
-    nparams = len(param_vec)
+    nparams = param_vec.shape[-1]
     powers = np.tril(np.arange(nparams)[:, np.newaxis] - np.arange(nparams))
     # Calculate the transformation matrix (taylor coefficients)
     t_mat = delta_t**powers / math.fact(powers) * np.tril(np.ones_like(powers))
-    return np.dot(t_mat, param_vec)
+    # transform each vector in correct shape: np.dot(t_mat, param_vec)
+    return param_vec @ t_mat.T
 
 
 @njit(cache=True, fastmath=True)

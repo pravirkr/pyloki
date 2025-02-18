@@ -302,6 +302,30 @@ class SuggestionStruct:
         idx = np.argmax(self.scores)
         return self.param_sets[idx], self.folds[idx], self.scores[idx]
 
+    def get_transformed_params(self, delta_t: float) -> np.ndarray:
+        """Transform the search parameters to some given t_ref.
+
+        Parameters
+        ----------
+        delta_t : float
+            Time shift to apply to the search parameters.
+
+        Returns
+        -------
+        np.ndarray
+            Array of transformed search parameters (nsuggestions, nparams, 2)
+        """
+        param_sets = self.param_sets[:, :-2, :]  # Exclude last two rows
+        size, nparams, _ = param_sets.shape
+        dvec_cur = np.zeros((size, nparams + 1), dtype=param_sets.dtype)
+        # Copy till acceleration
+        dvec_cur[:, :-2] = param_sets[:, :-1, 0]
+        dvec_new = psr_utils.shift_params(dvec_cur, delta_t)
+        param_sets_new = param_sets.copy()
+        param_sets_new[:, :-1, 0] = dvec_new[:, :-2]
+        param_sets_new[:, -1, 0] = param_sets[:, -1, 0] * (1 + dvec_new[:, -2] / C_VAL)
+        return param_sets_new
+
     def _keep(self, indices: np.ndarray) -> SuggestionStruct:
         ind_size = np.sum(indices)
         sug_new = self.get_new(self.size)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ctypes
 import statistics
 import time
 from collections import defaultdict
@@ -9,27 +8,9 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 import attrs
 import numpy as np
-from numba import njit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-# Access the _PyTime_AsSecondsDouble and _PyTime_GetSystemClock functions from pythonapi
-get_system_clock = ctypes.pythonapi._PyTime_GetSystemClock  # noqa: SLF001
-as_seconds_double = ctypes.pythonapi._PyTime_AsSecondsDouble  # noqa: SLF001
-
-# Set the argument types and return types of the functions
-get_system_clock.argtypes = []
-get_system_clock.restype = ctypes.c_int64
-
-as_seconds_double.argtypes = [ctypes.c_int64]
-as_seconds_double.restype = ctypes.c_double
-
-
-@njit
-def nb_time_now() -> float:
-    system_clock = get_system_clock()
-    return as_seconds_double(system_clock)
 
 
 @attrs.define(slots=True)

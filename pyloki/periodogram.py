@@ -3,9 +3,20 @@ from __future__ import annotations
 from typing import ClassVar
 
 import attrs
+import h5py
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import xarray as xr
 from matplotlib import pyplot as plt
+from sigpyproc.viz.styles import set_seaborn
+
+
+def get_precision(d: float) -> int:
+    """Get the number of decimal places to display for a given number."""
+    if d == 0:
+        return 1
+    return max(0, -int(np.floor(np.log10(abs(d))))) + 1
 
 
 @attrs.define(auto_attribs=True, kw_only=True)
@@ -53,7 +64,7 @@ class Periodogram:
         best_params = self.find_best_params()
         summary: list[str] = []
         summary += [f"Best S/N: {best_params['snr']:.2f}"]
-        summary += [f"Best Period: {1/best_params['freq']}"]
+        summary += [f"Best Period: {1 / best_params['freq']}"]
         for name in self.param_names:
             if name != "snr":
                 summary += [f"Best {name}: {best_params[name]}"]
@@ -82,6 +93,7 @@ class Periodogram:
         other_dims = [dim for dim in sliced_data.dims if dim != param]
         y = sliced_data.max(dim=other_dims).to_numpy()
 
+        set_seaborn()
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
         ax.plot(x, y, marker="o", markersize=2, alpha=0.5)
         if x_lim:
@@ -115,6 +127,7 @@ class Periodogram:
         other_dims = [dim for dim in sliced_data.dims if dim not in [param_x, param_y]]
         z = sliced_data.max(dim=other_dims).to_numpy()
 
+        set_seaborn()
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
         im = ax.imshow(
             z,
@@ -166,6 +179,288 @@ class Periodogram:
     def __str__(self) -> str:
         param_info = ", ".join(f"{k}: {len(v)}" for k, v in self.params.items())
         return f"Periodogram({param_info}, tobs: {self.tobs})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+
+@attrs.define(auto_attribs=True, kw_only=True)
+class ScatteredPeriodogram:
+    param_names: list[str]  # length: nparams
+    data: pd.DataFrame = attrs.field(init=False, factory=pd.DataFrame)
+
+    @property
+    def n_runs(self) -> int:
+        return self.data["run_id"].nunique()
+
+    def add_run(self, param_sets: np.ndarray, scores: np.ndarray, run_id: int) -> None:
+        """Add a pruning run results to the existing dataframe.
+
+        Parameters
+        ----------
+        param_sets : np.ndarray
+            Parameter sets (n_sugg, n_params, 2).
+        scores : np.ndarray
+            Scores for each parameter set (n_sugg,).
+        run_id : int
+            Unique Identifier for the specific run being added.
+        """
+        self._validate_inputs(param_sets, scores)
+        run_data = {}
+        for i, name in enumerate(self.param_names):
+            run_data[name] = param_sets[:, i, 0]
+            run_data[f"d{name}"] = param_sets[:, i, 1]
+        run_data["score"] = scores
+        run_df = pd.DataFrame.from_dict(run_data)
+        run_df["run_id"] = run_id
+        self.data = pd.concat([self.data, run_df], ignore_index=True)
+
+    def get_summary_cands(self, n: int = 10, run_id: int | None = None) -> str:
+        """Return top N candidates, optionally for a specific run.
+
+        Parameters
+        ----------
+        n : int, optional
+            Number of top candidates to return, by default 10.
+        run_id : int | None, optional
+            Unique identifier for a specific run, by default None.
+
+        Returns
+        -------
+        str
+            Summary of top candidates.
+        """
+        data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
+        top_df = data.nlargest(n, "score")
+        summary: list[str] = []
+        summary.append("Top candidates:")
+
+        param_formatters = {}
+        for p in self.param_names:
+            d = self.data[f"d{p}"][0]
+            decimals = get_precision(d)
+            param_formatters[p] = f"{{:.{decimals}f}}"
+
+        dparams_str = ", ".join(
+            f"d{p}: {self.data[f'd{p}'][0]:.10g}" for p in self.param_names
+        )
+        summary.append(f"dparams: {dparams_str}")
+        for row in top_df.itertuples(index=False):
+            params_str = ", ".join(
+                f"{p}: {param_formatters[p].format(getattr(row, p))}"
+                for p in self.param_names
+            )
+            summary.append(
+                f"Run: {row.run_id:03d}, S/N: {row.score:.2f}, {params_str}",
+            )
+        return "\n".join(summary)
+
+    def plot_correlation(
+        self,
+        param_x: str,
+        param_y: str,
+        run_id: int | None = None,
+        true_values: dict[str, float] | None = None,
+        x_lim: tuple[float, float] | None = None,
+        y_lim: tuple[float, float] | None = None,
+        figsize: tuple[float, float] = (8, 6),
+        dpi: int = 100,
+        cmap: str = "magma_r",
+    ) -> plt.Figure:
+        """Plot correlation between two parameters with optional true values."""
+        data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
+        set_seaborn()
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        scatter = sns.scatterplot(
+            data=data,
+            x=param_x,
+            y=param_y,
+            hue="score",
+            size="score",
+            sizes=(20, 200),
+            palette=cmap,
+            alpha=0.7,
+            edgecolor="black",
+            linewidth=0.2,
+            legend="auto",
+            ax=ax,
+        )
+        norm = plt.Normalize(data["score"].min(), data["score"].max())
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        fig.colorbar(sm, ax=ax, pad=0.02, aspect=30, label="Score")
+        scatter.legend_.remove()
+
+        if true_values:
+            if param_x in true_values:
+                ax.axvline(
+                    true_values[param_x],
+                    c="r",
+                    ls="--",
+                    label=f"True {param_x}",
+                )
+            if param_y in true_values:
+                ax.axhline(
+                    true_values[param_y],
+                    c="r",
+                    ls="--",
+                    label=f"True {param_y}",
+                )
+        if x_lim:
+            ax.set_xlim(x_lim)
+        if y_lim:
+            ax.set_ylim(y_lim)
+        ax.set_xlabel(f"Trial {param_x}")
+        ax.set_ylabel(f"Trial {param_y}")
+        ax.set_title(f"Best S/N: {param_x} vs {param_y}")
+        return fig
+
+    def plot_scores(
+        self,
+        kind: str = "scatter",
+        run_id: int | None = None,
+        figsize: tuple[float, float] = (7, 3.5),
+        dpi: int = 100,
+    ) -> plt.Figure:
+        """Plot score distribution as scatter or histogram."""
+        data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
+        set_seaborn()
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+
+        if kind == "scatter":
+            ax.scatter(
+                range(len(data)),
+                data["score"],
+                s=12,
+                edgecolor="tab:blue",
+                facecolor="white",
+                linewidth=0.6,
+            )
+            if run_id is None:
+                # Highlight each run with a different background color and label
+                prev_idx = 0
+                for i, rid in enumerate(data["run_id"].unique()):
+                    run_data = data[data["run_id"] == rid]
+                    idx = prev_idx + len(run_data)
+                    ax.axvspan(prev_idx, idx, color=f"C{i % 5}", alpha=0.08)
+                    if idx < len(data):
+                        ax.axvline(idx, color="gray", linestyle=":", alpha=0.5)
+                    prev_idx = idx
+                    ax.set_title("Score Distribution Across Runs")
+            else:
+                ax.set_title(f"Score Distribution for Run {run_id}")
+            ax.set_xlabel("Candidate Index")
+            ax.set_ylabel("Score (S/N)")
+
+        else:
+            if run_id is not None:
+                sns.histplot(
+                    data=data,
+                    x="score",
+                    bins=50,
+                    ax=ax,
+                    element="step",
+                    linewidth=1.2,
+                    edgecolor="black",
+                )
+                ax.set_title(f"Score Distribution for Run {run_id}")
+            else:
+                sns.histplot(
+                    data=data,
+                    x="score",
+                    hue="run_id",
+                    bins=50,
+                    element="step",
+                    palette=sns.color_palette("colorblind", n_colors=self.n_runs),
+                    linewidth=1.2,
+                    edgecolor="black",
+                    ax=ax,
+                )
+                ax.set_title("Score Distribution Across Runs")
+                sns.move_legend(
+                    ax,
+                    "upper right",
+                    ncol=3,
+                    fontsize="xx-small",
+                    frameon=False,
+                    title="run",
+                    title_fontsize="xx-small",
+                )
+            ax.set_yscale("log")
+            ax.set_xlabel("Score (S/N)")
+            ax.set_ylabel("Count")
+        return fig
+
+    def get_stats(self) -> pd.DataFrame:
+        """Get statistics for each parameter."""
+        stats = []
+        for param in self.param_names:
+            param_stats = self.data[param].describe()
+            unc_stats = self.data[f"d{param}"].describe()
+            stats.append(
+                {
+                    "parameter": param,
+                    "mean": param_stats["mean"],
+                    "std": param_stats["std"],
+                    "median": param_stats["50%"],
+                    "mean_uncertainty": unc_stats["mean"],
+                },
+            )
+        return pd.DataFrame(stats)
+
+    @classmethod
+    def load(cls, filename: str) -> ScatteredPeriodogram:
+        """Load results from a HDF5 file."""
+        with h5py.File(filename, "r") as f:
+            if "pruning_version" not in f.attrs:
+                msg = "Not a valid pruning results file"
+                raise ValueError(msg)
+            param_names = list(f.attrs["param_names"])
+            pgram = cls(param_names=param_names)
+            for run_id, run_group in f["runs"].items():
+                param_sets = run_group["param_sets"][:]
+                scores = run_group["scores"][:]
+                pgram.add_run(param_sets, scores, int(run_id))
+        return pgram
+
+    def _validate_inputs(self, param_sets: np.ndarray, scores: np.ndarray) -> None:
+        if param_sets.ndim != 3 or param_sets.shape[-1] != 2:
+            msg = f"param_sets should be (n_sugg, n_params, 2), got {param_sets.shape}"
+            raise ValueError(msg)
+        expected_scores_shape = (param_sets.shape[0],)
+        if scores.shape != expected_scores_shape:
+            msg = (
+                f"scores shape {scores.shape} does not match "
+                f"expected shape {expected_scores_shape}"
+            )
+            raise ValueError(msg)
+        nparams = param_sets.shape[1]
+        if len(self.param_names) != nparams:
+            msg = f"Got {len(self.param_names)} names for {nparams} parameters"
+            raise ValueError(msg)
+
+    def __str__(self) -> str:
+        run_stats = self.data.groupby("run_id").agg(
+            {
+                "score": ["count", "min", "max"],
+            },
+        )
+
+        summary = [
+            "ScatteredPeriodogram Summary:",
+            f"Parameters: {', '.join(self.param_names)}",
+            f"Total runs: {len(run_stats)}",
+            f"Total candidates: {len(self.data)}",
+            "\nRun Statistics:",
+        ]
+
+        for rid, stats in run_stats.iterrows():
+            summary.append(
+                f"Run {rid:03d}: {int(stats['score']['count'])} candidates, "
+                f"max S/N: {stats['score']['max']:.2f}, "
+                f"min S/N: {stats['score']['min']:.2f}",
+            )
+        return "\n".join(summary)
 
     def __repr__(self) -> str:
         return self.__str__()

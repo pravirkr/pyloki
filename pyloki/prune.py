@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import attrs
+import h5py
 import numpy as np
 from numba import njit, types
 from numba.experimental import jitclass
@@ -19,6 +21,7 @@ from pyloki.utils.timing import Timer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Self
 
     from pyloki.ffa import DynamicProgramming
 
@@ -42,7 +45,7 @@ class SnailScheme:
     Parameters
     ----------
     nsegments : int
-        The number of segments to be pruned.
+        The number of segments in the hierarchical search scheme.
     ref_idx : int
         Reference (starting) segment index for pruning.
     """
@@ -58,8 +61,7 @@ class SnailScheme:
         return self.ref_idx + 0.5
 
     def get_idx(self, prune_level: int) -> int:
-        """
-        Get the segment index for the given pruning level.
+        """Get the segment index for the given pruning level.
 
         Parameters
         ----------
@@ -74,8 +76,7 @@ class SnailScheme:
         return self.data[prune_level]
 
     def get_coord(self, prune_level: int) -> tuple[float, float]:
-        """
-        Get the coord (reference and scale) for the given pruning level.
+        """Get the current coord (reference and scale) at the given pruning level.
 
         Parameters
         ----------
@@ -93,6 +94,18 @@ class SnailScheme:
         return ref, scale
 
     def get_coord_add(self, prune_level: int) -> tuple[float, float]:
+        """Get the segment coord to be added at the given pruning level.
+
+        Parameters
+        ----------
+        prune_level : int
+            The pruning level.
+
+        Returns
+        -------
+        tuple[float, float]
+            The reference and scale for the added coord.
+        """
         ref = self.get_idx(prune_level) + 0.5
         scale = 0.5
         return ref, scale
@@ -100,6 +113,21 @@ class SnailScheme:
     def get_valid(self, prune_level: int) -> tuple[float, float]:
         scheme_till_now = self.data[:prune_level]
         return np.min(scheme_till_now), np.max(scheme_till_now)
+
+    def get_delta(self, prune_level: int) -> float:
+        """Get the difference between the currenlt coord and the reference.
+
+        Parameters
+        ----------
+        prune_level : int
+            The pruning level.
+
+        Returns
+        -------
+        float
+            The difference between the current coord and the reference.
+        """
+        return self.get_coord(prune_level)[0] - self.ref
 
 
 @attrs.define(auto_attribs=True, slots=True, kw_only=True)
@@ -263,6 +291,60 @@ def pruning_iteration(
     return sugg_new, stats_int, stats_float
 
 
+class PruneResultWriter:
+    def __init__(self, filename: str | Path) -> None:
+        self.filename = Path(filename)
+        self.file = None
+
+    def __enter__(self) -> Self:
+        self.file = h5py.File(self.filename, "w")
+        self.runs_group = self.file.create_group("runs")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
+        if self.file:
+            self.file.close()
+
+    def write_metadata(
+        self,
+        param_names: list[str],
+        nsegments: int,
+        max_sugg: int,
+        threshold_scheme: np.ndarray,
+    ) -> None:
+        # Store package version
+        self.file.attrs["pruning_version"] = importlib.metadata.version("pyloki")
+        self.file.attrs["param_names"] = param_names
+        self.file.attrs["nsegments"] = nsegments
+        self.file.attrs["max_sugg"] = max_sugg
+        self.file.create_dataset(
+            "threshold_scheme",
+            data=threshold_scheme,
+            compression="gzip",
+            compression_opts=9,
+        )
+
+    def write_run_results(
+        self,
+        ref_seg: int,
+        scheme: np.ndarray,
+        param_sets: np.ndarray,
+        scores: np.ndarray,
+    ) -> None:
+        run_group = self.runs_group.create_group(str(ref_seg))
+        for name, data in [
+            ("scheme", scheme),
+            ("param_sets", param_sets),
+            ("scores", scores),
+        ]:
+            run_group.create_dataset(
+                name,
+                data=data,
+                compression="gzip",
+                compression_opts=9,
+            )
+
+
 class Pruning:
     """A class to perform the pruning algorithm on the FFA search results.
 
@@ -290,12 +372,10 @@ class Pruning:
         threshold_scheme: np.ndarray,
         max_sugg: int = 2**17,
         kind: str = "taylor",
-        logfile: str = "prune.log",
     ) -> None:
         self._dyp = dyp
         self._threshold_scheme = threshold_scheme
         self._max_sugg = max_sugg
-        self._logfile = logfile
         self._setup_pruning(kind)
 
     @property
@@ -309,10 +389,6 @@ class Pruning:
     @property
     def max_sugg(self) -> int:
         return self._max_sugg
-
-    @property
-    def logfile(self) -> str:
-        return self._logfile
 
     @property
     def prune_funcs(self) -> DP_FUNCS_TYPE:
@@ -355,13 +431,15 @@ class Pruning:
         return self._best_intermediate_arr
 
     @Timer(name="prune_initialize", logger=logger.info)
-    def initialize(self, ref_seg: int = 12) -> None:
+    def initialize(self, ref_seg: int, log_file: Path) -> None:
         """Initialize the pruning algorithm.
 
         Parameters
         ----------
-        ref_seg : int, optional
-            The reference segment to start the pruning algorithm, by default 12.
+        ref_seg : int
+            The reference segment to start the pruning algorithm.
+        log_file : Path
+            File path to store the log of the pruning algorithm.
 
         Notes
         -----
@@ -400,57 +478,68 @@ class Pruning:
                 "score_max": self.suggestion.score_max,
             },
         )
-        with Path(self.logfile).open("a") as f:
+        with log_file.open("a") as f:
             f.write(self.pstats.get_summary())
 
     def execute(
         self,
-        snr_lim: float,
+        outdir: str = "./",
+        file_prefix: str = "test",
         ref_seg_list: np.ndarray | None = None,
-        *,
-        lazy: bool = True,
-    ) -> list[tuple[int, SuggestionStruct]]:
+    ) -> str:
         """Execute the pruning algorithm.
 
         Parameters
         ----------
-        snr_lim : float
-            The signal-to-noise ratio limit for the pruning to stop.
+        outdir : str, optional
+            The output directory to store the results, by default "./".
+        file_prefix : str, optional
+            The prefix for the output files, by default "test".
         ref_seg_list : np.ndarray | None, optional
-            The reference segment list to start the pruning algorithm, by default None
-        lazy : bool, optional
-            If True, return the result after the first pass, by default True
+            The reference segment list to start the pruning algorithm, by default None.
 
         Returns
         -------
         list[tuple[int, SuggestionStruct]]
             A list of tuples containing the reference segment and the suggestion.
         """
-        res = []
-        Path(self.logfile).write_text("Pruning log\n")
+        filebase = f"{file_prefix}_pruning_nstages_{self.dyp.nsegments}"
+        log_file = Path(outdir) / f"{filebase}_log.txt"
+        result_file = Path(outdir) / f"{filebase}_results.h5"
+        log_file.write_text("Pruning log\n")
         if ref_seg_list is None:
             ref_seg_list = np.arange(0, self.dyp.nsegments, self.dyp.nsegments // 16)
-        for ref_seg in ref_seg_list:
-            with Path(self.logfile).open("a") as f:
-                f.write(f"Pruning log for ref segment: {ref_seg}\n")
-            self.initialize(ref_seg=ref_seg)
-            for _ in prune_track(
-                range(self.dyp.nsegments - 1),
-                description="Pruning",
-                total=self.dyp.nsegments - 1,
-                get_score=lambda: self.suggestion.score_max,
-                get_leaves=lambda: self.suggestion.size_lb,
-            ):
-                self.execute_iter()
-            with Path(self.logfile).open("a") as f:
-                f.write(f"Pruning complete for ref segment: {ref_seg}\n\n")
-            if self.suggestion.size > 0 and np.max(self.suggestion.scores) > snr_lim:
-                res.append((ref_seg, self.suggestion))
-                if lazy:
-                    return res
-        return res
+        with PruneResultWriter(result_file) as writer:
+            writer.write_metadata(
+                self.dyp.cfg.param_names,
+                self.dyp.nsegments,
+                self.max_sugg,
+                self.threshold_scheme,
+            )
+            for ref_seg in ref_seg_list:
+                with log_file.open("a") as f:
+                    f.write(f"Pruning log for ref segment: {ref_seg}\n")
+                self.initialize(ref_seg, log_file)
+                for _ in prune_track(
+                    range(self.dyp.nsegments - 1),
+                    description="Pruning",
+                    total=self.dyp.nsegments - 1,
+                    get_score=lambda: self.suggestion.score_max,
+                    get_leaves=lambda: self.suggestion.size_lb,
+                ):
+                    self.execute_iter(log_file)
+                delta_t = self.scheme.get_delta(self.prune_level) * self.dyp.tseg
+                writer.write_run_results(
+                    ref_seg,
+                    self.scheme.data,
+                    self.suggestion.get_transformed_params(delta_t),
+                    self.suggestion.scores,
+                )
+                with log_file.open("a") as f:
+                    f.write(f"Pruning complete for ref segment: {ref_seg}\n\n")
+        return result_file.as_posix()
 
-    def execute_iter(self) -> None:
+    def execute_iter(self, log_file: Path) -> None:
         if self.is_complete:
             return
         self._prune_level += 1
@@ -476,7 +565,7 @@ class Pruning:
                 "threshold": threshold,
             },
         )
-        with Path(self.logfile).open("a") as f:
+        with log_file.open("a") as f:
             f.write(self.pstats.get_summary())
         if suggestion.size == 0:
             self._complete = True
