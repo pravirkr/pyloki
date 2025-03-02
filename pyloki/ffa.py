@@ -3,9 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from numba import njit, prange, types
 
-from pyloki.core import FFASearchDPFunctions, set_ffa_load_func
+from pyloki.core import FFASearchDPFuncts, set_ffa_load_func, unify_fold
 from pyloki.utils import np_utils
 from pyloki.utils.misc import get_logger
 from pyloki.utils.timing import Timer
@@ -13,6 +12,7 @@ from pyloki.utils.timing import Timer
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from numba import types
     from numpy import typing as npt
 
     from pyloki.config import PulsarSearchConfig
@@ -20,65 +20,6 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
-
-
-@Timer(name="unify_fold")
-@njit(fastmath=True, parallel=True)
-def unify_fold(
-    fold_in: np.ndarray,
-    param_arr_prev: types.ListType[types.Array],
-    fold_out: np.ndarray,
-    param_cart_cur: np.ndarray,
-    ffa_level: int,
-    dp_funcs: FFASearchDPFunctions,
-    load_func: Callable[[np.ndarray, int, np.ndarray], np.ndarray],
-) -> None:
-    """Unify the fold by combining the two folds from the previous level.
-
-    Parameters
-    ----------
-    fold_in : np.ndarray
-        Input fold structure from the previous level.
-    param_arr_prev : types.ListType[types.Array]
-        Parameter array from the previous level.
-    fold_out : np.ndarray
-        Output fold structure for the current level.
-    param_cart_cur : np.ndarray
-        Cartesian product of the parameter array for the current level.
-    ffa_level : int
-        Current level of the FFA search.
-    dp_funcs : FFASearchDPFunctions
-        A container for the dynamic programming functions.
-    load_func : Callable[[np.ndarray, int, np.ndarray], np.ndarray]
-        A function to load the fold from the input structure.
-    """
-    for iparam_set in prange(len(param_cart_cur)):
-        p_set = param_cart_cur[iparam_set]
-
-        # Resolve parameters for tail and head
-        p_idx_tail, phase_shift_tail = dp_funcs.resolve(
-            p_set,
-            param_arr_prev,
-            ffa_level,
-            0,
-        )
-        p_idx_head, phase_shift_head = dp_funcs.resolve(
-            p_set,
-            param_arr_prev,
-            ffa_level,
-            1,
-        )
-        for ipair in range(fold_out.shape[0]):
-            fold_tail = dp_funcs.shift(
-                load_func(fold_in, ipair * 2, p_idx_tail),
-                phase_shift_tail,
-            )
-            fold_head = dp_funcs.shift(
-                load_func(fold_in, ipair * 2 + 1, p_idx_head),
-                phase_shift_head,
-            )
-            fold_out[ipair, iparam_set] = dp_funcs.add(fold_tail, fold_head)
-
 
 class DynamicProgramming:
     """Dynamic Programming class for the FFA search.
@@ -102,7 +43,7 @@ class DynamicProgramming:
         self._ts_data = ts_data
         self._cfg = cfg
         self._data_type = data_type
-        self._dp_funcs = FFASearchDPFunctions(cfg)
+        self._dp_funcs = FFASearchDPFuncts(cfg)
         self._load_func = set_ffa_load_func(cfg.nparams)
 
     @property
@@ -118,7 +59,7 @@ class DynamicProgramming:
         return self._data_type
 
     @property
-    def dp_funcs(self) -> FFASearchDPFunctions:
+    def dp_funcs(self) -> FFASearchDPFuncts:
         return self._dp_funcs
 
     @property
@@ -181,7 +122,7 @@ class DynamicProgramming:
         """Initialize the data structure for the FFA search."""
         logger.info("Initializing data structure...")
         self._ffa_level = 0
-        dparams = self.dp_funcs.step(self.ffa_level)
+        dparams = self.cfg.get_dparams(self.ffa_level)
         logger.info(f"param steps: {dparams}")
         param_arr = self.cfg.get_param_arr(dparams)
         self._check_init_param_arr(param_arr)
@@ -209,7 +150,7 @@ class DynamicProgramming:
     def _execute_iter(self) -> None:
         """Execute a single iteration of the FFA search."""
         self._ffa_level += 1
-        dparams = self.dp_funcs.step(self.ffa_level)
+        dparams = self.cfg.get_dparams(self.ffa_level)
         logger.info(f"param steps: {dparams}")
         param_arr_cur = self.cfg.get_param_arr(dparams)
 
@@ -274,7 +215,7 @@ class DynamicProgramming:
         """
         complexity = []
         for ffa_level in range(self.cfg.niters_ffa + 1):
-            dparams = self.dp_funcs.step(ffa_level)
+            dparams = self.cfg.get_dparams(ffa_level)
             complexity.append(
                 int(np.prod([len(p) for p in self.cfg.get_param_arr(dparams)])),
             )

@@ -4,7 +4,6 @@ import itertools
 
 import numpy as np
 from numba import typed, types
-from numba.experimental import jitclass
 
 from pyloki import kepler
 from pyloki.utils import math, psr_utils
@@ -235,21 +234,6 @@ class ParamLimits:
         return cls(out)
 
 
-@jitclass(
-    spec=[
-        ("nsamps", types.i8),
-        ("tsamp", types.f8),
-        ("nbins", types.i8),
-        ("tol", types.f8),
-        ("param_limits", types.ListType(types.Tuple([types.f8, types.f8]))),
-        ("ducy_max", types.f8),
-        ("wtsp", types.f8),
-        ("bseg_brute", types.i8),
-        ("bseg_ffa", types.i8),
-        ("prune_poly_order", types.i8),
-        ("prune_n_derivs", types.i8),
-    ],
-)
 class PulsarSearchConfig:
     """Class to hold the configuration for the polynomial search.
 

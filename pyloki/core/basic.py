@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 from numba import njit, typed, types
-from numba.experimental import jitclass
 
-from pyloki.config import PulsarSearchConfig
-from pyloki.core import common, defaults
+from pyloki.core import common
 from pyloki.detection import scoring
 from pyloki.utils import np_utils, psr_utils
 from pyloki.utils.misc import C_VAL
+from pyloki.utils.suggestion import SuggestionStruct
 
 
 @njit(cache=True, fastmath=True)
@@ -86,25 +85,20 @@ def ffa_resolve(
     -------
     tuple[np.ndarray, int]
         The resolved parameter set index and the relative phase shift.
+
+    Notes
+    -----
+    delta_t is the time difference between the reference time of the current segment
+    (0) and the reference time of the previous segment.
     """
     nparams = len(pset_cur)
     if nparams == 1:
-        t_ref_prev = latter * 2 ** (ffa_level - 1) * tseg_brute
-        pset_prev, delay_rel = pset_cur, 0
+        delta_t = latter * 2 ** (ffa_level - 1) * tseg_brute
+        pset_prev, delay = pset_cur, 0
     else:
-        t_ref_prev = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
-        dvec_cur = np.zeros(nparams + 1, dtype=np.float64)
-        dvec_cur[:-2] = pset_cur[:-1]  # till acceleration
-        dvec_prev = psr_utils.shift_params(dvec_cur, t_ref_prev)
-        pset_prev = dvec_prev[:-1]
-        pset_prev[-1] = pset_cur[-1] * (1 + dvec_prev[-2] / C_VAL)
-        delay_rel = dvec_prev[-1] / C_VAL
-    relative_phase = psr_utils.get_phase_idx(
-        t_ref_prev,
-        pset_cur[-1],
-        nbins,
-        delay_rel,
-    )
+        delta_t = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
+        pset_prev, delay = psr_utils.shift_params(pset_cur, delta_t)
+    relative_phase = psr_utils.get_phase_idx(delta_t, pset_cur[-1], nbins, delay)
     pindex_prev = np.empty(nparams, dtype=np.int64)
     for ip in range(nparams):
         pindex_prev[ip] = np_utils.find_nearest_sorted_idx(parr_prev[ip], pset_prev[ip])
@@ -207,7 +201,7 @@ def split_taylor_params(
 
 
 @njit(cache=True, fastmath=True)
-def poly_taylor_branch2leaves(
+def poly_taylor_branch(
     param_set: np.ndarray,
     coord_cur: tuple[float, float],
     fold_bins: int,
@@ -220,7 +214,7 @@ def poly_taylor_branch2leaves(
     Parameters
     ----------
     param_set : np.ndarray
-        Parameter set to branch. Shape: (nparams + 3, 2)
+        Parameter set to branch. Shape: (nparams + 2, 2)
     tol : float
         Tolerance for the parameter step size in bins.
     tsamp : float
@@ -294,7 +288,7 @@ def poly_taylor_leaves(
     """
     t0, scale = coord_init
     leafs_taylor = common.get_leaves(param_arr, dparams)
-    leaves = np.zeros((len(leafs_taylor), poly_order + 2, 2))
+    leaves = np.zeros((len(leafs_taylor), poly_order + 2, 2), dtype=np.float64)
     leaves[:, :-2] = leafs_taylor
     leaves[:, -2, 0] = leafs_taylor[:, -1, 0]  # f0
     leaves[:, -1, 0] = t0
@@ -303,14 +297,13 @@ def poly_taylor_leaves(
 
 
 @njit(cache=True, fastmath=True)
-def poly_taylor_suggestion_struct(
+def poly_taylor_suggest(
     fold_segment: np.ndarray,
+    coord_init: tuple[float, float],
     param_arr: types.ListType,
     dparams: np.ndarray,
     poly_order: int,
-    coord_init: tuple[float, float],
-    score_func: types.FunctionType,
-) -> common.SuggestionStruct:
+) -> SuggestionStruct:
     """Generate a suggestion struct from a fold segment.
 
     Parameters
@@ -318,30 +311,30 @@ def poly_taylor_suggestion_struct(
     fold_segment : np.ndarray
         The fold segment to generate suggestions for. The shape of the array is
         (n_accel, n_period, 2, n_bins). Parameter dimensions are first two.
+    coord_init : tuple[float, float]
+        The coordinates for the starting segment (level 0).
     param_arr : types.ListType
         Parameter values for each dimension (accel, period).
     dparams : np.ndarray
         Parameter step (grid) sizes for each dimension in a 1D array.
     poly_order : int
         The order of the Taylor polynomial.
-    coord_init : tuple[float, float]
-        The coordinates for the starting segment (level 0).
     score_func : _type_
         Function to score the folded data.
 
     Returns
     -------
-    common.SuggestionStruct
+    SuggestionStruct
         Suggestion struct
     """
     n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
     param_sets = poly_taylor_leaves(param_arr, dparams, poly_order, coord_init)
     data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
-    scores = np.zeros(n_param_sets)
+    scores = np.zeros(n_param_sets, dtype=np.float32)
     for iparam in range(n_param_sets):
-        scores[iparam] = score_func(data[iparam])
-    backtracks = np.zeros((n_param_sets, 2 + len(param_arr)))
-    return common.SuggestionStruct(param_sets, data, scores, backtracks)
+        scores[iparam] = scoring.snr_score_func(data[iparam])
+    backtracks = np.zeros((n_param_sets, 2 + len(param_arr)), dtype=np.int32)
+    return SuggestionStruct(param_sets, data, scores, backtracks)
 
 
 @njit(cache=True, fastmath=True)
@@ -370,7 +363,7 @@ def generate_branching_pattern(
     for prune_level in range(1, nstages + 1):
         duration = tchunk_ffa * (prune_level + 1)
         coord_cur = (0, duration / 2)
-        leaves_arr = poly_taylor_branch2leaves(
+        leaves_arr = poly_taylor_branch(
             leaf,
             coord_cur,
             fold_bins,
@@ -381,186 +374,3 @@ def generate_branching_pattern(
         branching_pattern.append(len(leaves_arr))
         leaf = leaves_arr[isuggest]
     return np.array(branching_pattern)
-
-
-@jitclass(spec=[("cfg", PulsarSearchConfig.class_type.instance_type)])
-class FFASearchDPFunctions:
-    """A container class for the functions used in the FFA search.
-
-    Parameters
-    ----------
-    cfg : PulsarSearchConfig
-        Configuration object for the search.
-    """
-
-    def __init__(self, cfg: PulsarSearchConfig) -> None:
-        self.cfg = cfg
-
-    def init(
-        self,
-        ts_e: np.ndarray,
-        ts_v: np.ndarray,
-        param_arr: types.ListType[types.Array],
-    ) -> np.ndarray:
-        """Receives the data and parameter array and returns the initial fold."""
-        return ffa_init(
-            ts_e,
-            ts_v,
-            param_arr,
-            self.cfg.bseg_brute,
-            self.cfg.nbins,
-            self.cfg.tsamp,
-        )
-
-    def step(self, ffa_level: int) -> np.ndarray:
-        """Return the parameter step sizes (..., da, df) for the current level."""
-        return self.cfg.get_dparams(ffa_level)
-
-    def resolve(
-        self,
-        pset_cur: np.ndarray,
-        parr_prev: np.ndarray,
-        ffa_level: int,
-        latter: int,
-    ) -> tuple[np.ndarray, int]:
-        """Resolve the current parameters among the previous level parameters."""
-        return ffa_resolve(
-            pset_cur,
-            parr_prev,
-            ffa_level,
-            latter,
-            self.cfg.tseg_brute,
-            self.cfg.nbins,
-        )
-
-    def add(self, data_tail: np.ndarray, data_head: np.ndarray) -> np.ndarray:
-        """Addition rule for the FFA search."""
-        return defaults.add(data_tail, data_head)
-
-    def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:  # noqa: ARG002
-        """Bit packing rule for the FFA search."""
-        return defaults.pack(data)
-
-    def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
-        """Shift the data by a phase shift.
-
-        Can we handle non-integer phase shifts?
-        """
-        return defaults.shift(data, phase_shift)
-
-
-@jitclass(
-    spec=[
-        ("cfg", PulsarSearchConfig.class_type.instance_type),
-        ("param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
-        ("dparams", types.f8[:]),
-        ("tseg_ffa", types.f8),
-        ("poly_order", types.i8),
-    ],
-)
-class PruningTaylorDPFunctions:
-    def __init__(
-        self,
-        cfg: PulsarSearchConfig,
-        param_arr: types.ListType[types.Array],
-        dparams: np.ndarray,
-        tseg_ffa: float,
-        poly_order: int = 3,
-    ) -> None:
-        self.cfg = cfg
-        self.param_arr = param_arr
-        self.dparams = dparams
-        self.tseg_ffa = tseg_ffa
-        self.poly_order = poly_order
-
-    def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
-        return fold[seg_idx]
-
-    def resolve(
-        self,
-        leaf: np.ndarray,
-        coord_add: tuple[float, float],
-        coord_init: tuple[float, float],
-    ) -> tuple[np.ndarray, int]:
-        coord_add = (coord_add[0] * self.tseg_ffa, coord_add[1] * self.tseg_ffa)
-        coord_init = (coord_init[0] * self.tseg_ffa, coord_init[1] * self.tseg_ffa)
-        return poly_taylor_resolve(
-            leaf,
-            self.param_arr,
-            coord_add,
-            coord_init,
-            self.cfg.nbins,
-        )
-
-    def branch(
-        self,
-        param_set: np.ndarray,
-        coord_cur: tuple[float, float],
-    ) -> np.ndarray:
-        coord_cur = (coord_cur[0] * self.tseg_ffa, coord_cur[1] * self.tseg_ffa)
-        return poly_taylor_branch2leaves(
-            param_set,
-            coord_cur,
-            self.cfg.nbins,
-            self.cfg.tol,
-            self.poly_order,
-            self.cfg.param_limits,
-        )
-
-    def suggest(
-        self,
-        fold_segment: np.ndarray,
-        coord_init: tuple[float, float],
-    ) -> common.SuggestionStruct:
-        coord_init = (coord_init[0] * self.tseg_ffa, coord_init[1] * self.tseg_ffa)
-        return poly_taylor_suggestion_struct(
-            fold_segment,
-            self.param_arr,
-            self.dparams,
-            self.poly_order,
-            coord_init,
-            self.score,
-        )
-
-    def score(self, combined_res: np.ndarray) -> float:
-        return scoring.snr_score_func(combined_res)
-
-    def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
-        return defaults.add(data0, data1)
-
-    def pack(self, x: np.ndarray) -> np.ndarray:
-        return defaults.pack(x)
-
-    def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
-        return defaults.shift(data, phase_shift)
-
-    def transform(
-        self,
-        leaf: np.ndarray,
-        coord_cur: tuple[float, float],  # noqa: ARG002
-        trans_matrix: np.ndarray,  # noqa: ARG002
-    ) -> np.ndarray:
-        return leaf
-
-    def get_transform_matrix(
-        self,
-        coord_cur: tuple[float, float],
-        coord_prev: tuple[float, float],
-    ) -> np.ndarray:
-        coord_cur = (self.tseg_ffa * coord_cur[0], self.tseg_ffa * coord_cur[1])
-        coord_prev = (self.tseg_ffa * coord_prev[0], self.tseg_ffa * coord_prev[1])
-        return defaults.get_trans_matrix(coord_cur, coord_prev)
-
-    def validate(
-        self,
-        leaves: np.ndarray,
-        coord_valid: tuple[float, float],  # noqa: ARG002
-        validation_params: tuple[np.ndarray, np.ndarray, float],  # noqa: ARG002
-    ) -> np.ndarray:
-        return leaves
-
-    def get_validation_params(
-        self,
-        coord_add: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, float]:
-        return defaults.get_validation_params(coord_add)

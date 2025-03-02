@@ -1,0 +1,277 @@
+from __future__ import annotations
+
+import importlib
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import attrs
+import h5py
+import numpy as np
+
+if TYPE_CHECKING:
+    from typing import ClassVar, Self
+
+
+@attrs.define(auto_attribs=True, slots=True, kw_only=True)
+class PruneStats:
+    """Container for pruning statistics at a single pruning level."""
+
+    level: int
+    seg_idx: int
+    threshold: float
+    score_min: float = 0.0
+    score_max: float = 0.0
+    n_branches: int = 1
+    n_leaves: int = 1
+    n_leaves_phy: int = 0
+    n_leaves_surv: int = 0
+
+    @property
+    def lb_leaves(self) -> float:
+        return np.round(np.log2(self.n_leaves), 2)
+
+    @property
+    def branch_frac(self) -> float:
+        return np.round(self.n_leaves / self.n_branches, 2)
+
+    @property
+    def branch_frac_phy(self) -> float:
+        return np.round(self.n_leaves_phy / self.n_branches, 2)
+
+    @property
+    def surv_frac(self) -> float:
+        return np.round(self.n_leaves_surv / self.n_leaves, 2)
+
+    def update(self, stats_dict: dict[str, float]) -> None:
+        for key, value in stats_dict.items():
+            setattr(self, key, value)
+
+    def get_summary(self) -> str:
+        summary = []
+        summary.append(
+            f"Prune level: {self.level}, seg_idx: {self.seg_idx}, "
+            f"lb_leaves: {self.lb_leaves:.2f}, branch_frac: {self.branch_frac:.2f},",
+        )
+        summary.append(
+            f"score thresh: {self.threshold:.2f}, max: {self.score_max:.2f}, "
+            f"min: {self.score_min:.2f}, P(surv): {self.surv_frac:.2f}",
+        )
+        return "".join(summary) + "\n"
+
+
+@attrs.define(auto_attribs=True, slots=True, kw_only=True)
+class PruneStatsCollection:
+    """Collection of PruneStats objects across multiple pruning levels."""
+
+    stats_list: list[PruneStats] = attrs.Factory(list)
+    timers: dict[str, float] = attrs.Factory(dict)
+
+    TIMER_NAMES: ClassVar[list[str]] = [
+        "branch",
+        "validate",
+        "resolve",
+        "shift_add",
+        "score",
+        "transform",
+        "threshold",
+    ]
+
+    def __attrs_post_init__(self) -> None:
+        self.timers = {name: 0.0 for name in self.TIMER_NAMES}
+
+    @property
+    def nstages(self) -> int:
+        return len(self.stats_list)
+
+    def update_stats(
+        self,
+        stats: PruneStats,
+        timer_arr: np.ndarray | None = None,
+    ) -> None:
+        """Update the collection with new PruneStats and timer values."""
+        self.stats_list.append(stats)
+        if timer_arr is not None:
+            if len(timer_arr) != len(self.TIMER_NAMES):
+                msg = f"Invalid timer array length: {len(timer_arr)}"
+                raise ValueError(msg)
+            for i, name in enumerate(self.TIMER_NAMES):
+                self.timers[name] += timer_arr[i]
+
+    def get_stats(self, level: int) -> PruneStats | None:
+        """Get PruneStats for a specific level."""
+        for stats in self.stats_list:
+            if stats.level == level:
+                return stats
+        return None
+
+    def get_all_summaries(self) -> str:
+        """Get formatted summaries of all pruning levels."""
+        return "".join(
+            stats.get_summary()
+            for stats in sorted(self.stats_list, key=lambda x: x.level)
+        )
+
+    def get_timer_summary(self) -> str:
+        """Get formatted summaries of all timers."""
+        total_time = sum(self.timers.values())
+        timer_percent = {
+            name: (time / total_time) * 100 for name, time in self.timers.items()
+        }
+        lines = [f"Timing breakdown: {total_time:.2f}s"]
+        lines.extend(
+            f"  {name:10s}: {value:6.1f}%" for name, value in timer_percent.items()
+        )
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        """Convert stats collection to a dictionary for saving to file."""
+        return {
+            "nstages": self.nstages,
+            "levels": [attrs.asdict(stats) for stats in self.stats_list],
+            "timers": self.timers,
+        }
+
+    def to_array(self) -> tuple[np.ndarray, np.ndarray]:
+        """Convert stats collection to numpy arrays for HDF5 storage."""
+        level_dtype = np.dtype(
+            [
+                ("level", np.int32),
+                ("seg_idx", np.int32),
+                ("threshold", np.float32),
+                ("score_min", np.float32),
+                ("score_max", np.float32),
+                ("n_branches", np.int32),
+                ("n_leaves", np.int32),
+                ("n_leaves_phy", np.int32),
+                ("n_leaves_surv", np.int32),
+            ],
+        )
+        level_stats = np.zeros(len(self.stats_list), dtype=level_dtype)
+        for i, stats in enumerate(self.stats_list):
+            level_stats[i] = (
+                stats.level,
+                stats.seg_idx,
+                stats.threshold,
+                stats.score_min,
+                stats.score_max,
+                stats.n_branches,
+                stats.n_leaves,
+                stats.n_leaves_phy,
+                stats.n_leaves_surv,
+            )
+        timer_dtype = np.dtype([(name, np.float32) for name in self.TIMER_NAMES])
+        timer_stats = np.zeros(1, dtype=timer_dtype)
+        for name in self.TIMER_NAMES:
+            timer_stats[name] = self.timers[name]
+
+        return level_stats, timer_stats
+
+    @classmethod
+    def from_dict(cls, data: dict) -> PruneStatsCollection:
+        """Create PruneStatsCollection from a dictionary."""
+        collection = cls()
+        for level_data in data["levels"]:
+            stats = PruneStats(**level_data)
+            collection.update_stats(stats)
+        collection.timers = data["timers"]
+        return collection
+
+    @classmethod
+    def from_arrays(
+        cls,
+        level_stats: np.ndarray,
+        timer_stats: np.ndarray,
+    ) -> PruneStatsCollection:
+        """Create PruneStatsCollection from numpy arrays."""
+        collection = cls()
+        for row in level_stats:
+            stats = PruneStats(
+                level=int(row["level"]),
+                seg_idx=int(row["seg_idx"]),
+                threshold=float(row["threshold"]),
+                score_min=float(row["score_min"]),
+                score_max=float(row["score_max"]),
+                n_branches=int(row["n_branches"]),
+                n_leaves=int(row["n_leaves"]),
+                n_leaves_phy=int(row["n_leaves_phy"]),
+                n_leaves_surv=int(row["n_leaves_surv"]),
+            )
+            collection.stats_list.append(stats)
+
+        # Reconstruct timers
+        for name in cls.TIMER_NAMES:
+            collection.timers[name] = float(timer_stats[0][name])
+
+        return collection
+
+
+class PruneResultWriter:
+    def __init__(
+        self,
+        filename: str | Path,
+        mode: str = "w",
+    ) -> None:
+        self.filename = Path(filename)
+        self.file = None
+        self.mode = mode
+        self.runs_group: h5py.Group | None = None
+
+    def __enter__(self) -> Self:
+        self.file = h5py.File(self.filename, self.mode)
+        if self.file is None:
+            msg = f"Could not open file: {self.filename}"
+            raise ValueError(msg)
+        if "runs" not in self.file:
+            self.file.create_group("runs")
+        self.runs_group = self.file["runs"]
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
+        if self.file:
+            self.file.close()
+
+    def write_metadata(
+        self,
+        param_names: list[str],
+        nsegments: int,
+        max_sugg: int,
+        threshold_scheme: np.ndarray,
+    ) -> None:
+        # Store package version
+        self.file.attrs["pruning_version"] = importlib.metadata.version("pyloki")
+        self.file.attrs["param_names"] = param_names
+        self.file.attrs["nsegments"] = nsegments
+        self.file.attrs["max_sugg"] = max_sugg
+        self.file.create_dataset(
+            "threshold_scheme",
+            data=threshold_scheme,
+            compression="gzip",
+            compression_opts=9,
+        )
+
+    def write_run_results(
+        self,
+        ref_seg: int,
+        scheme: np.ndarray,
+        param_sets: np.ndarray,
+        scores: np.ndarray,
+        pstats: PruneStatsCollection,
+    ) -> None:
+        if self.runs_group is None:
+            msg = "No runs group found in the file."
+            raise ValueError(msg)
+        run_group = self.runs_group.create_group(str(ref_seg))
+        level_stats, timer_stats = pstats.to_array()
+        for name, data in [
+            ("scheme", scheme),
+            ("param_sets", param_sets),
+            ("scores", scores),
+            ("level_stats", level_stats),
+            ("timer_stats", timer_stats),
+        ]:
+            run_group.create_dataset(
+                name,
+                data=data,
+                compression="gzip",
+                compression_opts=9,
+            )

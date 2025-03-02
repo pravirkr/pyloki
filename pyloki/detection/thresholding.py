@@ -465,6 +465,7 @@ class DynamicThresholdScheme:
         template: np.ndarray,
         ntrials: int = 1024,
         nprobs: int = 10,
+        prob_min: float = 0.05,
         snr_final: float = 8,
         nthresholds: int = 100,
         ducy_max: float = 0.2,
@@ -480,7 +481,8 @@ class DynamicThresholdScheme:
 
         # later define as snr^2
         self.thresholds = np.linspace(0.1, self.snr_final, nthresholds)
-        self.probs = 1 - np.logspace(-3, 0, nprobs, base=np.e)[::-1]
+        self.prob_min = prob_min
+        self.probs = np.logspace(np.log10(prob_min), 0, nprobs)
         self.states = np.empty(
             (self.nstages, self.nthresholds, self.nprobs),
             dtype=object,
@@ -554,6 +556,8 @@ class DynamicThresholdScheme:
                 self.ducy_max,
             )
             iprob = np.digitize(cur_state.success_h1_cumul, self.probs) - 1
+            if iprob < 0:
+                continue
             self.states[0, ithres, iprob] = cur_state
             self.folds_in[ithres, iprob] = cur_fold_state
 
@@ -597,6 +601,8 @@ class DynamicThresholdScheme:
             for candidate in candidates:
                 state, fold_state = candidate
                 iprob = np.digitize(state.success_h1_cumul, self.probs) - 1
+                if iprob < 0:
+                    continue
                 existing_state = self.states[istage, ithres, iprob]
                 if (
                     existing_state is None

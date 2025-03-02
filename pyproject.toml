@@ -78,6 +78,8 @@ max-args = 15
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
+[tool.ruff.lint.flake8-unused-arguments]
+ignore-variadic-names = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"

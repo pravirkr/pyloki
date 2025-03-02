@@ -45,8 +45,7 @@ def boxcar_snr_1d(
     widths: np.ndarray,
     stdnoise: float = 1.0,
 ) -> np.ndarray:
-    """
-    Compute the SNR for a 1D profile using boxcar filters.
+    """Compute the SNR for a 1D profile using boxcar filters.
 
     Parameters
     ----------
@@ -79,7 +78,7 @@ def boxcar_snr_1d(
 
 
 @njit(cache=True, fastmath=True)
-def snr_score_func(combined_res: np.ndarray) -> int:
+def snr_score_func(combined_res: np.ndarray) -> float:
     ts_e, ts_v = combined_res
     fold = ts_e / np.sqrt(ts_v)
     widths = generate_box_width_trials(len(fold), ducy_max=0.3, spacing_factor=1.1)

@@ -4,7 +4,7 @@ import numpy as np
 from numba import njit, typed, types
 from numba.experimental import jitclass
 
-from pyloki.config import PulsarSearchConfig
+from pyloki.config import PulsarSearchConfig1
 from pyloki.core import common, defaults
 from pyloki.detection import scoring
 from pyloki.utils import math, np_utils, psr_utils
@@ -459,7 +459,7 @@ def prepare_epicyclic_validation_params(
 
 @jitclass(
     spec=[
-        ("cfg", PulsarSearchConfig.class_type.instance_type),
+        ("cfg", PulsarSearchConfig1.class_type.instance_type),
         ("param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
         ("dparams", types.f8[:]),
         ("tseg_ffa", types.f8),
@@ -471,7 +471,7 @@ def prepare_epicyclic_validation_params(
 class PruningChebychevDPFunctions:
     def __init__(
         self,
-        cfg: PulsarSearchConfig,
+        cfg: PulsarSearchConfig1,
         param_arr: types.ListType[types.Array],
         dparams: np.ndarray,
         tseg_ffa: float,

@@ -105,9 +105,18 @@ class PulseSignalConfig:
             pos=phi0,
         )
         signal = pulse.generate()
-        stdnoise = np.sqrt(self.nsamps * self.ducy) / self.snr / self.tol_bins
+        pulse_width = self.ducy * self.period / self.dt
+        stdnoise = np.sqrt(self.nsamps * self.ducy) / self.snr / pulse_width
         rng = np.random.default_rng()
         signal += rng.normal(0, stdnoise, self.nsamps)
+        signal_v = np.ones(self.nsamps) * stdnoise**2
+        return TimeSeries(signal, signal_v, self.dt)
+
+    def generate_noise(self) -> TimeSeries:
+        """Generate a noise signal based on the configuration parameters."""
+        stdnoise = np.sqrt(self.nsamps * self.ducy) / self.snr / self.tol_bins
+        rng = np.random.default_rng()
+        signal = rng.normal(0, stdnoise, self.nsamps)
         signal_v = np.ones(self.nsamps) * stdnoise**2
         return TimeSeries(signal, signal_v, self.dt)
 
@@ -115,7 +124,6 @@ class PulseSignalConfig:
         if self.ducy <= 0 or self.ducy >= 1:
             msg = f"Duty cycle ({self.ducy}) should be in (0, 1)"
             raise ValueError(msg)
-
 
 class PulseShape:
     """Generate a pulse shape.
@@ -159,9 +167,13 @@ class PulseShape:
         return self._rv
 
     def generate(self) -> np.ndarray:
-        x0 = (self.proper_time % self.period) / self.period
-        x1 = ((self.proper_time + self.dt) % self.period) / self.period
-        return (x0 < x1) * (self.rv.cdf(x1) - self.rv.cdf(x0))
+        phase_start = (self.proper_time % self.period) / self.period
+        phase_end = ((self.proper_time + self.dt) % self.period) / self.period
+        return np.where(
+            phase_end > phase_start,
+            self.rv.cdf(phase_end) - self.rv.cdf(phase_start),
+            0,
+        )
 
     def _set_rv(self) -> stats.rv_continuous:
         if self.shape == "boxcar":

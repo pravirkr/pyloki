@@ -1,191 +1,49 @@
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import attrs
-import h5py
 import numpy as np
 from numba import njit, types
-from numba.experimental import jitclass
 
 from pyloki.core import (
-    PruningChebychevDPFunctions,
-    PruningTaylorDPFunctions,
-    SuggestionStruct,
+    PruneTaylorDPFuncts,
     set_prune_load_func,
 )
+from pyloki.io.cands import PruneResultWriter, PruneStats, PruneStatsCollection
 from pyloki.utils.misc import get_logger, prune_track
-from pyloki.utils.timing import Timer
+from pyloki.utils.psr_utils import SnailScheme
+from pyloki.utils.timing import Timer, nb_time_now
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from typing import Self
 
     from pyloki.ffa import DynamicProgramming
+    from pyloki.utils.suggestion import SuggestionStruct
 
-DP_FUNCS_TYPE = PruningTaylorDPFunctions | PruningChebychevDPFunctions
+DP_FUNCS_TYPE = PruneTaylorDPFuncts  # | PruningChebychevDPFunctions
 
 logger = get_logger(__name__)
 
 
-@jitclass(
-    spec=[
-        ("nsegments", types.i8),
-        ("ref_idx", types.i8),
-        ("data", types.i8[:]),
-    ],
-)
-class SnailScheme:
-    """A class to describe the indexing scheme used in the pruning algorithm.
-
-    The scheme allow for "middle-out" enumeration of the segments.
-
-    Parameters
-    ----------
-    nsegments : int
-        The number of segments in the hierarchical search scheme.
-    ref_idx : int
-        Reference (starting) segment index for pruning.
-    """
-
-    def __init__(self, nsegments: int, ref_idx: int) -> None:
-        self.nsegments = nsegments
-        self.ref_idx = ref_idx
-        self.data = np.argsort(np.abs(np.arange(nsegments) - ref_idx))
-
-    @property
-    def ref(self) -> float:
-        """:obj:`float`: Reference time (middle of the reference segment)."""
-        return self.ref_idx + 0.5
-
-    def get_idx(self, prune_level: int) -> int:
-        """Get the segment index for the given pruning level.
-
-        Parameters
-        ----------
-        prune_level : int
-            The pruning level.
-
-        Returns
-        -------
-        int
-            The segment index.
-        """
-        return self.data[prune_level]
-
-    def get_coord(self, prune_level: int) -> tuple[float, float]:
-        """Get the current coord (reference and scale) at the given pruning level.
-
-        Parameters
-        ----------
-        prune_level : int
-            The pruning level.
-
-        Returns
-        -------
-        tuple[float, float]
-            The reference and scale for the given pruning level.
-        """
-        scheme_till_now = self.data[: prune_level + 1]
-        ref = (np.min(scheme_till_now) + np.max(scheme_till_now) + 1) / 2
-        scale = ref - np.min(scheme_till_now)
-        return ref, scale
-
-    def get_coord_add(self, prune_level: int) -> tuple[float, float]:
-        """Get the segment coord to be added at the given pruning level.
-
-        Parameters
-        ----------
-        prune_level : int
-            The pruning level.
-
-        Returns
-        -------
-        tuple[float, float]
-            The reference and scale for the added coord.
-        """
-        ref = self.get_idx(prune_level) + 0.5
-        scale = 0.5
-        return ref, scale
-
-    def get_valid(self, prune_level: int) -> tuple[float, float]:
-        scheme_till_now = self.data[:prune_level]
-        return np.min(scheme_till_now), np.max(scheme_till_now)
-
-    def get_delta(self, prune_level: int) -> float:
-        """Get the difference between the currenlt coord and the reference.
-
-        Parameters
-        ----------
-        prune_level : int
-            The pruning level.
-
-        Returns
-        -------
-        float
-            The difference between the current coord and the reference.
-        """
-        return self.get_coord(prune_level)[0] - self.ref
-
-
-@attrs.define(auto_attribs=True, slots=True, kw_only=True)
-class PruneStats:
-    level: int
-    seg_idx: int
-    threshold: float
-    score_min: float = 0.0
-    score_max: float = 0.0
-    n_branches: int = 1
-    n_leaves: int = 1
-    n_leaves_phy: int = 0
-    n_leaves_surv: int = 0
-
-    @property
-    def lb_leaves(self) -> float:
-        return np.round(np.log2(self.n_leaves), 2)
-
-    @property
-    def branch_frac(self) -> float:
-        return np.round(self.n_leaves / self.n_branches, 2)
-
-    @property
-    def branch_frac_phy(self) -> float:
-        return np.round(self.n_leaves_phy / self.n_branches, 2)
-
-    @property
-    def surv_frac(self) -> float:
-        return np.round(self.n_leaves_surv / self.n_leaves, 2)
-
-    def update(self, stats_dict: dict[str, float]) -> None:
-        for key, value in stats_dict.items():
-            setattr(self, key, value)
-
-    def get_summary(self) -> str:
-        summary = []
-        summary.append(
-            f"Prune level: {self.level}, seg_idx: {self.seg_idx}, "
-            f"lb_leaves: {self.lb_leaves:.2f}, branch_frac: {self.branch_frac:.2f},",
-        )
-        summary.append(
-            f"score thresh: {self.threshold:.2f}, max: {self.score_max:.2f}, "
-            f"min: {self.score_min:.2f}, P(surv): {self.surv_frac:.2f}",
-        )
-        return "".join(summary) + "\n"
-
-
-@njit(fastmath=True)
+@njit(cache=True, fastmath=True)
 def pruning_iteration(
     sugg: SuggestionStruct,
     fold_segment: np.ndarray,
+    coord_init: tuple[float, float],
+    coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
+    coord_add: tuple[float, float],
+    coord_valid: tuple[float, float],
     prune_funcs: DP_FUNCS_TYPE,
-    scheme: SnailScheme,
     threshold: float,
-    prune_level: int,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     sugg_max: int = 2**17,
-) -> tuple[SuggestionStruct, types.DictType[str, int], types.DictType[str, float]]:
+) -> tuple[
+    SuggestionStruct,
+    types.DictType[str, float],
+    np.ndarray,
+]:
     """Perform a single iteration of the pruning algorithm.
 
     Parameters
@@ -214,27 +72,28 @@ def pruning_iteration(
         The pruned suggestion structure and the statistics of the pruning iteration.
     """
     sugg_new = sugg.get_new(sugg_max)
-    iparam = 0
     n_leaves = 0
     n_leaves_phy = 0
-    n_branches = sugg.size
     score_min = np.inf
     score_max = -np.inf
+    timers = np.ones(7, dtype=np.float32)
 
-    # Get the useful precomputed values: coord_cur := coord_prev + coord_add
-    coord_init = scheme.get_coord(0)
-    coord_cur = scheme.get_coord(prune_level)
-    coord_prev = scheme.get_coord(prune_level - 1)
-    coord_add = scheme.get_coord_add(prune_level)
-    coord_valid = scheme.get_valid(prune_level)
     trans_matrix = prune_funcs.get_transform_matrix(coord_cur, coord_prev)
     validation_check = False
     if validation_check:
         validation_params = prune_funcs.get_validation_params(coord_valid)
 
+    n_branches = sugg.valid_size
+    # Preallocate backtrack array
+    backtrack = np.empty(sugg.backtracks.shape[1], dtype=np.int32)
+
     for isuggest in range(n_branches):
+        # tmp = nb_time_now()
         leaves_arr = prune_funcs.branch(sugg.param_sets[isuggest], coord_cur)
         n_leaves += len(leaves_arr)
+        # timers[0] += nb_time_now() - tmp
+
+        # tmp = nb_time_now()
         if validation_check:
             leaves_arr = prune_funcs.validate(
                 leaves_arr,
@@ -242,107 +101,60 @@ def pruning_iteration(
                 validation_params,
             )
         n_leaves_phy += len(leaves_arr)
+        # timers[1] += nb_time_now() - tmp
 
         for ileaf in range(len(leaves_arr)):
             leaf = leaves_arr[ileaf]
+
+            # tmp2 = nb_time_now()
             param_idx, phase_shift = prune_funcs.resolve(
                 leaf,
                 coord_add,
                 coord_init,
             )
+            # timers[2] += nb_time_now() - tmp2
+
+            # tmp2 = nb_time_now()
             partial_res = prune_funcs.shift(
                 load_func(fold_segment, param_idx),
                 phase_shift,
             )
             combined_res = prune_funcs.add(sugg.folds[isuggest], partial_res)
+            # timers[3] += nb_time_now() - tmp2
+
+            # tmp2 = nb_time_now()
             score = prune_funcs.score(combined_res)
             score_min = min(score_min, score)
             score_max = max(score_max, score)
+            # timers[4] += nb_time_now() - tmp2
 
             if score >= threshold:
-                sugg_new.param_sets[iparam] = prune_funcs.transform(
+                # tmp3 = nb_time_now()
+                leaf_trans = prune_funcs.transform(
                     leaf,
                     coord_cur,
                     trans_matrix,
                 )
-                sugg_new.folds[iparam] = combined_res
-                sugg_new.scores[iparam] = score
-                sugg_new.backtracks[iparam] = np.array(
-                    [isuggest, *list(param_idx), phase_shift],
-                )
+                backtrack[0] = isuggest
+                backtrack[1 : len(param_idx) + 1] = param_idx
+                backtrack[-1] = phase_shift
+                # timers[5] += nb_time_now() - tmp3
 
-                iparam += 1
-                if iparam == sugg_max:
-                    threshold = np.median(sugg_new.scores)
-                    sugg_new = sugg_new.apply_threshold(threshold)
-                    iparam = sugg_new.actual_size
+                # tmp3 = nb_time_now()
+                is_success = sugg_new.add(leaf_trans, combined_res, score, backtrack)
+                if not is_success:
+                    # Handle buffer full case
+                    threshold = sugg_new.trim_threshold()
+                # timers[6] += nb_time_now() - tmp3
 
-    sugg_new = sugg_new.trim_empty(iparam)
-    stats_int = {
-        "n_branches": n_branches,
-        "n_leaves": n_leaves,
-        "n_leaves_phy": n_leaves_phy,
-        "n_leaves_surv": sugg_new.size,
-    }
-    stats_float = {
+    sugg_new = sugg_new.trim_empty()
+    stats = {
+        "n_leaves": float(n_leaves),
+        "n_leaves_phy": float(n_leaves_phy),
         "score_min": score_min,
         "score_max": score_max,
     }
-    return sugg_new, stats_int, stats_float
-
-
-class PruneResultWriter:
-    def __init__(self, filename: str | Path) -> None:
-        self.filename = Path(filename)
-        self.file = None
-
-    def __enter__(self) -> Self:
-        self.file = h5py.File(self.filename, "w")
-        self.runs_group = self.file.create_group("runs")
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
-        if self.file:
-            self.file.close()
-
-    def write_metadata(
-        self,
-        param_names: list[str],
-        nsegments: int,
-        max_sugg: int,
-        threshold_scheme: np.ndarray,
-    ) -> None:
-        # Store package version
-        self.file.attrs["pruning_version"] = importlib.metadata.version("pyloki")
-        self.file.attrs["param_names"] = param_names
-        self.file.attrs["nsegments"] = nsegments
-        self.file.attrs["max_sugg"] = max_sugg
-        self.file.create_dataset(
-            "threshold_scheme",
-            data=threshold_scheme,
-            compression="gzip",
-            compression_opts=9,
-        )
-
-    def write_run_results(
-        self,
-        ref_seg: int,
-        scheme: np.ndarray,
-        param_sets: np.ndarray,
-        scores: np.ndarray,
-    ) -> None:
-        run_group = self.runs_group.create_group(str(ref_seg))
-        for name, data in [
-            ("scheme", scheme),
-            ("param_sets", param_sets),
-            ("scores", scores),
-        ]:
-            run_group.create_dataset(
-                name,
-                data=data,
-                compression="gzip",
-                compression_opts=9,
-            )
+    return sugg_new, stats, timers
 
 
 class Pruning:
@@ -415,12 +227,8 @@ class Pruning:
         return self._suggestion
 
     @property
-    def pstats(self) -> PruneStats:
+    def pstats(self) -> PruneStatsCollection:
         return self._pstats
-
-    @property
-    def t_ref(self) -> float:
-        return self.scheme.ref * self.prune_funcs.tseg_ffa
 
     @property
     def backtrack_arr(self) -> np.ndarray:
@@ -445,7 +253,11 @@ class Pruning:
         -----
         Reference time for the parameters will be the middle of the reference segment.
         """
-        self._scheme = SnailScheme(self.dyp.nsegments, ref_seg)
+        self._scheme = SnailScheme(
+            nseg=self.dyp.nsegments,
+            ref_idx=ref_seg,
+            tseg=self.dyp.tseg,
+        )
         self._complete = False
         self._prune_level = 0
         logger.info(f"Initializing pruning with ref segment: {self.scheme.ref_idx}")
@@ -455,31 +267,36 @@ class Pruning:
         # Initialize the suggestions with the first segment
         coord = self.scheme.get_coord(self.prune_level)
         self._suggestion = self.prune_funcs.suggest(fold_segment, coord)
-        # Records to track the numercal stability of the algorithm
+        # Records to track the numerical stability of the algorithm
         self._backtrack_arr = np.zeros(
-            (self.dyp.fold.shape[0], self.max_sugg, len(self.dyp.fold.shape[1:])),
+            (self.max_sugg, self.dyp.cfg.prune_poly_order + 2),
+            dtype=np.int32,
         )
-        self._best_intermediate_arr = np.empty(
-            (self.dyp.fold.shape[0], 3),
-            dtype=object,
+        self._best_intermediate_arr = np.zeros(
+            self.dyp.nsegments - 1,
+            dtype=np.dtype(
+                [
+                    ("param_sets", np.float64, (self.dyp.cfg.prune_poly_order + 2, 2)),
+                    ("folds", np.float32, fold_segment.shape[-2:]),
+                    ("scores", np.float32),
+                ],
+            ),
         )
-        self._pstats = PruneStats(
+        self._pstats = PruneStatsCollection()
+        pstats_cur = PruneStats(
             level=self.prune_level,
             seg_idx=self.scheme.get_idx(self.prune_level),
             threshold=0,
-        )
-        self._pstats.update(
-            {
-                "n_branches": self.suggestion.size,
-                "n_leaves": self.suggestion.size,
-                "n_leaves_phy": self.suggestion.size,
-                "n_leaves_surv": self.suggestion.size,
-                "score_min": self.suggestion.score_min,
-                "score_max": self.suggestion.score_max,
-            },
+            score_min=self.suggestion.score_min,
+            score_max=self.suggestion.score_max,
+            n_branches=self.suggestion.size,
+            n_leaves=self.suggestion.size,
+            n_leaves_phy=self.suggestion.size,
+            n_leaves_surv=self.suggestion.size,
         )
         with log_file.open("a") as f:
-            f.write(self.pstats.get_summary())
+            f.write(pstats_cur.get_summary())
+        self._pstats.update_stats(pstats_cur)
 
     def execute(
         self,
@@ -528,15 +345,19 @@ class Pruning:
                     get_leaves=lambda: self.suggestion.size_lb,
                 ):
                     self.execute_iter(log_file)
-                delta_t = self.scheme.get_delta(self.prune_level) * self.dyp.tseg
+                delta_t = self.scheme.get_delta(self.prune_level)
                 writer.write_run_results(
                     ref_seg,
                     self.scheme.data,
-                    self.suggestion.get_transformed_params(delta_t),
+                    self.suggestion.get_transformed(delta_t),
                     self.suggestion.scores,
+                    self.pstats,
                 )
                 with log_file.open("a") as f:
                     f.write(f"Pruning complete for ref segment: {ref_seg}\n\n")
+                    f.write(f"Time: {self.pstats.get_timer_summary()}\n")
+                logger.info(f"Pruning complete for ref segment: {ref_seg}")
+                logger.info(f"Time: {self.pstats.get_timer_summary()}")
         return result_file.as_posix()
 
     def execute_iter(self, log_file: Path) -> None:
@@ -546,34 +367,43 @@ class Pruning:
         seg_idx_cur = self.scheme.get_idx(self.prune_level)
         fold_segment = self.prune_funcs.load(self.dyp.fold, seg_idx_cur)
         threshold = self.threshold_scheme[self.prune_level - 1]
-        suggestion, stats1, stats2 = pruning_iteration(
+        # Get the useful precomputed values: coord_cur := coord_prev + coord_add
+        coord_init = self.scheme.get_coord(0)
+        coord_cur = self.scheme.get_coord(self.prune_level)
+        coord_prev = self.scheme.get_coord(self.prune_level - 1)
+        coord_add = self.scheme.get_seg_coord(self.prune_level)
+        coord_valid = self.scheme.get_valid(self.prune_level)
+        suggestion, stats_dict, timers = pruning_iteration(
             self.suggestion,
             fold_segment,
+            coord_init,
+            coord_cur,
+            coord_prev,
+            coord_add,
+            coord_valid,
             self.prune_funcs,
-            self.scheme,
             threshold,
-            self.prune_level,
             self.load_func,
             self.max_sugg,
         )
-        self._pstats.update(stats1)
-        self._pstats.update(stats2)
-        self._pstats.update(
-            {
-                "level": self.prune_level,
-                "seg_idx": seg_idx_cur,
-                "threshold": threshold,
-            },
+        pstats_cur = PruneStats(
+            level=self.prune_level,
+            seg_idx=seg_idx_cur,
+            threshold=threshold,
+            n_branches=self.suggestion.valid_size,
+            n_leaves_surv=suggestion.valid_size,
+            **stats_dict,
         )
         with log_file.open("a") as f:
-            f.write(self.pstats.get_summary())
+            f.write(pstats_cur.get_summary())
+        self._pstats.update_stats(pstats_cur, timers)
         if suggestion.size == 0:
             self._complete = True
             self._suggestion = suggestion
             logger.info(f"Pruning complete at level: {self.prune_level}")
             return
-        self._best_intermediate_arr[self.prune_level] = suggestion.get_best()
-        self._backtrack_arr[self.prune_level, : suggestion.size] = suggestion.backtracks
+        self._best_intermediate_arr[self.prune_level - 1] = suggestion.get_best()
+        self._backtrack_arr[: suggestion.size] = suggestion.backtracks.copy()
         self._suggestion = suggestion
 
     def get_branching_pattern(self, nstages: int, isuggest: int = 0) -> np.ndarray:
@@ -601,22 +431,22 @@ class Pruning:
             raise ValueError(msg)
         self._load_func = set_prune_load_func(self.dyp.fold.ndim - 3)
         if kind == "taylor":
-            self._prune_funcs: DP_FUNCS_TYPE = PruningTaylorDPFunctions(
+            self._prune_funcs: DP_FUNCS_TYPE = PruneTaylorDPFuncts(
                 self.dyp.cfg,
                 self.dyp.param_arr,
                 self.dyp.dparams_limited,
                 self.dyp.tseg,
                 self.dyp.cfg.prune_poly_order,
             )
-        elif kind == "chebyshev":
-            self._prune_funcs = PruningChebychevDPFunctions(
-                self.dyp.cfg,
-                self.dyp.param_arr,
-                self.dyp.dparams_limited,
-                self.dyp.tseg,
-                self.dyp.cfg.prune_poly_order,
-                self.dyp.cfg.prune_n_derivs,
-            )
+        # elif kind == "chebyshev":
+        #    self._prune_funcs = PruningChebychevDPFunctions(
+        #        self.dyp.cfg,
+        #        self.dyp.param_arr,
+        #        self.dyp.dparams_limited,
+        #        self.dyp.tseg,
+        #        self.dyp.cfg.prune_poly_order,
+        #        self.dyp.cfg.prune_n_derivs,
+        #    )
         else:
             msg = f"Invalid pruning kind: {kind}"
             raise ValueError(msg)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import attrs
 import numpy as np
 from numba import njit, vectorize
 
@@ -133,7 +134,7 @@ def period_step(tobs: float, nbins: int, p_min: float, tol: float) -> float:
 
 
 @njit(cache=True, fastmath=True)
-def shift_params(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
+def shift_params_d(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
     """Shift the kinematic taylor parameters to a new reference time.
 
     Parameters
@@ -156,6 +157,65 @@ def shift_params(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
     t_mat = delta_t**powers / math.fact(powers) * np.tril(np.ones_like(powers))
     # transform each vector in correct shape: np.dot(t_mat, param_vec)
     return param_vec @ t_mat.T
+
+
+@njit(cache=True, fastmath=True)
+def shift_params(param_vec: np.ndarray, delta_t: float) -> tuple[np.ndarray, float]:
+    """Shift the search parameters vector to a new reference time.
+
+    Parameters
+    ----------
+    param_vec : np.ndarray
+        Parameter vector [..., j, a, f] at reference time t_i.
+    delta_t : float
+        The time difference (t_j - t_i) to shift the parameters by.
+
+    Returns
+    -------
+    tuple[np.ndarray, float]
+        Parameter vector at the new reference time t_j and the phase delay d.
+
+    Notes
+    -----
+    phase delay is given in units of seconds.
+    """
+    nparams = param_vec.shape[-1]
+    dvec_cur = np.zeros(nparams + 1, dtype=param_vec.dtype)
+    # Copy till acceleration
+    dvec_cur[:-2] = param_vec[:-1]
+    dvec_new = shift_params_d(dvec_cur, delta_t)
+    param_vec_new = param_vec.copy()
+    param_vec_new[:-1] = dvec_new[:-2]
+    param_vec_new[-1] = param_vec[-1] * (1 + dvec_new[-2] / C_VAL)
+    delay_rel = dvec_new[-1] / C_VAL
+    return param_vec_new, delay_rel
+
+
+@njit(cache=True, fastmath=True)
+def shift_params_batch(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
+    """Specialized version of shift_params for batch processing.
+
+    Parameters
+    ----------
+    param_vec : np.ndarray
+        Parameter vector of shape (size, nparams, 2) at reference time t_i.
+    delta_t : float
+        The time difference (t_j - t_i) to shift the parameters by.
+
+    Returns
+    -------
+    np.ndarray
+        Array of transformed search parameters vector at the new reference time t_j.
+    """
+    size, nparams, _ = param_vec.shape
+    dvec_cur = np.zeros((size, nparams + 1), dtype=param_vec.dtype)
+    # Copy till acceleration
+    dvec_cur[:, :-2] = param_vec[:, :-1, 0]
+    dvec_new = shift_params_d(dvec_cur, delta_t)
+    param_vec_new = param_vec.copy()
+    param_vec_new[:, :-1, 0] = dvec_new[:, :-2]
+    param_vec_new[:, -1, 0] = param_vec[:, -1, 0] * (1 + dvec_new[:, -2] / C_VAL)
+    return param_vec_new
 
 
 @njit(cache=True, fastmath=True)
@@ -245,3 +305,130 @@ def range_param(vmin: float, vmax: float, dv: float) -> np.ndarray:
         return np.array([(vmax + vmin) / 2])
     npoints = int((vmax - vmin) / dv)
     return np.linspace(vmin, vmax, npoints + 2)[1:-1]
+
+
+@attrs.frozen(auto_attribs=True, kw_only=True)
+class SnailScheme:
+    """A utility class for indexing segments in a hierarchical pruning algorithm.
+
+    The scheme allow for "middle-out" enumeration of the segments.
+
+    Parameters
+    ----------
+    nseg : int
+        The total number of segments in the hierarchical search scheme.
+    ref_idx : int
+        The reference (starting) segment index for pruning.
+    tseg : float, optional
+        The duration of each segment in seconds, default is 1.0.
+    """
+
+    nseg: int = attrs.field(
+        validator=[attrs.validators.instance_of(int), attrs.validators.gt(0)],
+    )
+    ref_idx: int = attrs.field(
+        validator=[attrs.validators.instance_of(int), attrs.validators.ge(0)],
+    )
+    tseg: float = attrs.field(default=1.0, validator=attrs.validators.ge(0))
+    data: np.ndarray = attrs.field(init=False)
+
+    @ref_idx.validator
+    def check_ref_idx(self, attribute: attrs.Attribute, value: int) -> None:  # noqa: ARG002
+        if value >= self.nseg:
+            msg = f"ref_idx must be less than nseg ({self.nseg}), got {value}."
+            raise ValueError(msg)
+
+    def __attrs_post_init__(self) -> None:
+        data = np.argsort(np.abs(np.arange(self.nseg) - self.ref_idx))
+        object.__setattr__(self, "data", data)
+
+    @property
+    def ref(self) -> float:
+        """Reference time at the middle of the reference segment in seconds."""
+        return (self.ref_idx + 0.5) * self.tseg
+
+    def get_idx(self, level: int) -> int:
+        """Get the segment index at the specified hierarchical level.
+
+        Parameters
+        ----------
+        level : int
+            The hierarchical level, where 0 is the reference segment.
+
+        Returns
+        -------
+        int
+            The segment index at the given level.
+        """
+        if level < 0 or level >= self.nseg:
+            msg = f"level must be in [0, {self.nseg}), got {level}."
+            raise ValueError(msg)
+        return self.data[level]
+
+    def get_coord(self, level: int) -> tuple[float, float]:
+        """Get the current coord (ref and scale) at the given level.
+
+        The reference time is the center of the time interval covered by all segments
+        from level 0 to the specified level. The scale is the half-width of this
+        interval.
+
+        Parameters
+        ----------
+        level : int
+            The current hierarchical level, where 0 is the reference segment.
+
+        Returns
+        -------
+        tuple[float, float]
+            The reference and scale for the current level in seconds.
+        """
+        if level < 0 or level >= self.nseg:
+            msg = f"level must be in [0, {self.nseg - 1}], got {level}."
+            raise ValueError(msg)
+        scheme_till_now = self.data[: level + 1]
+        min_idx = np.min(scheme_till_now)
+        max_idx = np.max(scheme_till_now)
+        ref = (min_idx + max_idx) / 2 * self.tseg
+        scale = (ref - min_idx) * self.tseg
+        return ref, scale
+
+    def get_seg_coord(self, level: int) -> tuple[float, float]:
+        """Get the ref and scale for the segment (to be added) at the given level.
+
+        Parameters
+        ----------
+        level : int
+            The hierarchical level, where 0 is the reference segment.
+
+        Returns
+        -------
+        tuple[float, float]
+            The reference and scale for the segment at the given level in seconds.
+        """
+        if level < 0 or level >= self.nseg:
+            msg = f"level must be in [0, {self.nseg - 1}], got {level}."
+            raise ValueError(msg)
+        ref = (self.get_idx(level) + 0.5) * self.tseg
+        scale = 0.5 * self.tseg
+        return ref, scale
+
+    def get_valid(self, prune_level: int) -> tuple[float, float]:
+        scheme_till_now = self.data[:prune_level]
+        return np.min(scheme_till_now), np.max(scheme_till_now)
+
+    def get_delta(self, level: int) -> float:
+        """Get the difference between the current coord and the reference.
+
+        This measures the shift of the current coord from the reference coord.
+
+        Parameters
+        ----------
+        level : int
+            The hierarchical level, where 0 is the reference segment.
+
+        Returns
+        -------
+        float
+            The difference between the current coord and the reference in seconds.
+        """
+        return self.get_coord(level)[0] - self.ref
