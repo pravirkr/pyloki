@@ -7,11 +7,12 @@ import numpy as np
 from numba import njit, types
 
 from pyloki.core import (
+    PruneChebyshevDPFuncts,
     PruneTaylorDPFuncts,
     set_prune_load_func,
 )
 from pyloki.io.cands import PruneResultWriter, PruneStats, PruneStatsCollection
-from pyloki.utils.misc import get_logger, prune_track
+from pyloki.utils.misc import PicklableStructRefWrapper, get_logger, prune_track
 from pyloki.utils.psr_utils import SnailScheme
 from pyloki.utils.timing import Timer, nb_time_now
 
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
     from pyloki.ffa import DynamicProgramming
     from pyloki.utils.suggestion import SuggestionStruct
 
-DP_FUNCS_TYPE = PruneTaylorDPFuncts  # | PruningChebychevDPFunctions
+DP_FUNCS_TYPE = PruneTaylorDPFuncts | PruneChebyshevDPFuncts
 
 logger = get_logger(__name__)
 
@@ -76,7 +77,7 @@ def pruning_iteration(
     n_leaves_phy = 0
     score_min = np.inf
     score_max = -np.inf
-    timers = np.ones(7, dtype=np.float32)
+    timers = np.zeros(7, dtype=np.float32)
 
     trans_matrix = prune_funcs.get_transform_matrix(coord_cur, coord_prev)
     validation_check = False
@@ -88,12 +89,12 @@ def pruning_iteration(
     backtrack = np.empty(sugg.backtracks.shape[1], dtype=np.int32)
 
     for isuggest in range(n_branches):
-        # tmp = nb_time_now()
+        tmp = nb_time_now()
         leaves_arr = prune_funcs.branch(sugg.param_sets[isuggest], coord_cur)
         n_leaves += len(leaves_arr)
-        # timers[0] += nb_time_now() - tmp
+        timers[0] += nb_time_now() - tmp
 
-        # tmp = nb_time_now()
+        tmp = nb_time_now()
         if validation_check:
             leaves_arr = prune_funcs.validate(
                 leaves_arr,
@@ -101,35 +102,35 @@ def pruning_iteration(
                 validation_params,
             )
         n_leaves_phy += len(leaves_arr)
-        # timers[1] += nb_time_now() - tmp
+        timers[1] += nb_time_now() - tmp
 
         for ileaf in range(len(leaves_arr)):
             leaf = leaves_arr[ileaf]
 
-            # tmp2 = nb_time_now()
+            tmp2 = nb_time_now()
             param_idx, phase_shift = prune_funcs.resolve(
                 leaf,
                 coord_add,
                 coord_init,
             )
-            # timers[2] += nb_time_now() - tmp2
+            timers[2] += nb_time_now() - tmp2
 
-            # tmp2 = nb_time_now()
+            tmp2 = nb_time_now()
             partial_res = prune_funcs.shift(
                 load_func(fold_segment, param_idx),
                 phase_shift,
             )
             combined_res = prune_funcs.add(sugg.folds[isuggest], partial_res)
-            # timers[3] += nb_time_now() - tmp2
+            timers[3] += nb_time_now() - tmp2
 
-            # tmp2 = nb_time_now()
+            tmp2 = nb_time_now()
             score = prune_funcs.score(combined_res)
             score_min = min(score_min, score)
             score_max = max(score_max, score)
-            # timers[4] += nb_time_now() - tmp2
+            timers[4] += nb_time_now() - tmp2
 
             if score >= threshold:
-                # tmp3 = nb_time_now()
+                tmp3 = nb_time_now()
                 leaf_trans = prune_funcs.transform(
                     leaf,
                     coord_cur,
@@ -138,14 +139,14 @@ def pruning_iteration(
                 backtrack[0] = isuggest
                 backtrack[1 : len(param_idx) + 1] = param_idx
                 backtrack[-1] = phase_shift
-                # timers[5] += nb_time_now() - tmp3
+                timers[5] += nb_time_now() - tmp3
 
-                # tmp3 = nb_time_now()
+                tmp3 = nb_time_now()
                 is_success = sugg_new.add(leaf_trans, combined_res, score, backtrack)
                 if not is_success:
                     # Handle buffer full case
                     threshold = sugg_new.trim_threshold()
-                # timers[6] += nb_time_now() - tmp3
+                timers[6] += nb_time_now() - tmp3
 
     sugg_new = sugg_new.trim_empty()
     stats = {
@@ -204,7 +205,7 @@ class Pruning:
 
     @property
     def prune_funcs(self) -> DP_FUNCS_TYPE:
-        return self._prune_funcs
+        return self._prune_funcs.get_instance()
 
     @property
     def load_func(self) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
@@ -431,22 +432,23 @@ class Pruning:
             raise ValueError(msg)
         self._load_func = set_prune_load_func(self.dyp.fold.ndim - 3)
         if kind == "taylor":
-            self._prune_funcs: DP_FUNCS_TYPE = PruneTaylorDPFuncts(
+            self._prune_funcs = PicklableStructRefWrapper[PruneTaylorDPFuncts](
+                PruneTaylorDPFuncts,
                 self.dyp.cfg,
                 self.dyp.param_arr,
                 self.dyp.dparams_limited,
                 self.dyp.tseg,
                 self.dyp.cfg.prune_poly_order,
             )
-        # elif kind == "chebyshev":
-        #    self._prune_funcs = PruningChebychevDPFunctions(
-        #        self.dyp.cfg,
-        #        self.dyp.param_arr,
-        #        self.dyp.dparams_limited,
-        #        self.dyp.tseg,
-        #        self.dyp.cfg.prune_poly_order,
-        #        self.dyp.cfg.prune_n_derivs,
-        #    )
+        elif kind == "chebyshev":
+            self._prune_funcs = PicklableStructRefWrapper[PruneChebyshevDPFuncts](
+                PruneChebyshevDPFuncts,
+                self.dyp.cfg,
+                self.dyp.param_arr,
+                self.dyp.dparams_limited,
+                self.dyp.tseg,
+                self.dyp.cfg.prune_poly_order,
+            )
         else:
             msg = f"Invalid pruning kind: {kind}"
             raise ValueError(msg)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Self
 
-from numba import njit, types
+from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
@@ -27,7 +27,7 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
     def __new__(
         cls,
         cfg: PulsarSearchConfig,
-        param_arr: types.ListType[types.Array],
+        param_arr: list[np.ndarray],
         dparams: np.ndarray,
         tseg_ffa: float,
         poly_order: int = 3,
@@ -130,9 +130,9 @@ PruneTaylorDPFunctsType = PruneTaylorDPFunctsTemplate(fields_prune_taylor_dp_fun
 def prune_taylor_dp_functs_init(
     nbins: int,
     tol_bins: float,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: list[tuple[float, float]],
     bseg_brute: int,
-    param_arr: types.ListType[types.Array],
+    param_arr: list[np.ndarray],
     dparams: np.ndarray,
     tseg_ffa: float,
     poly_order: int,
@@ -140,9 +140,9 @@ def prune_taylor_dp_functs_init(
     self = structref.new(PruneTaylorDPFunctsType)
     self.nbins = nbins
     self.tol_bins = tol_bins
-    self.param_limits = param_limits
+    self.param_limits = typed.List(param_limits)
     self.bseg_brute = bseg_brute
-    self.param_arr = param_arr
+    self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
     self.poly_order = poly_order

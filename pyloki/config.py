@@ -3,7 +3,6 @@ from __future__ import annotations
 import itertools
 
 import numpy as np
-from numba import typed, types
 
 from pyloki import kepler
 from pyloki.utils import math, psr_utils
@@ -21,13 +20,13 @@ class ParamLimits:
         Paramaters are defined at t=t_c (center of the observation).
     """
 
-    def __init__(self, limits: types.ListType[types.Tuple[float, float]]) -> None:
+    def __init__(self, limits: list[tuple[float, float]]) -> None:
         self.limits = limits
 
     def get_cheby_limits(
         self,
         tobs: float,
-    ) -> types.ListType[types.Tuple[float, float]]:
+    ) -> list[tuple[float, float]]:
         """Get the corresponding Chebyshev coefficient bounds.
 
         The order is reversed from the Taylor coefficients.
@@ -59,7 +58,7 @@ class ParamLimits:
                 strict=False,
             ),
         )
-        return typed.List([self.limits[-1], *alpha_bounds])
+        return [self.limits[-1], *alpha_bounds]
 
     @classmethod
     def from_taylor(
@@ -98,7 +97,7 @@ class ParamLimits:
         ]
         out = [(float(min_val), float(max_val)) for min_val, max_val in out]
 
-        return cls(typed.List(out))
+        return cls(out)
 
     @classmethod
     def from_circular(
@@ -136,7 +135,7 @@ class ParamLimits:
         bounds = [(-d, d) for d in max_derivs[2:][::-1]]
         freq_shift = max_derivs[1] / C_VAL
         bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
-        return cls(typed.List(bounds))
+        return cls(bounds)
 
     @classmethod
     def from_upper(
@@ -165,11 +164,11 @@ class ParamLimits:
         dvec = np.zeros(nparams + 1, dtype=np.float64)
         dvec[1:-2] = true_params[1:-1]  # till acceleration
         dvec[0] = d_range[0]
-        dvec_min_up = psr_utils.shift_params(dvec, t_obs / 2)
-        dvec_min_low = psr_utils.shift_params(dvec, -t_obs / 2)
+        dvec_min_up = psr_utils.shift_params_d(dvec, t_obs / 2)
+        dvec_min_low = psr_utils.shift_params_d(dvec, -t_obs / 2)
         dvec[0] = d_range[1]
-        dvec_max_up = psr_utils.shift_params(dvec, t_obs / 2)
-        dvec_max_low = psr_utils.shift_params(dvec, -t_obs / 2)
+        dvec_max_up = psr_utils.shift_params_d(dvec, t_obs / 2)
+        dvec_max_low = psr_utils.shift_params_d(dvec, -t_obs / 2)
         dvec_bound_low = np.minimum(dvec_min_low, dvec_max_low)
         dvec_bound_up = np.maximum(dvec_min_up, dvec_max_up)
         bounds_d = [
@@ -180,7 +179,7 @@ class ParamLimits:
         bounds.append(
             (true_params[-1] * (1 - freq_shift), true_params[-1] * (1 + freq_shift)),
         )
-        return cls(typed.List(bounds))
+        return cls(bounds)
 
     @classmethod
     def from_keplerian(
@@ -217,7 +216,7 @@ class ParamLimits:
         ParamLimits
             Object with the search parameter limits.
         """
-        out = typed.List([(float(freq[0]), float(freq[1]))])
+        out = [(float(freq[0]), float(freq[1]))]
         omega_orb_max = 2 * np.pi / p_orb_min
         # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
         x_orb = 0.005 * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
@@ -276,7 +275,7 @@ class PulsarSearchConfig:
         tsamp: float,
         nbins: int,
         tol: float,
-        param_limits: types.ListType[types.Tuple[float, float]],
+        param_limits: list[tuple[float, float]],
         ducy_max: float = 0.2,
         wtsp: float = 1.5,
         bseg_brute: int = 0,
@@ -390,7 +389,7 @@ class PulsarSearchConfig:
             dparams_lim[iparam] = min(dparam_diff, dparams[iparam])
         return dparams_lim
 
-    def get_param_arr(self, dparams: np.ndarray) -> types.ListType[types.Array]:
+    def get_param_arr(self, dparams: np.ndarray) -> list[np.ndarray]:
         """Get the parameter ranges for the given parameter steps.
 
         Parameters
@@ -400,7 +399,7 @@ class PulsarSearchConfig:
 
         Returns
         -------
-        types.ListType[types.Array]
+        list[np.ndarray]
             List of arrays with the parameter ranges
 
         Raises
@@ -411,12 +410,10 @@ class PulsarSearchConfig:
         if len(dparams) != self.nparams:
             msg = f"dparams must have length {self.nparams}, got {len(dparams)}"
             raise ValueError(msg)
-        return typed.List(
-            [
-                psr_utils.range_param(*self.param_limits[iparam], dparams[iparam])
-                for iparam in range(self.nparams)
-            ],
-        )
+        return [
+            psr_utils.range_param(*self.param_limits[iparam], dparams[iparam])
+            for iparam in range(self.nparams)
+        ]
 
     def _bseg_brute_default(self) -> int:
         init_levels = 1 if self.nparams == 1 else 5

@@ -386,11 +386,9 @@ class SnailScheme:
             msg = f"level must be in [0, {self.nseg - 1}], got {level}."
             raise ValueError(msg)
         scheme_till_now = self.data[: level + 1]
-        min_idx = np.min(scheme_till_now)
-        max_idx = np.max(scheme_till_now)
-        ref = (min_idx + max_idx) / 2 * self.tseg
-        scale = (ref - min_idx) * self.tseg
-        return ref, scale
+        ref = (np.min(scheme_till_now) + np.max(scheme_till_now) + 1) / 2
+        scale = ref - np.min(scheme_till_now)
+        return ref * self.tseg, scale * self.tseg
 
     def get_seg_coord(self, level: int) -> tuple[float, float]:
         """Get the ref and scale for the segment (to be added) at the given level.

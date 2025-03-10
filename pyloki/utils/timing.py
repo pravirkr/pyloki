@@ -1,28 +1,35 @@
 from __future__ import annotations
 
-import ctypes
 import statistics
 import time
 from collections import defaultdict
 from contextlib import ContextDecorator
+from ctypes.util import find_library
 from typing import TYPE_CHECKING, ClassVar, Self
 
 import attrs
 import numpy as np
+from llvmlite.binding import load_library_permanently
 from numba import njit
+from numba.core import types, typing
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-clock = ctypes.pythonapi.clock
-clock.argtypes = []
-clock.restype = ctypes.c_longlong
+
+# Locate the standard C library
+libc_path = find_library("c")
+load_library_permanently(libc_path)
+clock_name = "clock"
+return_type = types.int64
+c_sig = typing.signature(return_type)
+clock = types.ExternalFunction(clock_name, c_sig)
 
 
-@njit
+@njit(cache=True)
 def nb_time_now() -> float:
     time = clock()
-    return float(time) / 1000000 # convert to seconds (for POSIX systems)
+    return float(time) / 1000000  # convert to seconds (for POSIX systems)
 
 
 @attrs.define(slots=True)

@@ -6,13 +6,12 @@ import numpy as np
 
 from pyloki.core import FFASearchDPFuncts, set_ffa_load_func, unify_fold
 from pyloki.utils import np_utils
-from pyloki.utils.misc import get_logger
+from pyloki.utils.misc import PicklableStructRefWrapper, get_logger
 from pyloki.utils.timing import Timer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from numba import types
     from numpy import typing as npt
 
     from pyloki.config import PulsarSearchConfig
@@ -20,6 +19,7 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
 
 class DynamicProgramming:
     """Dynamic Programming class for the FFA search.
@@ -43,7 +43,10 @@ class DynamicProgramming:
         self._ts_data = ts_data
         self._cfg = cfg
         self._data_type = data_type
-        self._dp_funcs = FFASearchDPFuncts(cfg)
+        self._dp_funcs = PicklableStructRefWrapper[FFASearchDPFuncts](
+            FFASearchDPFuncts,
+            cfg,
+        )
         self._load_func = set_ffa_load_func(cfg.nparams)
 
     @property
@@ -60,7 +63,7 @@ class DynamicProgramming:
 
     @property
     def dp_funcs(self) -> FFASearchDPFuncts:
-        return self._dp_funcs
+        return self._dp_funcs.get_instance()
 
     @property
     def load_func(self) -> Callable[[np.ndarray, int, np.ndarray], np.ndarray]:
@@ -97,7 +100,7 @@ class DynamicProgramming:
         return self._dparams_limited
 
     @property
-    def param_arr(self) -> types.ListType[types.Array]:
+    def param_arr(self) -> list[np.ndarray]:
         """:obj:`list[ndarray]`: Parameter array at the current FFA level."""
         return self._param_arr
 
@@ -221,7 +224,7 @@ class DynamicProgramming:
             )
         return complexity
 
-    def _check_init_param_arr(self, param_arr: types.ListType[types.Array]) -> None:
+    def _check_init_param_arr(self, param_arr: list[np.ndarray]) -> None:
         if self.cfg.nparams > 1:
             for iparam in range(self.cfg.nparams - 1):
                 nvals = len(param_arr[iparam])

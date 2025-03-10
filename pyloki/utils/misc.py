@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import numpy as np
 from astropy import constants
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
 
 C_VAL = float(constants.c.value)
+T = TypeVar("T")
 
 
 def get_indices(
@@ -50,6 +51,7 @@ def get_indices(
     factor = nbins / periods[:, np.newaxis]
     indices = np.round((proper_time % periods[:, np.newaxis]) * factor) % nbins
     return indices.astype(np.uint32).squeeze()
+
 
 def get_logger(
     name: str,
@@ -118,6 +120,7 @@ class LeavesColumn(ProgressColumn):
     def render(self, task: ProgressType) -> Text:  # noqa: ARG002
         return Text(f"Leaves: {self.leaves:.2f}", style="cyan")
 
+
 def prune_track(
     sequence: Sequence[ProgressType] | Iterable[ProgressType],
     description: str = "Working...",
@@ -157,3 +160,36 @@ def prune_track(
 
     with progress:
         yield from track_progress()
+
+
+class PicklableStructRefWrapper(Generic[T]):
+    """A generic wrapper to make Numba structref objects picklable.
+
+    This class stores the constructor and arguments needed to create a structref object,
+    recreating it on demand in a multiprocessing-safe way.
+
+    Type Parameters:
+        T: The type of the structref object being wrapped (e.g., FFASearchDPFuncts).
+    """
+
+    def __init__(self, constructor: Callable[..., T], *args, **kwargs) -> None:  # noqa: ANN002
+        self._constructor = constructor
+        self._args = args
+        self._kwargs = kwargs
+        self._instance: T | None = None
+
+    def get_instance(self) -> T:
+        """Get or create the wrapped structref instance."""
+        if self._instance is None:
+            self._instance = self._constructor(*self._args, **self._kwargs)
+        return self._instance
+
+    def __getattr__(self, name: str) -> T:
+        """Delegate attribute access to the wrapped structref object."""
+        if self._instance is None:
+            self._instance = self._constructor(*self._args, **self._kwargs)
+        return getattr(self._instance, name)
+
+    def __reduce__(self) -> tuple[type, tuple, dict]:
+        """Implement a custom reducer for pickling."""
+        return (self.__class__, (self._constructor, *self._args), self._kwargs)

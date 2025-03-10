@@ -6,7 +6,6 @@ from numba import njit, typed, types
 from pyloki.core import common
 from pyloki.detection import scoring
 from pyloki.utils import np_utils, psr_utils
-from pyloki.utils.misc import C_VAL
 from pyloki.utils.suggestion import SuggestionStruct
 
 
@@ -99,7 +98,7 @@ def ffa_resolve(
         delta_t = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
         pset_prev, delay = psr_utils.shift_params(pset_cur, delta_t)
     relative_phase = psr_utils.get_phase_idx(delta_t, pset_cur[-1], nbins, delay)
-    pindex_prev = np.empty(nparams, dtype=np.int64)
+    pindex_prev = np.zeros(nparams, dtype=np.int64)
     for ip in range(nparams):
         pindex_prev[ip] = np_utils.find_nearest_sorted_idx(parr_prev[ip], pset_prev[ip])
     return pindex_prev, relative_phase
@@ -141,25 +140,14 @@ def poly_taylor_resolve(
     """
     nparams = len(param_arr)
     # distance between the current segment reference time and the global reference time
-    tpoly = coord_add[0] - coord_init[0]
+    delta_t = coord_add[0] - coord_init[0]
+    kvec_new, delay = psr_utils.shift_params(leaf[:-2, 0], delta_t)
+    relative_phase = psr_utils.get_phase_idx(delta_t, leaf[-3, 0], nbins, delay)
 
-    kvec_cur = np.zeros(nparams + 1, dtype=np.float64)
-    kvec_cur[:-2] = leaf[:-3, 0]  # till acceleration
-    kvec_new = psr_utils.shift_params(kvec_cur, tpoly)
-
-    f0 = leaf[-3, 0]
-
-    new_a = kvec_new[-3]
-    new_f = f0 * (1 + kvec_new[-2] / C_VAL)
-    delay = kvec_new[-1] / C_VAL
-
-    relative_phase = psr_utils.get_phase_idx(tpoly, f0, nbins, delay)
-    idx_a = np_utils.find_nearest_sorted_idx(param_arr[-2], new_a)
-    idx_f = np_utils.find_nearest_sorted_idx(param_arr[-1], new_f)
-    index_prev = np.empty(nparams, dtype=np.int64)
-    index_prev[-1] = idx_f
-    index_prev[-2] = idx_a
-    return index_prev, relative_phase
+    pindex_prev = np.zeros(nparams, dtype=np.int64)
+    pindex_prev[-1] = np_utils.find_nearest_sorted_idx(param_arr[-1], kvec_new[-1])
+    pindex_prev[-2] = np_utils.find_nearest_sorted_idx(param_arr[-2], kvec_new[-2])
+    return pindex_prev, relative_phase
 
 
 @njit(cache=True, fastmath=True)
