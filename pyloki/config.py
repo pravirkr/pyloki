@@ -1,12 +1,27 @@
+# ruff: noqa: ARG001, ARG002
+
 from __future__ import annotations
 
 import itertools
 
+import attrs
 import numpy as np
 
 from pyloki import kepler
-from pyloki.utils import math, psr_utils
+from pyloki.utils import maths, psr_utils
 from pyloki.utils.misc import C_VAL
+
+
+def _is_power_of_two(
+    instance: PulsarSearchConfig,
+    attribute: attrs.Attribute,
+    value: int,
+) -> None:
+    if value == 0:
+        return
+    if not maths.is_power_of_two(value):
+        msg = f"'{attribute.name}' must be a power of 2: {value}"
+        raise ValueError(msg)
 
 
 class ParamLimits:
@@ -49,7 +64,7 @@ class ParamLimits:
         d_limits = [(0, 0), (0, 0), *d_limits]
         d_corners = np.array(list(itertools.product(*list(d_limits))))
         alpha_corners = np.vstack(
-            [math.taylor_to_cheby(d_vec, t_s) for d_vec in d_corners],
+            [maths.taylor_to_cheby(d_vec, t_s) for d_vec in d_corners],
         )
         alpha_bounds = list(
             zip(
@@ -233,6 +248,7 @@ class ParamLimits:
         return cls(out)
 
 
+@attrs.frozen(auto_attribs=True, kw_only=True)
 class PulsarSearchConfig:
     """Class to hold the configuration for the polynomial search.
 
@@ -269,32 +285,69 @@ class PulsarSearchConfig:
     The parameter limits are assumed to be in the order: ..., jerk, accel, freq.
     """
 
-    def __init__(
+    nsamps: int = attrs.field(
+        validator=[
+            attrs.validators.instance_of((int, np.integer)),
+            attrs.validators.gt(0),
+            _is_power_of_two,
+        ],
+    )
+    tsamp: float = attrs.field(validator=attrs.validators.gt(0))
+    nbins: int = attrs.field(
+        validator=[
+            attrs.validators.instance_of((int, np.integer)),
+            attrs.validators.gt(0),
+        ],
+    )
+    tol: float = attrs.field(validator=attrs.validators.gt(0))
+    param_limits: list[tuple[float, float]] = attrs.field()
+    ducy_max: float = attrs.field(default=0.2, validator=attrs.validators.gt(0))
+    wtsp: float = attrs.field(default=1.5, validator=attrs.validators.gt(0))
+    prune_poly_order: int = attrs.field(default=3, validator=attrs.validators.gt(0))
+    prune_n_derivs: int = attrs.field(default=3, validator=attrs.validators.gt(0))
+    bseg_brute: int = attrs.field(
+        default=0,
+        validator=[attrs.validators.instance_of((int, np.integer)), _is_power_of_two],
+    )
+    bseg_ffa: int = attrs.field(
+        default=0,
+        validator=[attrs.validators.instance_of((int, np.integer)), _is_power_of_two],
+    )
+
+    @param_limits.validator
+    def _param_limits_validator(
         self,
-        nsamps: int,
-        tsamp: float,
-        nbins: int,
-        tol: float,
-        param_limits: list[tuple[float, float]],
-        ducy_max: float = 0.2,
-        wtsp: float = 1.5,
-        bseg_brute: int = 0,
-        bseg_ffa: int = 0,
-        prune_poly_order: int = 3,
-        prune_n_derivs: int = 3,
+        attribute: attrs.Attribute,
+        value: list[tuple[float, float]],
     ) -> None:
-        self.nsamps = nsamps
-        self.tsamp = tsamp
-        self.nbins = nbins
-        self.tol = tol
-        self.param_limits = param_limits
-        self.ducy_max = ducy_max
-        self.wtsp = wtsp
-        self.bseg_brute = bseg_brute if bseg_brute != 0 else self._bseg_brute_default()
-        self.bseg_ffa = bseg_ffa if bseg_ffa != 0 else self._bseg_ffa_default()
-        self.prune_poly_order = prune_poly_order
-        self.prune_n_derivs = prune_n_derivs
-        self._validate_params()
+        if len(value) < 1:  # or len(value) > 4:
+            msg = f"param_limits must have 1-4 elements, got {len(value)}"
+            raise ValueError(msg)
+        for _, (val_min, val_max) in enumerate(value):
+            if not isinstance(val_min, int | float) or not isinstance(
+                val_max,
+                int | float,
+            ):
+                msg = f"param_limits must be tuples of numbers, got {value}"
+                raise TypeError(msg)
+            if val_min >= val_max:
+                msg = f"param_limits must have min < max, got {value}"
+                raise ValueError(msg)
+
+    def __attrs_post_init__(self) -> None:
+        if self.bseg_brute == 0:
+            object.__setattr__(self, "bseg_brute", self._bseg_brute_default())
+        if self.bseg_ffa == 0:
+            object.__setattr__(self, "bseg_ffa", self._bseg_ffa_default())
+        if self.bseg_brute > self.nsamps:
+            msg = f"bseg_brute ({self.bseg_brute}) must be < nsamps ({self.nsamps})"
+            raise ValueError(msg)
+        if self.bseg_ffa > self.nsamps:
+            msg = f"bseg_ffa ({self.bseg_ffa}) must be <= nsamps ({self.nsamps})"
+            raise ValueError(msg)
+        if self.bseg_ffa <= self.bseg_brute:
+            msg = f"bseg_ffa ({self.bseg_ffa}) must be > bseg_brute ({self.bseg_brute})"
+            raise ValueError(msg)
 
     @property
     def tseg_brute(self) -> float:
@@ -422,31 +475,3 @@ class PulsarSearchConfig:
 
     def _bseg_ffa_default(self) -> int:
         return self.nsamps
-
-    def _validate_params(self) -> None:
-        if self.nsamps <= 0 or not math.is_power_of_two(self.nsamps):
-            msg = f"nsamps must be a power of two and > 0, got {self.nsamps}"
-            raise ValueError(msg)
-        if not math.is_power_of_two(self.bseg_brute):
-            msg = f"bseg_brute must be a power of two, got {self.bseg_brute}"
-            raise ValueError(msg)
-        if self.bseg_brute > self.nsamps:
-            msg = f"bseg_brute must be less than nsamps, got {self.bseg_brute}"
-            raise ValueError(msg)
-        if not math.is_power_of_two(self.bseg_ffa):
-            msg = f"bseg_ffa must be a power of two, got {self.bseg_ffa}"
-            raise ValueError(msg)
-        if self.bseg_ffa > self.nsamps:
-            msg = f"bseg_ffa must be less than nsamps, got {self.bseg_ffa}"
-            raise ValueError(msg)
-        if self.bseg_ffa <= self.bseg_brute:
-            msg = f"bseg_ffa must be greater than bseg_brute, got {self.bseg_ffa}"
-            raise ValueError(msg)
-
-        if self.nparams < 1:  # or self.nparams > 4:
-            msg = f"param_limits must have 1-4 elements, got {self.nparams}"
-            raise ValueError(msg)
-        for _, (val_min, val_max) in enumerate(self.param_limits):
-            if val_min >= val_max:
-                msg = f"param_limits must have min < max, got {self.param_limits}"
-                raise ValueError(msg)

@@ -12,7 +12,7 @@ from numba.extending import overload_method
 from pyloki.core import chebyshev as cheby
 from pyloki.core import defaults
 from pyloki.detection import scoring
-from pyloki.utils import math
+from pyloki.utils import maths
 
 if TYPE_CHECKING:
 
@@ -291,7 +291,7 @@ def prune_chebyshev_dp_functs_init(
     self.tseg_ffa = tseg_ffa
     self.poly_order = poly_order
     self.n_derivs = n_derivs
-    self.cheb_table = math.gen_chebyshev_polys_table(poly_order, n_derivs)
+    self.cheb_table = maths.gen_chebyshev_polys_table(poly_order, n_derivs)
     return self
 
 
@@ -344,7 +344,7 @@ def suggest_func(
     dparams = np.array(
         [self.dparams[-1], self.dparams[-2]]  # df, da
         + [
-            2 * self.cfg.deriv_bounds[k] / math.fact(k)
+            2 * self.cfg.deriv_bounds[k] / maths.fact(k)
             for k in range(3, self.poly_order + 1)
         ],
     )

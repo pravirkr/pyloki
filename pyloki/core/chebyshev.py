@@ -4,7 +4,7 @@ import numpy as np
 from numba import njit, typed, types
 
 from pyloki.core import common
-from pyloki.utils import math, np_utils, psr_utils
+from pyloki.utils import maths, np_utils, psr_utils
 from pyloki.utils.misc import C_VAL
 from pyloki.utils.suggestion import SuggestionStruct
 
@@ -88,7 +88,9 @@ def poly_chebyshev_leaves(
     """
     t0, scale = coord_init
     param_cart = np_utils.cartesian_prod(param_arr)
-    conversion_matrix = np.linalg.inv(math.generalized_cheb_pols(poly_order, t0, scale))
+    conversion_matrix = np.linalg.inv(
+        maths.generalized_cheb_pols(poly_order, t0, scale),
+    )
 
     params_vec = np.zeros((len(param_cart), poly_order + 1))
     params_vec[:, 2] = param_cart[:, -2] / 2.0  # acc / 2.0
@@ -226,11 +228,11 @@ def poly_chebyshev_resolve(
     f0 = leaf[-2, 0]
 
     eff_deg = effective_degree(param_vec, 1000)
-    a_t_add = math.cheby2taylor(param_vec, t_add, t0, scale, 2, cheb_table, eff_deg)
-    v_t_add = math.cheby2taylor(param_vec, t_add, t0, scale, 1, cheb_table, eff_deg)
-    v_t_init = math.cheby2taylor(param_vec, t_init, t0, scale, 1, cheb_table, eff_deg)
-    d_t_add = math.cheby2taylor(param_vec, t_add, t0, scale, 0, cheb_table, eff_deg)
-    d_t_init = math.cheby2taylor(param_vec, t_init, t0, scale, 0, cheb_table, eff_deg)
+    a_t_add = maths.cheby2taylor(param_vec, t_add, t0, scale, 2, cheb_table, eff_deg)
+    v_t_add = maths.cheby2taylor(param_vec, t_add, t0, scale, 1, cheb_table, eff_deg)
+    v_t_init = maths.cheby2taylor(param_vec, t_init, t0, scale, 1, cheb_table, eff_deg)
+    d_t_add = maths.cheby2taylor(param_vec, t_add, t0, scale, 0, cheb_table, eff_deg)
+    d_t_init = maths.cheby2taylor(param_vec, t_init, t0, scale, 0, cheb_table, eff_deg)
 
     new_a = a_t_add
     new_f = f0 * (1 + (v_t_add - v_t_init) / C_VAL)
@@ -255,8 +257,8 @@ def poly_chebyshev_transform_matrix(
     t0_cur, scale_cur = coord_cur
     t0_prev, scale_prev = coord_prev
     # check the ordering inside the generalized_cheb_pols
-    cheb_pols_cur = math.generalized_cheb_pols(poly_order, t0_cur, scale_cur)
-    cheb_pols_prev = math.generalized_cheb_pols(poly_order, t0_prev, scale_prev)
+    cheb_pols_cur = maths.generalized_cheb_pols(poly_order, t0_cur, scale_cur)
+    cheb_pols_prev = maths.generalized_cheb_pols(poly_order, t0_prev, scale_prev)
     return np.dot(cheb_pols_prev, np.linalg.inv(cheb_pols_cur))
 
 
@@ -331,7 +333,7 @@ def leaf_validate_physical(
     param_vec = leaf[:-2, 0]
     p0 = 1 / leaf[-2, 0]
     eff_degree = effective_degree(param_vec, 1000)
-    values = math.cheby2taylor(
+    values = maths.cheby2taylor(
         param_vec,
         time_arr,
         t0,
@@ -353,7 +355,7 @@ def leaf_validate_physical(
     if max_diff < 3.2 * st and min_diff < 3.2 * st and is_epicycle_fit:
         good = True
         for deriv_index in range(1, len(deriv_bounds)):
-            values = math.cheby2taylor(
+            values = maths.cheby2taylor(
                 param_vec,
                 time_arr,
                 t0,

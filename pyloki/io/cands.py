@@ -111,8 +111,15 @@ class PruneStatsCollection:
             for stats in sorted(self.stats_list, key=lambda x: x.level)
         )
 
+    def get_stats_summary(self) -> str:
+        """Get formatted stats summaries for final level."""
+        return (
+            f"Score: {self.stats_list[-1].score_max:.2f}, "
+            f"Leaves: {self.stats_list[-1].lb_leaves:.2f}"
+        )
+
     def get_timer_summary(self) -> str:
-        """Get formatted summaries of all timers."""
+        """Get formatted timer summary for final level."""
         total_time = sum(self.timers.values())
         timer_percent = {
             name: (time / total_time) * 100 for name, time in self.timers.items()
@@ -122,6 +129,20 @@ class PruneStatsCollection:
             f"  {name:10s}: {value:6.1f}%" for name, value in timer_percent.items()
         )
         return "\n".join(lines)
+
+    def get_concise_timer_summary(self) -> str:
+        """Get a concise single-line timer summary for terminal output."""
+        total_time = sum(self.timers.values())
+        sorted_times = sorted(self.timers.items(), key=lambda x: x[1], reverse=True)
+        top_times = sorted_times[:4]  # Take top 4 operations
+        formatted_times = [
+            f"{name}: {(time / total_time) * 100:.0f}%"
+            for name, time in top_times
+            if time > 0
+        ]
+        time_breakdown = " | ".join(formatted_times)
+
+        return f"Total: {total_time:.1f}s ({time_breakdown})"
 
     def to_dict(self) -> dict:
         """Convert stats collection to a dictionary for saving to file."""
@@ -275,3 +296,47 @@ class PruneResultWriter:
                 compression="gzip",
                 compression_opts=9,
             )
+
+
+def merge_prune_result_files(
+    results_dir: str,
+    log_file: Path,
+    result_file: Path,
+) -> None:
+    """Merge temporary HDF5 and log files into result files.
+
+    This function merges temporary HDF5 files created during the multiprocessing
+    of pruning results into a final result file. It also merges log files into a
+    single log file. The temporary files are deleted after merging.
+
+    Parameters
+    ----------
+    results_dir : str
+        Directory containing the temporary files.
+    log_file : Path
+        Path to the log file to be merged.
+    result_file : Path
+        Path to the final result file.
+
+    """
+    temp_log_files = list(Path(results_dir).glob("tmp_*_log.txt"))
+    temp_h5_files = list(Path(results_dir).glob("tmp_*_results.h5"))
+
+    with log_file.open("a") as main_log:
+        for temp_log in temp_log_files:
+            with temp_log.open("r") as log:
+                main_log.write(log.read())
+            temp_log.unlink()
+
+    # Open the master result file in append mode
+    with h5py.File(result_file, "a") as main_h5:
+        if "runs" not in main_h5:
+            main_h5.create_group("runs")
+        for temp_h5_path in temp_h5_files:
+            with h5py.File(temp_h5_path, "r") as temp_h5:
+                if "runs" in temp_h5:
+                    for run_name in temp_h5["runs"]:
+                        if run_name in main_h5["runs"]:
+                            continue
+                        temp_h5.copy(f"runs/{run_name}", main_h5["runs"])
+            temp_h5_path.unlink()

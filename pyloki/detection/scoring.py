@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from numba import njit, prange
 
-from pyloki.utils import math, np_utils
+from pyloki.utils import maths, np_utils
 
 
 @njit(cache=True, fastmath=True)
@@ -384,12 +384,12 @@ def _compute_snr_double(
         # penalty of the ratio of amount of trials.
         # subtract - look_elsewhere_effect_penalty_single
         x_single = (
-            math.chi_sq_minus_logsf_func(scores_max_single, 1) - lee_penalty_single
+            maths.chi_sq_minus_logsf_func(scores_max_single, 1) - lee_penalty_single
         )
         x_double = (
-            math.chi_sq_minus_logsf_func(scores_max_double, 2) - lee_penalty_double
+            maths.chi_sq_minus_logsf_func(scores_max_double, 2) - lee_penalty_double
         )
-        results[iprof] = math.norm_isf_func(max(x_single, x_double))
+        results[iprof] = maths.norm_isf_func(max(x_single, x_double))
     return results.reshape(data.shape[:-1])
 
 
@@ -403,6 +403,6 @@ def harmonic_summing_score_func(combined_res: np.ndarray, n_harmonics: int) -> f
     raw_score = 0
     for i in range(1, n_harmonics + 1):
         raw_score += np.abs(fold_ft[i]) ** 2
-        score = math.chi_sq_minus_logsf_func(raw_score * 2, 2 * i)
+        score = maths.chi_sq_minus_logsf_func(raw_score * 2, 2 * i)
         best_score = max(score, best_score)
-    return math.norm_isf_func(best_score)
+    return maths.norm_isf_func(best_score)

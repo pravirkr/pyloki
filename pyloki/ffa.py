@@ -6,7 +6,7 @@ import numpy as np
 
 from pyloki.core import FFASearchDPFuncts, set_ffa_load_func, unify_fold
 from pyloki.utils import np_utils
-from pyloki.utils.misc import PicklableStructRefWrapper, get_logger
+from pyloki.utils.misc import PicklableStructRefWrapper, get_logger, track_progress
 from pyloki.utils.timing import Timer
 
 if TYPE_CHECKING:
@@ -116,6 +116,11 @@ class DynamicProgramming:
         return int(np.prod([len(p) for p in self.param_arr])) if self.param_arr else 0
 
     @property
+    def leaves_lb(self) -> int:
+        """:obj:`int`: Number of leaves at the current FFA level."""
+        return np.round(np.log2(self.nparam_vol), 2)
+
+    @property
     def tseg(self) -> float:
         """:obj:`float`: Segment duration at the current FFA level."""
         return self._tseg
@@ -123,10 +128,9 @@ class DynamicProgramming:
     @Timer(name="ffa_initialize", logger=logger.info)
     def initialize(self) -> None:
         """Initialize the data structure for the FFA search."""
-        logger.info("Initializing data structure...")
         self._ffa_level = 0
         dparams = self.cfg.get_dparams(self.ffa_level)
-        logger.info(f"param steps: {dparams}")
+        logger.info(f"FFA initialize: Grid sizes: {dparams}")
         param_arr = self.cfg.get_param_arr(dparams)
         self._check_init_param_arr(param_arr)
 
@@ -134,27 +138,38 @@ class DynamicProgramming:
         fold = self.dp_funcs.init(self.ts_data.ts_e, self.ts_data.ts_v, param_arr)
         fold = np.expand_dims(fold, axis=list(range(1, self.cfg.nparams)))
         fold = self.dp_funcs.pack(fold, self.ffa_level)
-        logger.info(f"fold dimensions: {fold.shape}")
 
         self._fold = fold.astype(self.data_type)
         self._param_arr = param_arr
         self._dparams = dparams
         self._dparams_limited = self.cfg.get_dparams_limited(self.ffa_level)
         self._tseg = self.cfg.tseg_brute
+        logger.info(
+            f"ffa level: {self.ffa_level:2d}, leaves: {self.leaves_lb:.2f}, "
+            f"fold dims: {self.fold.shape}",
+        )
 
     @Timer(name="ffa_execute", logger=logger.info)
     def execute(self) -> None:
         """Execute the FFA search."""
         n_iters = self.cfg.niters_ffa
-        for _ in range(int(n_iters)):
+        for _ in track_progress(
+            range(n_iters),
+            description="Computing FFA",
+            total=n_iters,
+            get_leaves=lambda: self.leaves_lb,
+        ):
             self._execute_iter()
-            logger.info(f"i_iter: {self.ffa_level}, fold dims: {self.fold.shape}")
+            logger.info(
+                f"ffa level: {self.ffa_level:2d}, leaves: {self.leaves_lb:.2f}, "
+                f"fold dims: {self.fold.shape}",
+            )
+        logger.info(f"FFA complete: Grid sizes: {self.dparams}")
 
     def _execute_iter(self) -> None:
         """Execute a single iteration of the FFA search."""
         self._ffa_level += 1
         dparams = self.cfg.get_dparams(self.ffa_level)
-        logger.info(f"param steps: {dparams}")
         param_arr_cur = self.cfg.get_param_arr(dparams)
 
         param_cart_cur = np_utils.cartesian_prod_st(param_arr_cur)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,13 +12,27 @@ from pyloki.core import (
     PruneTaylorDPFuncts,
     set_prune_load_func,
 )
-from pyloki.io.cands import PruneResultWriter, PruneStats, PruneStatsCollection
-from pyloki.utils.misc import PicklableStructRefWrapper, get_logger, prune_track
+from pyloki.io.cands import (
+    PruneResultWriter,
+    PruneStats,
+    PruneStatsCollection,
+    merge_prune_result_files,
+)
+from pyloki.utils.misc import (
+    MultiprocessProgressTracker,
+    PicklableStructRefWrapper,
+    get_logger,
+    get_worker_logger,
+    prune_track,
+)
 from pyloki.utils.psr_utils import SnailScheme
 from pyloki.utils.timing import Timer, nb_time_now
 
 if TYPE_CHECKING:
+    import logging
     from collections.abc import Callable
+    from multiprocessing.managers import DictProxy
+    from queue import Queue
 
     from pyloki.ffa import DynamicProgramming
     from pyloki.utils.suggestion import SuggestionStruct
@@ -185,11 +200,13 @@ class Pruning:
         threshold_scheme: np.ndarray,
         max_sugg: int = 2**17,
         kind: str = "taylor",
+        logger: logging.Logger | None = None,
     ) -> None:
         self._dyp = dyp
         self._threshold_scheme = threshold_scheme
         self._max_sugg = max_sugg
         self._setup_pruning(kind)
+        self._logger = logger or get_logger(__name__)
 
     @property
     def dyp(self) -> DynamicProgramming:
@@ -216,6 +233,10 @@ class Pruning:
         return self._prune_level
 
     @property
+    def logger(self) -> logging.Logger:
+        return self._logger
+
+    @property
     def is_complete(self) -> bool:
         return self._complete
 
@@ -239,7 +260,6 @@ class Pruning:
     def best_intermediate_arr(self) -> np.ndarray:
         return self._best_intermediate_arr
 
-    @Timer(name="prune_initialize", logger=logger.info)
     def initialize(self, ref_seg: int, log_file: Path) -> None:
         """Initialize the pruning algorithm.
 
@@ -261,7 +281,9 @@ class Pruning:
         )
         self._complete = False
         self._prune_level = 0
-        logger.info(f"Initializing pruning with ref segment: {self.scheme.ref_idx}")
+        self.logger.info(
+            f"Initializing pruning run with ref segment: {self.scheme.ref_idx}",
+        )
 
         fold_segment = self.prune_funcs.load(self.dyp.fold, self.scheme.ref_idx)
 
@@ -299,7 +321,7 @@ class Pruning:
             f.write(pstats_cur.get_summary())
         self._pstats.update_stats(pstats_cur)
 
-    def execute(
+    def execute1(
         self,
         outdir: str = "./",
         file_prefix: str = "test",
@@ -334,32 +356,54 @@ class Pruning:
                 self.max_sugg,
                 self.threshold_scheme,
             )
-            for ref_seg in ref_seg_list:
-                with log_file.open("a") as f:
-                    f.write(f"Pruning log for ref segment: {ref_seg}\n")
-                self.initialize(ref_seg, log_file)
-                for _ in prune_track(
-                    range(self.dyp.nsegments - 1),
-                    description="Pruning",
-                    total=self.dyp.nsegments - 1,
-                    get_score=lambda: self.suggestion.score_max,
-                    get_leaves=lambda: self.suggestion.size_lb,
-                ):
-                    self.execute_iter(log_file)
-                delta_t = self.scheme.get_delta(self.prune_level)
-                writer.write_run_results(
-                    ref_seg,
-                    self.scheme.data,
-                    self.suggestion.get_transformed(delta_t),
-                    self.suggestion.scores,
-                    self.pstats,
-                )
-                with log_file.open("a") as f:
-                    f.write(f"Pruning complete for ref segment: {ref_seg}\n\n")
-                    f.write(f"Time: {self.pstats.get_timer_summary()}\n")
-                logger.info(f"Pruning complete for ref segment: {ref_seg}")
-                logger.info(f"Time: {self.pstats.get_timer_summary()}")
+        for ref_seg in ref_seg_list:
+            self.execute_run(ref_seg, outdir, file_prefix, log_file, result_file)
         return result_file.as_posix()
+
+    def execute(
+        self,
+        ref_seg: int,
+        outdir: str = "./",
+        log_file: Path | None = None,
+        result_file: Path | None = None,
+        shared_progress: DictProxy | None = None,
+        task_id: int | None = None,
+    ) -> None:
+        if log_file is None:
+            log_file = Path(outdir) / f"tmp_{ref_seg:03d}_log.txt"
+            log_file.touch()
+        if result_file is None:
+            result_file = Path(outdir) / f"tmp_{ref_seg:03d}_results.h5"
+        with log_file.open("a") as f:
+            f.write(f"Pruning log for ref segment: {ref_seg}\n")
+        with Timer(name="prune_initialize", logger=self.logger.info):
+            self.initialize(ref_seg, log_file)
+        for _ in prune_track(
+            range(self.dyp.nsegments - 1),
+            description=f"Pruning segment {ref_seg:03d}",
+            shared_progress=shared_progress,
+            task_id=task_id,
+            total=self.dyp.nsegments - 1,
+            get_score=lambda: self.suggestion.score_max,
+            get_leaves=lambda: self.suggestion.size_lb,
+        ):
+            self.execute_iter(log_file)
+        # Transform the suggestion oarams to middle of the data
+        delta_t = self.scheme.get_delta(self.prune_level)
+        with PruneResultWriter(result_file, mode="a") as writer:
+            writer.write_run_results(
+                ref_seg,
+                self.scheme.data,
+                self.suggestion.get_transformed(delta_t),
+                self.suggestion.scores,
+                self.pstats,
+            )
+        with log_file.open("a") as f:
+            f.write(f"Pruning complete for ref segment: {ref_seg}\n\n")
+            f.write(f"Time: {self.pstats.get_timer_summary()}\n")
+        self.logger.info(f"Pruning run complete for ref segment: {ref_seg}")
+        self.logger.info(f"Pruning stats: {self.pstats.get_stats_summary()}")
+        self.logger.info(f"Pruning time: {self.pstats.get_concise_timer_summary()}")
 
     def execute_iter(self, log_file: Path) -> None:
         if self.is_complete:
@@ -401,7 +445,7 @@ class Pruning:
         if suggestion.size == 0:
             self._complete = True
             self._suggestion = suggestion
-            logger.info(f"Pruning complete at level: {self.prune_level}")
+            self.logger.info(f"Pruning run complete at level: {self.prune_level}")
             return
         self._best_intermediate_arr[self.prune_level - 1] = suggestion.get_best()
         self._backtrack_arr[: suggestion.size] = suggestion.backtracks.copy()
@@ -452,3 +496,119 @@ class Pruning:
         else:
             msg = f"Invalid pruning kind: {kind}"
             raise ValueError(msg)
+
+
+def _prune_dyp_seg(
+    dyp: DynamicProgramming,
+    ref_seg: int,
+    threshold_scheme: np.ndarray,
+    shared_progress: DictProxy,
+    task_id: int,
+    log_queue: Queue,
+    outdir: str = "./",
+    max_sugg: int = 2**18,
+    kind: str = "taylor",
+    log_file: Path | None = None,
+    result_file: Path | None = None,
+) -> None:
+    """Execute the pruning for multiprocessing."""
+    logger = get_worker_logger(f"worker_{ref_seg:03d}", log_queue=log_queue)
+    prn = Pruning(dyp, threshold_scheme, max_sugg=max_sugg, kind=kind, logger=logger)
+    prn.execute(
+        ref_seg,
+        outdir=outdir,
+        log_file=log_file,
+        result_file=result_file,
+        shared_progress=shared_progress,
+        task_id=task_id,
+    )
+
+
+def prune_dyp_tree(
+    dyp: DynamicProgramming,
+    ref_segs: list[int],
+    threshold_scheme: np.ndarray,
+    max_sugg: int = 2**18,
+    outdir: str = "./",
+    file_prefix: str = "test",
+    kind: str = "taylor",
+    n_workers: int = 4,
+) -> str:
+    if not isinstance(n_workers, int | np.integer):
+        msg = f"n_workers must be an integer, got {type(n_workers)}"
+        raise TypeError(msg)
+    if n_workers < 1:
+        msg = f"n_workers must be greater than 0, got {n_workers}"
+        raise ValueError(msg)
+
+    filebase = f"{file_prefix}_pruning_nstages_{dyp.nsegments}"
+    log_file = Path(outdir) / f"{filebase}_log.txt"
+    result_file = Path(outdir) / f"{filebase}_results.h5"
+    if log_file.exists() or result_file.exists():
+        msg = f"Output files already exist: {log_file}, {result_file}"
+        raise FileExistsError(msg)
+    if ref_segs is None:
+        ref_segs = np.arange(0, dyp.nsegments, dyp.nsegments // 16)
+    logger.info(f"Starting Pruning for {len(ref_segs)} runs, with {n_workers} workers")
+    log_file.write_text("Pruning log\n")
+    with PruneResultWriter(result_file) as writer:
+        writer.write_metadata(
+            dyp.cfg.param_names,
+            dyp.nsegments,
+            max_sugg,
+            threshold_scheme,
+        )
+    if n_workers == 1:
+        prn = Pruning(
+            dyp,
+            threshold_scheme,
+            max_sugg=max_sugg,
+            kind=kind,
+            logger=logger,
+        )
+        for ref_seg in ref_segs:
+            prn.execute(
+                ref_seg,
+                outdir=outdir,
+                log_file=log_file,
+                result_file=result_file,
+            )
+    else:
+        with (
+            MultiprocessProgressTracker(len(ref_segs), "Pruning tree") as tracker,
+            ProcessPoolExecutor(max_workers=n_workers) as executor,
+        ):
+            futures_to_seg = {}
+            # Important: pass a reference to the tracker dict to the worker
+            # processes to avoid pickling issues
+            shared_progress = tracker.shared_progress
+            log_queue = tracker.log_queue
+
+            for ref_seg in ref_segs:
+                task_id = tracker.add_task(
+                    f"Pruning segment {ref_seg:03d}",
+                    total=dyp.nsegments - 1,
+                )
+                future = executor.submit(
+                    _prune_dyp_seg,
+                    dyp,
+                    ref_seg,
+                    threshold_scheme,
+                    shared_progress,
+                    task_id,
+                    log_queue,
+                    outdir,
+                    max_sugg,
+                    kind,
+                )
+                futures_to_seg[future] = ref_seg
+
+            # Collect results with integrated progress tracking
+            results, errors = tracker.collect_results(futures_to_seg)
+            with log_file.open("a") as f:
+                for ref_seg, error_msg in errors:
+                    f.write(f"Error processing ref_seg {ref_seg}: {error_msg}\n")
+                    logger.error(f"Error processing ref_seg {ref_seg}: {error_msg}")
+        merge_prune_result_files(outdir, log_file, result_file)
+    logger.info(f"Pruning complete. Results saved to {result_file}")
+    return result_file.as_posix()

@@ -8,7 +8,7 @@ from astropy import constants
 from numba import njit
 from scipy import optimize
 
-from pyloki.utils import math
+from pyloki.utils import maths
 from pyloki.utils.misc import C_VAL
 
 if TYPE_CHECKING:
@@ -253,7 +253,7 @@ def find_max_deriv_bounds(
     """
     omega = 2 * np.pi / p_orb_min
     fits = find_derivative_connections(a, n_rad, ecc, deg, res=0.1)
-    factors = np.array([omega**i * math.fact(i) for i in range(deg + 1)])
+    factors = np.array([omega**i * maths.fact(i) for i in range(deg + 1)])
     return np.max(fits, axis=0) * C_VAL * factors
 
 

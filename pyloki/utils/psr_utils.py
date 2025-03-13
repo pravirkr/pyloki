@@ -4,7 +4,7 @@ import attrs
 import numpy as np
 from numba import njit, vectorize
 
-from pyloki.utils import math
+from pyloki.utils import maths
 from pyloki.utils.misc import C_VAL
 
 
@@ -73,7 +73,7 @@ def poly_taylor_step_f(
     dparams_f = np.zeros(nparams, dtype=np.float64)
     dphi = tol_bins / fold_bins
     k = np.arange(nparams)
-    dparams_f = dphi * math.fact(k + 1) / (tobs - t_ref) ** (k + 1)
+    dparams_f = dphi * maths.fact(k + 1) / (tobs - t_ref) ** (k + 1)
     return dparams_f[::-1]
 
 
@@ -105,7 +105,7 @@ def split_f(
     t_ref: float = 0,
 ) -> bool:
     """Check if a parameter {f_k} should be split."""
-    factor = (tobs_new - t_ref) ** (k + 1) * fold_bins / math.fact(k + 1)
+    factor = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
     return abs(df_old - df_new) * factor > tol_bins
 
 
@@ -121,7 +121,7 @@ def poly_taylor_shift_d(
     """Compute the bin shift for parameters {d_k,... d_2, f}."""
     nparams = len(dparam_old)
     k = np.arange(nparams - 1, -1, -1)
-    factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / math.fact(k + 1)
+    factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
     factors[:-1] *= f_cur / C_VAL
     return np.abs(dparam_old - dparam_new) * factors
 
@@ -154,7 +154,7 @@ def shift_params_d(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
     nparams = param_vec.shape[-1]
     powers = np.tril(np.arange(nparams)[:, np.newaxis] - np.arange(nparams))
     # Calculate the transformation matrix (taylor coefficients)
-    t_mat = delta_t**powers / math.fact(powers) * np.tril(np.ones_like(powers))
+    t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
     # transform each vector in correct shape: np.dot(t_mat, param_vec)
     return param_vec @ t_mat.T
 
@@ -324,10 +324,16 @@ class SnailScheme:
     """
 
     nseg: int = attrs.field(
-        validator=[attrs.validators.instance_of(int), attrs.validators.gt(0)],
+        validator=[
+            attrs.validators.instance_of((int, np.integer)),
+            attrs.validators.gt(0),
+        ],
     )
     ref_idx: int = attrs.field(
-        validator=[attrs.validators.instance_of(int), attrs.validators.ge(0)],
+        validator=[
+            attrs.validators.instance_of((int, np.integer)),
+            attrs.validators.ge(0),
+        ],
     )
     tseg: float = attrs.field(default=1.0, validator=attrs.validators.ge(0))
     data: np.ndarray = attrs.field(init=False)
