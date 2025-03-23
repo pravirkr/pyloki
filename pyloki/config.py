@@ -299,7 +299,7 @@ class PulsarSearchConfig:
             attrs.validators.gt(0),
         ],
     )
-    tol: float = attrs.field(validator=attrs.validators.gt(0))
+    tol_bins: float = attrs.field(validator=attrs.validators.gt(0))
     param_limits: list[tuple[float, float]] = attrs.field()
     ducy_max: float = attrs.field(default=0.2, validator=attrs.validators.gt(0))
     wtsp: float = attrs.field(default=1.5, validator=attrs.validators.gt(0))
@@ -404,7 +404,7 @@ class PulsarSearchConfig:
             self.nparams,
             tseg_cur,
             self.nbins,
-            self.tol,
+            self.tol_bins,
             t_ref=t_ref,
         )
 
@@ -427,7 +427,7 @@ class PulsarSearchConfig:
             self.nparams,
             tseg_cur,
             self.nbins,
-            self.tol,
+            self.tol_bins,
             self.f_max,
             t_ref=t_ref,
         )

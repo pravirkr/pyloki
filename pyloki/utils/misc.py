@@ -258,7 +258,6 @@ class MultiprocessProgressTracker:
 
     def __init__(
         self,
-        total_tasks: int,
         description: str = "Processing",
         console: Console | None = None,
     ) -> None:
@@ -266,12 +265,9 @@ class MultiprocessProgressTracker:
 
         Parameters
         ----------
-        total_tasks : int
-            Total number of tasks to track.
         description : str
             Description for the overall progress bar.
         """
-        self.total_tasks = total_tasks
         self.description = description
         self.console = console or CONSOLE
 
@@ -303,7 +299,7 @@ class MultiprocessProgressTracker:
         self.progress.start()
         self.overall_task_id = self.progress.add_task(
             f"[green]{self.description}",
-            total=self.total_tasks,
+            total=0,
         )
         return self
 
@@ -342,6 +338,8 @@ class MultiprocessProgressTracker:
             "leaves": 0.0,
             "visible": False,
         }
+        overall_total = self.progress.tasks[self.overall_task_id].total or 0
+        self.progress.update(self.overall_task_id, total=overall_total + total)
         return task_id
 
     def update_progress(self) -> None:
@@ -356,8 +354,7 @@ class MultiprocessProgressTracker:
                 score=data["score"],
                 leaves=data["leaves"],
             )
-            if data["completed"] >= data["total"]:
-                finished += 1
+            finished += data["completed"]
         self.progress.update(self.overall_task_id, completed=finished)
 
     def collect_results(self, futures_to_seg: dict) -> tuple[list, list]:

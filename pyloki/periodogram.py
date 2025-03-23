@@ -464,3 +464,94 @@ class ScatteredPeriodogram:
 
     def __repr__(self) -> str:
         return self.__str__()
+
+
+@attrs.define(auto_attribs=True, kw_only=True)
+class PruningStatsPlotter:
+    data: pd.DataFrame = attrs.field(init=False, factory=pd.DataFrame)
+
+    @property
+    def n_runs(self) -> int:
+        return self.data["run_id"].nunique()
+
+    def add_run(self, level_stats: np.ndarray, run_id: int) -> None:
+        """Add a pruning stats run results to the existing dataframe.
+
+        Parameters
+        ----------
+        level_stats : np.ndarray
+            Level statistics (n_levels, 9).
+        run_id : int
+            Unique Identifier for the specific run being added.
+        """
+        if not isinstance(level_stats, np.ndarray):
+            msg = "level_stats should be a numpy array"
+            raise TypeError(msg)
+        if level_stats.dtype.names is None or len(level_stats.dtype.names) != 9:
+            msg = "level_stats should have 9 fields"
+            raise ValueError(msg)
+        run_df = pd.DataFrame.from_records(level_stats)
+        run_df["run_id"] = run_id
+        self.data = pd.concat([self.data, run_df], ignore_index=True)
+
+    def get_level_stats(self, run_id: int | None = None) -> pd.DataFrame:
+        """Get level statistics for a specific run.
+
+        Parameters
+        ----------
+        run_id : int | None, optional
+            Unique identifier for a specific run, by default None.
+
+        Returns
+        -------
+        pd.DataFrame
+            Level statistics for the specified run.
+        """
+        return self.data if run_id is None else self.data[self.data["run_id"] == run_id]
+
+    def plot_level_stats(
+        self,
+        run_id: int | None = None,
+        figsize: tuple[float, float] = (10, 5),
+        dpi: int = 100,
+    ) -> plt.Figure:
+        """Plot level statistics for a specific run."""
+        data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
+        n_runs = self.n_runs if run_id is None else 1
+        set_seaborn()
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        sns.lineplot(
+            data=data,
+            x="level",
+            y="n_leaves_surv",
+            hue="run_id",
+            palette=sns.color_palette("colorblind", n_colors=n_runs),
+            ax=ax,
+        )
+        sns.move_legend(
+            ax,
+            "lower center",
+            ncol=3,
+            fontsize="xx-small",
+            frameon=False,
+            title="run",
+            title_fontsize="xx-small",
+        )
+        ax.set_yscale("log")
+        ax.set_title("Pruning Complexity")
+        ax.set_xlabel("Level")
+        ax.set_ylabel("Number of Leaves Surviving")
+        return fig
+
+    @classmethod
+    def load(cls, filename: str) -> PruningStatsPlotter:
+        """Load results from a HDF5 file."""
+        with h5py.File(filename, "r") as f:
+            if "pruning_version" not in f.attrs:
+                msg = "Not a valid pruning results file"
+                raise ValueError(msg)
+            pstats = cls()
+            for run_id, run_group in f["runs"].items():
+                level_stats = run_group["level_stats"][:]
+                pstats.add_run(level_stats, int(run_id))
+        return pstats

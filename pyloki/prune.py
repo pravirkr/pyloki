@@ -575,7 +575,7 @@ def prune_dyp_tree(
             )
     else:
         with (
-            MultiprocessProgressTracker(len(ref_segs), "Pruning tree") as tracker,
+            MultiprocessProgressTracker("Pruning tree") as tracker,
             ProcessPoolExecutor(max_workers=n_workers) as executor,
         ):
             futures_to_seg = {}

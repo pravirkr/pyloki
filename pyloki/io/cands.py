@@ -14,7 +14,37 @@ if TYPE_CHECKING:
 
 @attrs.define(auto_attribs=True, slots=True, kw_only=True)
 class PruneStats:
-    """Container for pruning statistics at a single pruning level."""
+    """Container for pruning statistics at a single pruning level.
+
+    Attributes
+    ----------
+    level : int
+        The current pruning level (1 for the first addition).
+    seg_idx : int
+        The segment index being added.
+    threshold : float
+        The threshold value.
+    score_min : float
+        The minimum leaf score.
+    score_max : float
+        The maximum leaf score.
+    n_branches : int
+        The total number of tree branches.
+    n_leaves : int
+        The total number of leaves.
+    n_leaves_phy : int
+        The total number of physical leaves.
+    n_leaves_surv : int
+        The total number of surviving leaves after pruning.
+    lb_leaves : float
+        The log base 2 of the number of physical leaves.
+    branch_frac : float
+        Branching fraction (average number of leaves per branch).
+    phys_frac : float
+        The fraction of physical leaves to total leaves.
+    surv_frac : float
+        The fraction of surviving leaves to physical leaves.
+    """
 
     level: int
     seg_idx: int
@@ -23,24 +53,24 @@ class PruneStats:
     score_max: float = 0.0
     n_branches: int = 1
     n_leaves: int = 1
-    n_leaves_phy: int = 0
-    n_leaves_surv: int = 0
+    n_leaves_phy: int = 1
+    n_leaves_surv: int = 1
 
     @property
     def lb_leaves(self) -> float:
-        return np.round(np.log2(self.n_leaves), 2)
+        return np.round(np.log2(self.n_leaves_phy), 2)
 
     @property
     def branch_frac(self) -> float:
         return np.round(self.n_leaves / self.n_branches, 2)
 
     @property
-    def branch_frac_phy(self) -> float:
-        return np.round(self.n_leaves_phy / self.n_branches, 2)
+    def phys_frac(self) -> float:
+        return np.round(self.n_leaves_phy / self.n_leaves, 2)
 
     @property
     def surv_frac(self) -> float:
-        return np.round(self.n_leaves_surv / self.n_leaves, 2)
+        return np.round(self.n_leaves_surv / self.n_leaves_phy, 2)
 
     def update(self, stats_dict: dict[str, float]) -> None:
         for key, value in stats_dict.items():
@@ -49,12 +79,12 @@ class PruneStats:
     def get_summary(self) -> str:
         summary = []
         summary.append(
-            f"Prune level: {self.level}, seg_idx: {self.seg_idx}, "
-            f"lb_leaves: {self.lb_leaves:.2f}, branch_frac: {self.branch_frac:.2f},",
+            f"Prune level: {self.level:3d}, seg_idx: {self.seg_idx:3d}, "
+            f"lb_leaves: {self.lb_leaves:5.2f}, branch_frac: {self.branch_frac:5.2f},",
         )
         summary.append(
-            f"score thresh: {self.threshold:.2f}, max: {self.score_max:.2f}, "
-            f"min: {self.score_min:.2f}, P(surv): {self.surv_frac:.2f}",
+            f"score thresh: {self.threshold:5.2f}, max: {self.score_max:5.2f}, "
+            f"min: {self.score_min:5.2f}, P(surv): {self.surv_frac:4.2f}",
         )
         return "".join(summary) + "\n"
 
@@ -77,7 +107,7 @@ class PruneStatsCollection:
     ]
 
     def __attrs_post_init__(self) -> None:
-        self.timers = {name: 0.0 for name in self.TIMER_NAMES}
+        self.timers = dict.fromkeys(self.TIMER_NAMES, 0.0)
 
     @property
     def nstages(self) -> int:

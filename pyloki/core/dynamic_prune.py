@@ -35,7 +35,7 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
         """Create a new instance of PruneTaylorDPFuncts."""
         return prune_taylor_dp_functs_init(
             cfg.nbins,
-            cfg.tol,
+            cfg.tol_bins,
             cfg.param_limits,
             cfg.bseg_brute,
             param_arr,
