@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import numpy as np
-from numba import njit, prange
+import numpy.typing as npt
+from numba import njit, prange, types
 
 from pyloki.utils import maths, np_utils
 
@@ -10,10 +11,9 @@ from pyloki.utils import maths, np_utils
 def generate_box_width_trials(
     fold_bins: int,
     ducy_max: float = 0.2,
-    spacing_factor: float = 1.5,
-) -> np.ndarray:
-    """
-    Generate boxcar width trials for matched filtering.
+    wtsp: float = 1.5,
+) -> npt.NDArray[np.int64]:
+    """Generate boxcar width trials for matched filtering.
 
     Parameters
     ----------
@@ -21,7 +21,7 @@ def generate_box_width_trials(
         Number of bins in the folded profile.
     ducy_max : float, optional
         Maximum ducy cycle, by default 0.2
-    spacing_factor : float, optional
+    wtsp : float, optional
         Spacing factor for the widths, by default 1.5
 
     Returns
@@ -32,19 +32,66 @@ def generate_box_width_trials(
     wmax = int(max(1, ducy_max * fold_bins))
     widths = [1]
     while widths[-1] <= wmax:
-        next_width = int(max(widths[-1] + 1, int(spacing_factor * widths[-1])))
+        next_width = int(max(widths[-1] + 1, int(wtsp * widths[-1])))
         if next_width > wmax:
             break
         widths.append(next_width)
-    return np.asarray(widths, dtype=np.int32)
+    return np.asarray(widths, dtype=np.int64)
 
 
-@njit(cache=True, fastmath=True)
+@njit("void(f4[::1], f4[::1])", cache=True, fastmath=True)
+def circular_prefix_sum(
+    x: npt.NDArray[np.float32],
+    out: npt.NDArray[np.float32],
+) -> None:
+    """Compute circular prefix sum efficiently."""
+    nbins = len(x)
+    nsum = len(out)
+    if nbins == 0 or nsum == 0:
+        return
+    # Initial prefix sum (inclusive scan)
+    out[0] = x[0]
+    for i in range(1, min(nbins, nsum)):
+        out[i] = out[i - 1] + x[i]
+    if nsum <= nbins:
+        return
+    # Handle wrap around
+    last_sum = out[nbins - 1]
+    n_wraps = nsum // nbins
+    extra = nsum % nbins
+
+    for i in range(1, n_wraps):
+        offset = i * nbins
+        for j in range(nbins):
+            out[offset + j] = out[j] + i * last_sum
+
+    if extra > 0:
+        offset = n_wraps * nbins
+        for j in range(extra):
+            out[offset + j] = out[j] + n_wraps * last_sum
+
+
+@njit("f4(f4[::1], f4[::1])", cache=True, fastmath=True)
+def diff_max(x: npt.NDArray[np.float32], y: npt.NDArray[np.float32]) -> np.float32:
+    """Find the maximum difference between two arrays efficiently."""
+    max_diff = -np.finfo(np.float32).max
+    for i in range(len(x)):
+        diff = x[i] - y[i]
+        max_diff = max(max_diff, diff)
+    return max_diff
+
+
+@njit(
+    "f4[::1](f4[::1], i8[::1], f8)",
+    cache=True,
+    fastmath=True,
+    locals={"size_w": types.f4},
+)
 def boxcar_snr_1d(
-    norm_data: np.ndarray,
-    widths: np.ndarray,
+    norm_data: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
     stdnoise: float = 1.0,
-) -> np.ndarray:
+) -> npt.NDArray[np.float32]:
     """Compute the SNR for a 1D profile using boxcar filters.
 
     Parameters
@@ -62,49 +109,28 @@ def boxcar_snr_1d(
         SNR scores for the given widths.
     """
     size = len(norm_data)
-    data_cumsum = np.cumsum(norm_data)
-    total_sum = data_cumsum[-1]
+    n_widths = len(widths)
     max_width = np.max(widths)
-    prefix_sum = np.concatenate(
-        (data_cumsum, total_sum + np.cumsum(norm_data[:max_width])),
-    )
-    snr = np.empty(len(widths), dtype=np.float32)
+    prefix_sum = np.empty(size + max_width, dtype=np.float32)
+    circular_prefix_sum(norm_data, prefix_sum)
+    total_sum = prefix_sum[size - 1]
+    snr = np.empty(n_widths, dtype=np.float32)
+    inv_stdnoise = 1.0 / stdnoise
     for iw, width in enumerate(widths):
-        height = np.sqrt((size - width) / (size * width))
-        b = width * height / (size - width)
-        dmax = np.max(prefix_sum[width : width + size] - prefix_sum[:size])
-        snr[iw] = ((height + b) * dmax - b * total_sum) / stdnoise
+        size_w = size - width
+        height = np.sqrt(size_w / (size * width))
+        b = width * height / size_w
+        dmax = diff_max(prefix_sum[width : width + size], prefix_sum[:size])
+        snr[iw] = ((height + b) * dmax - (b * total_sum)) * inv_stdnoise
     return snr
 
 
-@njit(cache=True, fastmath=True)
-def snr_score_func(combined_res: np.ndarray) -> float:
-    ts_e, ts_v = combined_res
-    fold = ts_e / np.sqrt(ts_v)
-    widths = generate_box_width_trials(len(fold), ducy_max=0.3, spacing_factor=1.1)
-    return np.max(boxcar_snr_1d(fold, widths))
-
-
-# Note: No cache=True when using parallel=True (numba issue)
-@njit(fastmath=True)
-def boxcar_snr(
-    data: np.ndarray,
-    widths: np.ndarray,
+@njit("f4[:, ::1](f4[:, ::1], i8[::1], f8)", cache=True, fastmath=True, parallel=True)
+def boxcar_snr_2d(
+    folds: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
     stdnoise: float = 1.0,
-) -> np.ndarray:
-    widths = np.asarray(widths, dtype=np.uint64)
-    nbins = data.shape[-1]
-    folds = data.reshape(-1, nbins).astype(np.float32)
-    snrs = _boxcar_snr_2d(folds, widths, stdnoise)
-    return snrs.reshape((*data.shape[:-1], widths.size))
-
-
-@njit(parallel=True, fastmath=False)
-def _boxcar_snr_2d(
-    folds: np.ndarray,
-    widths: np.ndarray,
-    stdnoise: float = 1.0,
-) -> np.ndarray:
+) -> npt.NDArray[np.float32]:
     nfolds, _ = folds.shape
     snrs = np.empty(shape=(nfolds, widths.size), dtype=np.float32)
     for ifold in prange(nfolds):
@@ -112,9 +138,31 @@ def _boxcar_snr_2d(
     return snrs
 
 
+@njit(cache=True, fastmath=True)
+def boxcar_snr_nd(
+    data: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+    stdnoise: float = 1.0,
+) -> npt.NDArray[np.float32]:
+    nbins = data.shape[-1]
+    folds = data.reshape(-1, nbins).astype(np.float32)
+    snrs = boxcar_snr_2d(folds, widths, stdnoise)
+    return snrs.reshape((*data.shape[:-1], widths.size))
+
+
+@njit("f4(f4[:, ::1], i8[::1])", cache=True, fastmath=True)
+def snr_score_func(
+    combined_res: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> float:
+    """Compute the SNR score for a folded suggestion."""
+    ts_e, ts_v = combined_res
+    fold = ts_e / np.sqrt(ts_v)
+    return np.max(boxcar_snr_1d(fold, widths, 1.0))
+
+
 class MatchedFilter:
-    """
-    Matched filter class for computing SNR for a folded suggestion.
+    """Matched filter class for computing SNR for a folded suggestion.
 
     Parameters
     ----------
@@ -179,40 +227,45 @@ class MatchedFilter:
         return np.full(self.ntemp, shift, dtype=np.int64)
 
 
-@njit(cache=True, fastmath=True)
-def _normalise(arr: np.ndarray) -> np.ndarray:
-    """
-    Normalise to zero mean and unit power.
+@njit("f4[::1](f4[::1])", cache=True, fastmath=True)
+def _normalise(arr: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
+    """Normalise to zero mean and unit energy.
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : NDArray[np.float32]
         Input array.
 
     Returns
     -------
-    np.ndarray
-        Normalised array with zero mean and unit power.
+    NDArray[np.float32]
+        Normalised array with zero mean and unit energy.
     """
-    arr_norm = arr - np.mean(arr)
-    return arr_norm / np.sqrt(np.dot(arr_norm, arr_norm))
+    arr_mean = arr - np.mean(arr)
+    arr_mean = arr_mean.astype(np.float32)
+    norm = np.sqrt(np.dot(arr_mean, arr_mean))
+    if norm == 0:
+        return arr_mean
+    return arr_mean / norm
 
 
 @njit(cache=True, fastmath=True)
-def _gen_boxcar_templates(widths: np.ndarray, nbins: int) -> np.ndarray:
-    """
-    Generate boxcar templates.
+def _gen_boxcar_templates(
+    widths: npt.NDArray[np.int64],
+    nbins: int,
+) -> npt.NDArray[np.float32]:
+    """Generate boxcar templates.
 
     Parameters
     ----------
-    widths : np.ndarray
+    widths : NDArray[np.int64]
         Widths of the boxcar templates.
     nbins : int
         Number of bins in the templates.
 
     Returns
     -------
-    np.ndarray
+    NDArray[np.float32]
         Normalised boxcar templates.
     """
     templates = np.zeros((len(widths), nbins), dtype=np.float32)
@@ -223,20 +276,22 @@ def _gen_boxcar_templates(widths: np.ndarray, nbins: int) -> np.ndarray:
 
 
 @njit(cache=True, fastmath=True)
-def _gen_gaussian_templates(widths: np.ndarray, nbins: int) -> np.ndarray:
-    """
-    Generate Gaussian templates.
+def _gen_gaussian_templates(
+    widths: npt.NDArray[np.int64],
+    nbins: int,
+) -> npt.NDArray[np.float32]:
+    """Generate Gaussian templates.
 
     Parameters
     ----------
-    widths : np.ndarray
+    widths : NDArray[np.int64]
         Widths of the Gaussian templates.
     nbins : int
         Number of bins in the templates.
 
     Returns
     -------
-    np.ndarray
+    NDArray[np.float32]
         Normalised Gaussian templates.
     """
     templates = np.zeros((len(widths), nbins), dtype=np.float32)
@@ -255,32 +310,87 @@ def _gen_gaussian_templates(widths: np.ndarray, nbins: int) -> np.ndarray:
     return templates
 
 
-@njit(cache=True, fastmath=True)
-def _get_e_mat(templates: np.ndarray, shifts: np.ndarray) -> np.ndarray:
-    """
-    Generate the matrix of templates.
+@njit("f4[:, ::1](f4[:, ::1], i8[::1])", cache=True, fastmath=True)
+def _get_e_mat(
+    templates: npt.NDArray[np.float32],
+    shifts: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Generate the matrix of templates.
 
     Parameters
     ----------
-    templates : np.ndarray
+    templates : NDArray[np.float32]
         Normalised templates.
-    shifts : np.ndarray
-        Shifts to apply to the templates.
+    shifts : NDArray[np.int64]
+        Shifts (in bins) to apply to the templates
 
     Returns
     -------
-    np.ndarray
-        Matrix of templates.
+    NDArray[np.float32]
+        2D array of templates (nfilters, nbins).
     """
     ntemp, nbins = templates.shape
-    total_shifts = np.sum(nbins // shifts)
-    temp_bank = np.empty((total_shifts, nbins), dtype=templates.dtype)
+    total_shifts = int(np.sum(nbins // shifts))
+    temp_bank = np.empty((total_shifts, nbins), dtype=np.float32)
     row_idx = 0
     for itemp in range(ntemp):
         for jbin in range(0, nbins, shifts[itemp]):
             temp_bank[row_idx] = np.roll(templates[itemp], jbin)
             row_idx += 1
     return temp_bank
+
+
+@njit(cache=True, fastmath=True)
+def compute_snr_e_mat(
+    norm_data: npt.NDArray[np.float32],
+    e_mat: npt.NDArray[np.float32],
+    shifts: npt.NDArray[np.int64],
+    stdnoise: float = 1.0,
+) -> np.ndarray:
+    projections = np.dot(e_mat, norm_data)
+    _, nbins = e_mat.shape
+    shifts_per_template = nbins // shifts
+    # Extract maximum projection per template
+    snr = np.empty(len(shifts_per_template), dtype=np.float32)
+    start = 0
+    for i, n_shifts in enumerate(shifts_per_template):
+        end = start + n_shifts
+        snr[i] = np.max(projections[start:end]) / stdnoise
+        start = end
+    return snr
+
+
+@njit(cache=True, fastmath=True)
+def compute_snr_e_mat_2d(
+    norm_data: npt.NDArray[np.float32],
+    e_mat: npt.NDArray[np.float32],
+    shifts: npt.NDArray[np.int64],
+    stdnoise: float = 1.0,
+) -> npt.NDArray[np.float32]:
+    _, nbins = e_mat.shape
+    n_templates = len(shifts)
+    n_counts = norm_data.shape[0]
+    # Compute projections: (n_counts, n_templates)
+    projections = np.dot(norm_data, e_mat.T)
+
+    # Compute cumulative shift indices
+    shifts_per_template = nbins // shifts
+    shift_indices = np.zeros(n_templates + 1, dtype=np.int64)
+    for i, n_shifts in enumerate(shifts_per_template):
+        shift_indices[i + 1] = shift_indices[i] + n_shifts
+    snr = np.empty((n_counts, n_templates), dtype=np.float32)
+
+    # Compute max projection per template across shifts
+    for i in range(n_counts):
+        proj_row = projections[i, :]
+        for j in range(n_templates):
+            start = shift_indices[j]
+            end = shift_indices[j + 1]
+            max_proj = proj_row[start]
+            for k in range(start + 1, end):
+                max_proj = max(max_proj, proj_row[k])
+            snr[i, j] = max_proj / stdnoise
+    return snr
 
 
 @njit(cache=True, fastmath=True)

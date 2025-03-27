@@ -38,6 +38,7 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
             cfg.tol_bins,
             cfg.param_limits,
             cfg.bseg_brute,
+            cfg.score_widths,
             param_arr,
             dparams,
             tseg_ffa,
@@ -116,6 +117,7 @@ fields_prune_taylor_dp_funcs = [
     ("tol_bins", types.f8),
     ("param_limits", types.ListType(types.Tuple([types.f8, types.f8]))),
     ("bseg_brute", types.int64),
+    ("score_widths", types.i8[::1]),
     ("param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
     ("dparams", types.f8[:]),
     ("tseg_ffa", types.f8),
@@ -132,6 +134,7 @@ def prune_taylor_dp_functs_init(
     tol_bins: float,
     param_limits: list[tuple[float, float]],
     bseg_brute: int,
+    score_widths: np.ndarray,
     param_arr: list[np.ndarray],
     dparams: np.ndarray,
     tseg_ffa: float,
@@ -142,6 +145,7 @@ def prune_taylor_dp_functs_init(
     self.tol_bins = tol_bins
     self.param_limits = typed.List(param_limits)
     self.bseg_brute = bseg_brute
+    self.score_widths = score_widths
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
@@ -198,12 +202,13 @@ def suggest_func(
         self.param_arr,
         self.dparams,
         self.poly_order,
+        self.score_widths,
     )
 
 
 @njit(cache=True, fastmath=True)
 def score_func(self: PruneTaylorDPFuncts, combined_res: np.ndarray) -> float:
-    return scoring.snr_score_func(combined_res)
+    return scoring.snr_score_func(combined_res, self.score_widths)
 
 
 @njit(cache=True, fastmath=True)

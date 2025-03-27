@@ -74,8 +74,11 @@ indent-style = "space"
 select = ["ALL"]
 ignore = ["D1", "ANN003", "PLR2004", "PD901", "G004"]
 
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
 [tool.ruff.lint.pylint]
-max-args = 15
+max-args = 20
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"

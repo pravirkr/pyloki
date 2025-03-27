@@ -291,6 +291,7 @@ def poly_taylor_suggest(
     param_arr: types.ListType,
     dparams: np.ndarray,
     poly_order: int,
+    score_widths: np.ndarray,
 ) -> SuggestionStruct:
     """Generate a suggestion struct from a fold segment.
 
@@ -320,7 +321,7 @@ def poly_taylor_suggest(
     data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
     scores = np.zeros(n_param_sets, dtype=np.float32)
     for iparam in range(n_param_sets):
-        scores[iparam] = scoring.snr_score_func(data[iparam])
+        scores[iparam] = scoring.snr_score_func(data[iparam], score_widths)
     backtracks = np.zeros((n_param_sets, 2 + len(param_arr)), dtype=np.int32)
     return SuggestionStruct(param_sets, data, scores, backtracks)
 

@@ -114,7 +114,7 @@ class TimeSeries:
             nbins_max=fold_bins // 2,
             spacing_factor=1,
         )
-        match_boxcar = boxcar_snr_1d(ephem_fold, np.arange(1, fold_bins // 2))
+        match_boxcar = boxcar_snr_1d(ephem_fold, np.arange(1, fold_bins // 2), 1.0)
         if mod_kwargs is None:
             mod_kwargs = {"acc": 0, "jerk": 0, "snap": 0}
 

@@ -172,7 +172,12 @@ def track_progress(
     console: Console | None = None,
     *,
     transient: bool = True,
+    show_progress: bool = True,
 ) -> Iterable[ProgressType]:
+    if not show_progress:
+        yield from sequence
+        return
+
     columns: list[ProgressColumn] = [
         TextColumn("[progress.description]{task.description}"),
         SpinnerColumn(),

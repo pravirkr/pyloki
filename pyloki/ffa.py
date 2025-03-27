@@ -150,7 +150,7 @@ class DynamicProgramming:
         )
 
     @Timer(name="ffa_execute", logger=logger.info)
-    def execute(self) -> None:
+    def execute(self, *, show_progress: bool = True) -> None:
         """Execute the FFA search."""
         n_iters = self.cfg.niters_ffa
         for _ in track_progress(
@@ -158,10 +158,11 @@ class DynamicProgramming:
             description="Computing FFA",
             total=n_iters,
             get_leaves=lambda: self.leaves_lb,
+            show_progress=show_progress,
         ):
             self._execute_iter()
             logger.info(
-                f"ffa level: {self.ffa_level:2d}, leaves: {self.leaves_lb:.2f}, "
+                f"ffa level: {self.ffa_level:2d}, leaves: {self.leaves_lb:5.2f}, "
                 f"fold dims: {self.fold.shape}",
             )
         logger.info(f"FFA complete: Grid sizes: {self.dparams}")

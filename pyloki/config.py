@@ -8,6 +8,7 @@ import attrs
 import numpy as np
 
 from pyloki import kepler
+from pyloki.detection.scoring import generate_box_width_trials
 from pyloki.utils import maths, psr_utils
 from pyloki.utils.misc import C_VAL
 
@@ -384,6 +385,15 @@ class PulsarSearchConfig:
     def f_max(self) -> float:
         """:obj:`float`: Maximum frequency value to search."""
         return self.param_limits[-1][1]
+
+    @property
+    def score_widths(self) -> np.ndarray:
+        """Get the boxcar widths for the scoring stage."""
+        return generate_box_width_trials(
+            self.nbins,
+            ducy_max=self.ducy_max,
+            wtsp=self.wtsp,
+        )
 
     def get_dparams_f(self, ffa_level: int) -> np.ndarray:
         """Get the step sizes for frequency and its derivatives.

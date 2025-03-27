@@ -14,7 +14,7 @@ from pyloki.config import PulsarSearchConfig
 from pyloki.detection import scoring
 from pyloki.search import ffa_search
 from pyloki.utils import np_utils
-from pyloki.utils.misc import get_logger
+from pyloki.utils.misc import CONSOLE, get_logger
 
 if TYPE_CHECKING:
     from numba import types
@@ -60,7 +60,7 @@ def test_sensitivity_ffa(
     signal_cfg: PulseSignalConfig,
     search_cfg: PulsarSearchConfig,
 ) -> tuple[float, float, float]:
-    dyp, pgram = ffa_search(tim_data, search_cfg)
+    dyp, pgram = ffa_search(tim_data, search_cfg, show_progress=False)
     snr_shifted = get_shifted_snr(dyp.dparams, tim_data, signal_cfg, search_cfg)
 
     nparams = len(search_cfg.param_limits)
@@ -75,7 +75,7 @@ def test_sensitivity_ffa(
         true_params_idx.insert(0, idx)
     snr_dynamic = float(pgram.data[tuple(true_params_idx)].max())
     snr_empirical = pgram.find_best_params()["snr"]
-    logger.info(f"snr_dynamic: {snr_dynamic}, snr_empirical: {snr_empirical}")
+    logger.info(f"snr_dynamic: {snr_dynamic:.2f}, snr_empirical: {snr_empirical:.2f}")
     return snr_shifted, snr_dynamic, snr_empirical
 
 
@@ -111,9 +111,9 @@ def get_best_snr(fold: np.ndarray, search_cfg: PulsarSearchConfig) -> float:
     widths = scoring.generate_box_width_trials(
         len(fold),
         ducy_max=search_cfg.ducy_max,
-        spacing_factor=search_cfg.wtsp,
+        wtsp=search_cfg.wtsp,
     )
-    return scoring.boxcar_snr_1d(fold, widths).max()
+    return scoring.boxcar_snr_1d(fold, widths, 1.0).max()
 
 
 class TestFFASensitivity:
@@ -163,7 +163,12 @@ class TestFFASensitivity:
         if not outpath.is_dir():
             msg = f"Output directory {outdir} does not exist"
             raise FileNotFoundError(msg)
-        for idu in track(range(self.nducy), description="Processing ducy..."):
+        for idu in track(
+            range(self.nducy),
+            description="Processing ducy...",
+            console=CONSOLE,
+            transient=True,
+        ):
             cfg_update = self.cfg.get_updated({"ducy": self.ducy_arr[idu]})
             self.losses[:, :, idu] = self._execute(cfg_update)
         return self._save(outpath)
@@ -184,11 +189,11 @@ class TestFFASensitivity:
         losses = np.zeros((4, self.ntols), dtype=float)
         for itol in range(self.ntols):
             search_cfg = PulsarSearchConfig(
-                cfg.nsamps,
-                cfg.dt,
-                cfg.fold_bins,
-                self.tol_bins_arr[itol],
-                self.param_limits,
+                nsamps=cfg.nsamps,
+                tsamp=cfg.dt,
+                nbins=cfg.fold_bins,
+                tol_bins=self.tol_bins_arr[itol],
+                param_limits=self.param_limits,
                 ducy_max=self.ducy_max,
                 wtsp=self.wtsp,
             )

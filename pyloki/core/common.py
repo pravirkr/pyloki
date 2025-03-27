@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from numba import njit, types
+from numba import njit, prange, types
 
 from pyloki.utils import np_utils, psr_utils
 from pyloki.utils.misc import C_VAL
@@ -79,7 +79,12 @@ def resample(ts_e: np.ndarray, ts_v: np.ndarray, tsamp: float, accel: float) -> 
     return ts_e_resamp, ts_v_resamp
 
 
-@njit(["f4[:,:,:,:](f4[:],f4[:],f8[:],i8,i8,f8,f8)"], cache=True, fastmath=True)
+@njit(
+    ["f4[:,:,:,:](f4[:],f4[:],f8[:],i8,i8,f8,f8)"],
+    cache=True,
+    parallel=True,
+    fastmath=True,
+)
 def brutefold_start(
     ts_e: np.ndarray,
     ts_v: np.ndarray,
@@ -127,7 +132,7 @@ def brutefold_start(
         )
 
     fold = np.zeros((nsegments, nfreqs, 2, nbins), dtype=np.float32)
-    for iseg in range(nsegments):
+    for iseg in prange(nsegments):
         segment_start = iseg * segment_len
         ts_e_seg = ts_e[segment_start : segment_start + segment_len]
         ts_v_seg = ts_v[segment_start : segment_start + segment_len]
