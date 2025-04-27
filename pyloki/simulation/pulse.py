@@ -125,6 +125,7 @@ class PulseSignalConfig:
             msg = f"Duty cycle ({self.ducy}) should be in (0, 1)"
             raise ValueError(msg)
 
+
 class PulseShape:
     """Generate a pulse shape.
 
@@ -200,3 +201,17 @@ def von_mises_pulse_shape(
     kappa = np.log(2.0) / (2.0 * np.sin(np.pi * width / 2.0) ** 2)
     phase_radians = (proper_time / period - pos) * (2 * np.pi)
     return np.exp(kappa * (np.cos(phase_radians) - 1.0))
+
+
+def generate_folded_profile(
+    nbins: int = 100,
+    ducy: float = 0.1,
+    center: float = 0.5,
+) -> np.ndarray:
+    """Generate a normalized folded pulse profile."""
+    phase = np.linspace(0, 1, nbins, endpoint=False)
+    sigma = ducy / (2 * np.sqrt(2 * np.log(10)))
+    wrapped_phase = np.mod(phase - center + 0.5, 1) - 0.5
+    profile = np.exp(-(wrapped_phase**2) / (2 * sigma**2))
+    profile = profile / profile.max()
+    return profile / np.sqrt(np.sum(profile**2))

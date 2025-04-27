@@ -55,6 +55,9 @@ tests = [
 docs = ["sphinx", "sphinx-book-theme", "sphinx-click", "myst-nb"]
 develop = ["ruff"]
 
+[project.scripts]
+pyloki_viewer = "pyloki.apps.pyloki_viewer:main"
+
 [tool.ruff]
 include = [
     "pyproject.toml",
@@ -72,13 +75,14 @@ indent-style = "space"
 
 [tool.ruff.lint]
 select = ["ALL"]
-ignore = ["D1", "ANN003", "PLR2004", "PD901", "G004"]
+ignore = ["D1", "ANN003", "PLR2004", "PD901", "G004", "E712"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15
 
 [tool.ruff.lint.pylint]
 max-args = 20
+max-statements = 75
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"

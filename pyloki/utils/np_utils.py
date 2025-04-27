@@ -44,6 +44,28 @@ def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
     return idx
 
 
+@njit(cache=True, fastmath=True)
+def find_nearest_sorted_idx_vect(array: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """Find the indices of the closest values in a sorted array (vectorized)."""
+    if len(array) == 0:
+        msg = "Array must not be empty"
+        raise ValueError(msg)
+
+    n = len(array)
+    idxs = np.searchsorted(array, values, side="left")
+    # Prepare output array
+    out = np.empty(len(values), dtype=np.int64)
+    for i in range(len(values)):
+        idx = idxs[i]
+        if idx > 0 and (
+            idx == n or abs(values[i] - array[idx - 1]) <= abs(values[i] - array[idx])
+        ):
+            out[i] = idx - 1
+        else:
+            out[i] = idx
+    return out
+
+
 # Note: no cache=True here, as it is not supported by numba
 @njit(fastmath=True)
 def np_apply_along_axis(func1d: Callable, axis: int, arr: np.ndarray) -> np.ndarray:
@@ -130,6 +152,73 @@ def cartesian_prod(arrays: np.ndarray) -> np.ndarray:
         for jj in range(1, arrays[kk].size):
             out[jj * mm : (jj + 1) * mm, kk + 1 :] = out[0:mm, kk + 1 :]
     return out
+
+
+@njit(cache=True, fastmath=True)
+def cartesian_prod_padded(
+    padded_arrays: np.ndarray,
+    actual_counts: np.ndarray,
+    n_batch: int,
+    nparams: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Cartesian product of padded arrays with actual counts.
+
+    Parameters
+    ----------
+    padded_arrays : np.ndarray
+        Padded arrays. Shape: (n_batch, nparams, MAX_BRANCH_VALS).
+    actual_counts : np.ndarray
+        Actual counts. Shape: (n_batch, nparams).
+    n_batch : int
+        Number of batches.
+    nparams : int
+        Number of parameters.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        The Cartesian product of the padded values with the actual counts.
+    """
+    items_per_batch = np.zeros(n_batch, dtype=np.int64)
+
+    # First pass: Calculate total items and items per batch
+    total_items = 0
+    for i in range(n_batch):
+        count_i = 1
+        for j in range(nparams):
+            count_i *= actual_counts[i, j]
+        items_per_batch[i] = count_i
+        total_items += count_i
+    cart_prod = np.empty((total_items, nparams), dtype=padded_arrays.dtype)
+    origins = np.empty(total_items, dtype=np.int64)
+
+    # Second pass: Generate combinations and fill arrays
+    current_row_idx = 0
+    for i in range(n_batch):
+        num_items_i = items_per_batch[i]
+        origins[current_row_idx : current_row_idx + num_items_i] = i
+        # Generate Cartesian product for item 'i'
+        indices = np.zeros(nparams, dtype=np.int64)
+        item_row_idx = 0
+        while item_row_idx < num_items_i:
+            for k in range(nparams):
+                param_idx = indices[k]
+                cart_prod[current_row_idx + item_row_idx, k] = padded_arrays[
+                    i,
+                    k,
+                    param_idx,
+                ]
+            item_row_idx += 1
+
+            # Odometer increment
+            for k in range(nparams - 1, -1, -1):
+                max_idx_k = actual_counts[i, k] - 1
+                if indices[k] < max_idx_k:
+                    indices[k] += 1
+                    break  # Move to next combination
+                indices[k] = 0  # Reset current param index and carry over
+        current_row_idx += num_items_i
+    return cart_prod, origins
 
 
 def cartesian_prod_np(arr_list: list[np.ndarray]) -> np.ndarray:

@@ -129,6 +129,28 @@ class SuggestionStruct(structref.StructRefProxy):
         """Add a suggestion to the struct if there is space."""
         return add_func(self, param_set, fold, score, backtrack)
 
+    def add_batch(
+        self,
+        param_sets_batch: np.ndarray,
+        folds_batch: np.ndarray,
+        scores_batch: np.ndarray,
+        backtracks_batch: np.ndarray,
+        current_threshold: float,
+    ) -> float:
+        """Add a batch of suggestions to the struct.
+
+        If the buffer is full, it will be trimmed and the threshold will be updated.
+
+        """
+        return add_batch_func(
+            self,
+            param_sets_batch,
+            folds_batch,
+            scores_batch,
+            backtracks_batch,
+            current_threshold,
+        )
+
     def trim_threshold(self) -> float:
         """Trim the suggestions to the threshold."""
         return trim_threshold_func(self)
@@ -151,10 +173,10 @@ class SuggestionStruct(structref.StructRefProxy):
 
 
 fields_suggestion_struct = [
-    ("param_sets", types.f8[:, :, :]),
-    ("folds", types.f4[:, :, :]),
+    ("param_sets", types.f8[:, :, ::1]),
+    ("folds", types.f4[:, :, ::1]),
     ("scores", types.f4[:]),
-    ("backtracks", types.i4[:, :]),
+    ("backtracks", types.i4[:, ::1]),
     ("valid_size", types.int64),
     ("size", types.int64),
 ]
@@ -210,7 +232,8 @@ def get_best_func(self: SuggestionStruct) -> tuple[np.ndarray, np.ndarray, float
 @njit(cache=True, fastmath=True)
 def get_transformed_func(self: SuggestionStruct, delta_t: float) -> np.ndarray:
     # Exclude last two rows
-    return psr_utils.shift_params_batch(self.param_sets[:, :-2, :], delta_t)
+    trans_params, _ = psr_utils.shift_params_batch(self.param_sets[:, :-2, :], delta_t)
+    return trans_params
 
 
 @njit(cache=True, fastmath=True)
@@ -230,6 +253,49 @@ def add_func(
     self.backtracks[pos] = backtrack
     self.valid_size += 1
     return True
+
+
+@njit(cache=True, fastmath=True)
+def add_batch_func(
+    self: SuggestionStruct,
+    param_sets_batch: np.ndarray,
+    folds_batch: np.ndarray,
+    scores_batch: np.ndarray,
+    backtracks_batch: np.ndarray,
+    current_threshold: float,
+) -> float:
+    num_to_add = len(scores_batch)
+    if num_to_add == 0:
+        return current_threshold
+    effective_threshold = current_threshold
+
+    # Start with all candidates
+    mask = scores_batch >= effective_threshold
+    idxs = np.where(mask)[0]
+
+    while len(idxs) > 0:
+        space_left = self.size - self.valid_size
+        if space_left == 0:
+            # Buffer is full, try to trim
+            new_threshold_from_trim = self.trim_threshold()
+            effective_threshold = max(effective_threshold, new_threshold_from_trim)
+            # Re-filter after new threshold
+            mask = scores_batch >= effective_threshold
+            idxs = np.where(mask)[0]
+            continue  # Try again with new threshold
+
+        n_to_add = min(len(idxs), space_left)
+        pos = self.valid_size
+        # Batched assignment
+        self.param_sets[pos : pos + n_to_add] = param_sets_batch[idxs[:n_to_add]]
+        self.folds[pos : pos + n_to_add] = folds_batch[idxs[:n_to_add]]
+        self.scores[pos : pos + n_to_add] = scores_batch[idxs[:n_to_add]]
+        self.backtracks[pos : pos + n_to_add] = backtracks_batch[idxs[:n_to_add]]
+        self.valid_size += n_to_add
+
+        # Remove added candidates from idxs
+        idxs = idxs[n_to_add:]
+    return effective_threshold
 
 
 @njit(cache=True, fastmath=True)
@@ -353,6 +419,35 @@ def ol_add_func(
         backtrack: np.ndarray,
     ) -> bool:
         return add_func(self, param_set, fold, score, backtrack)
+
+    return impl
+
+
+@overload_method(SuggestionStructTemplate, "add_batch")
+def ol_add_batch_func(
+    self: SuggestionStruct,
+    param_sets_batch: np.ndarray,
+    folds_batch: np.ndarray,
+    scores_batch: np.ndarray,
+    backtracks_batch: np.ndarray,
+    current_threshold: float,
+) -> types.FunctionType:
+    def impl(
+        self: SuggestionStruct,
+        param_sets_batch: np.ndarray,
+        folds_batch: np.ndarray,
+        scores_batch: np.ndarray,
+        backtracks_batch: np.ndarray,
+        current_threshold: float,
+    ) -> float:
+        return add_batch_func(
+            self,
+            param_sets_batch,
+            folds_batch,
+            scores_batch,
+            backtracks_batch,
+            current_threshold,
+        )
 
     return impl
 

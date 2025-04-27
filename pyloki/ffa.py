@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
+from numba import typed
 
 from pyloki.core import FFASearchDPFuncts, set_ffa_load_func, unify_fold
 from pyloki.utils import np_utils
@@ -135,7 +136,8 @@ class DynamicProgramming:
         self._check_init_param_arr(param_arr)
 
         # Initialize the fold structure and reshape to correct dimensions
-        fold = self.dp_funcs.init(self.ts_data.ts_e, self.ts_data.ts_v, param_arr)
+        param_arr_t = typed.List(param_arr)
+        fold = self.dp_funcs.init(self.ts_data.ts_e, self.ts_data.ts_v, param_arr_t)
         fold = np.expand_dims(fold, axis=list(range(1, self.cfg.nparams)))
         fold = self.dp_funcs.pack(fold, self.ffa_level)
 

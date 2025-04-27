@@ -70,7 +70,6 @@ def poly_taylor_step_f(
     float
         Optimal frequency and its derivative step size in reverse order.
     """
-    dparams_f = np.zeros(nparams, dtype=np.float64)
     dphi = tol_bins / fold_bins
     k = np.arange(nparams)
     dparams_f = dphi * maths.fact(k + 1) / (tobs - t_ref) ** (k + 1)
@@ -86,11 +85,28 @@ def poly_taylor_step_d(
     f_max: float,
     t_ref: float = 0,
 ) -> np.ndarray:
-    """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion."""
+    """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion (scalar)."""
     dparams_f = poly_taylor_step_f(nparams, tobs, fold_bins, tol_bins, t_ref)
     dparams = np.zeros(nparams, dtype=np.float64)
-    dparams[-1] = dparams_f[-1]
     dparams[:-1] = dparams_f[:-1] * C_VAL / f_max
+    dparams[-1] = dparams_f[-1]
+    return dparams
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_step_d_vec(
+    nparams: int,
+    tobs: float,
+    fold_bins: int,
+    tol_bins: float,
+    f_max: np.ndarray,
+    t_ref: float = 0,
+) -> np.ndarray:
+    """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion (vector)."""
+    dparams_f = poly_taylor_step_f(nparams, tobs, fold_bins, tol_bins, t_ref)
+    dparams = np.zeros((len(f_max), nparams), dtype=np.float64)
+    dparams[:, :-1] = dparams_f[:-1][np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
+    dparams[:, -1] = dparams_f[-1]
     return dparams
 
 
@@ -109,7 +125,7 @@ def split_f(
     return abs(df_old - df_new) * factor > tol_bins
 
 
-@njit
+@njit(cache=True, fastmath=True)
 def poly_taylor_shift_d(
     dparam_old: np.ndarray,
     dparam_new: np.ndarray,
@@ -124,6 +140,28 @@ def poly_taylor_shift_d(
     factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
     factors[:-1] *= f_cur / C_VAL
     return np.abs(dparam_old - dparam_new) * factors
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_shift_d_vec(
+    dparam_old: np.ndarray,
+    dparam_new: np.ndarray,
+    tobs_new: float,
+    fold_bins: int,
+    f_cur: np.ndarray,
+    t_ref: float = 0,
+) -> np.ndarray:
+    """Compute the bin shift for parameters {d_k,... d_2, f} (vector)."""
+    nbatch, nparams = dparam_old.shape
+    k = np.arange(nparams - 1, -1, -1)
+    factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
+    factors_broadcast = np.empty((nbatch, nparams), dtype=dparam_old.dtype)
+    for i in range(nbatch):
+        factors_broadcast[i, :] = factors
+    # For all but last param, scale by f_cur / C_VAL
+    scale = (f_cur / C_VAL)[:, np.newaxis]
+    factors_broadcast[:, :-1] *= scale
+    return np.abs(dparam_old - dparam_new) * factors_broadcast
 
 
 @njit
@@ -192,30 +230,35 @@ def shift_params(param_vec: np.ndarray, delta_t: float) -> tuple[np.ndarray, flo
 
 
 @njit(cache=True, fastmath=True)
-def shift_params_batch(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
+def shift_params_batch(
+    param_vec_batch: np.ndarray,
+    delta_t: float,
+) -> tuple[np.ndarray, np.ndarray]:
     """Specialized version of shift_params for batch processing.
 
     Parameters
     ----------
-    param_vec : np.ndarray
+    param_vec_batch : np.ndarray
         Parameter vector of shape (size, nparams, 2) at reference time t_i.
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
 
     Returns
     -------
-    np.ndarray
-        Array of transformed search parameters vector at the new reference time t_j.
+    tuple[np.ndarray, np.ndarray]
+        Array of transformed search parameters vector at the new reference time t_j
+        and the phase delay d.
     """
-    size, nparams, _ = param_vec.shape
-    dvec_cur = np.zeros((size, nparams + 1), dtype=param_vec.dtype)
+    size, nparams, _ = param_vec_batch.shape
+    dvec_cur = np.zeros((size, nparams + 1), dtype=param_vec_batch.dtype)
     # Copy till acceleration
-    dvec_cur[:, :-2] = param_vec[:, :-1, 0]
+    dvec_cur[:, :-2] = param_vec_batch[:, :-1, 0]
     dvec_new = shift_params_d(dvec_cur, delta_t)
-    param_vec_new = param_vec.copy()
+    param_vec_new = param_vec_batch.copy()
     param_vec_new[:, :-1, 0] = dvec_new[:, :-2]
-    param_vec_new[:, -1, 0] = param_vec[:, -1, 0] * (1 + dvec_new[:, -2] / C_VAL)
-    return param_vec_new
+    param_vec_new[:, -1, 0] = param_vec_batch[:, -1, 0] * (1 + dvec_new[:, -2] / C_VAL)
+    delay_rel = dvec_new[:, -1] / C_VAL
+    return param_vec_new, delay_rel
 
 
 @njit(cache=True, fastmath=True)
@@ -274,6 +317,54 @@ def branch_param(
     param_arr_new = np.linspace(param_cur - half_range, param_cur + half_range, n)[1:-1]
     dparam_new_actual = dparam_cur / (n - 2)
     return param_arr_new, dparam_new_actual
+
+
+@njit(cache=True, fastmath=True)
+def branch_param_padded(
+    out_values: np.ndarray,  # Slice to write into (shape MAX_BRANCH_VALS,)
+    param_cur: float,
+    dparam_cur: float,
+    dparam_new: float,
+    param_min: float = -np.inf,
+    param_max: float = np.inf,
+) -> tuple[float, int]:
+    count = 0
+    dparam_new_actual = dparam_new  # Default if no branching occurs or edge cases
+    if dparam_cur <= 0 or dparam_new <= 0:
+        msg = "Both dparam_cur and dparam_new must be positive."
+        raise ValueError(msg)
+    if param_cur < param_min or param_cur > param_max:
+        msg = f"param_cur must be within [param_min, param_max], got {param_cur}."
+        raise ValueError(msg)
+    if dparam_new > (param_max - param_min) / 2:
+        # If the desired new step size is too large, return the current value
+        out_values[0] = param_cur
+        dparam_new_actual = dparam_cur
+        return dparam_new_actual, 1
+    n = 2 + int(np.ceil(dparam_cur / dparam_new))
+    num_points = n - 2  # Actual number of branched points to generate
+    if num_points <= 0:
+        msg = "Invalid input: ensure dparam_cur > dparam_new."
+        raise ValueError(msg)
+    # Calculate the actual branched values
+    # 0.5 < confidence_const < 1
+    confidence_const = 0.5 * (1 + 1 / num_points)
+    half_range = confidence_const * dparam_cur
+    start = param_cur - half_range
+    stop = param_cur + half_range
+    num_intervals = n - 1
+    step = (stop - start) / num_intervals
+
+    # Generate points and fill the start of the padded array
+    current_val = start + step
+    count = min(num_points, len(out_values))
+    for i in range(count):
+        out_values[i] = current_val
+        current_val += step
+
+    # Calculate actual dparam based on generated points
+    dparam_new_actual = dparam_cur / num_points
+    return dparam_new_actual, count
 
 
 @njit(cache=True, fastmath=True)

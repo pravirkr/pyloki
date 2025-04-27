@@ -314,6 +314,7 @@ class PulsarSearchConfig:
         default=0,
         validator=[attrs.validators.instance_of((int, np.integer)), _is_power_of_two],
     )
+    branch_max: int = attrs.field(default=16, validator=attrs.validators.gt(10))
 
     @param_limits.validator
     def _param_limits_validator(

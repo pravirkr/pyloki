@@ -302,7 +302,7 @@ class PruneResultWriter:
 
     def write_run_results(
         self,
-        ref_seg: int,
+        run_name: str,
         scheme: np.ndarray,
         param_sets: np.ndarray,
         scores: np.ndarray,
@@ -311,7 +311,10 @@ class PruneResultWriter:
         if self.runs_group is None:
             msg = "No runs group found in the file."
             raise ValueError(msg)
-        run_group = self.runs_group.create_group(str(ref_seg))
+        if run_name in self.runs_group:
+            msg = f"Run name {run_name} already exists in the file."
+            raise ValueError(msg)
+        run_group = self.runs_group.create_group(run_name)
         level_stats, timer_stats = pstats.to_array()
         for name, data in [
             ("scheme", scheme),

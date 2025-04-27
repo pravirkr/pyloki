@@ -68,25 +68,81 @@ def load_folds_4d(fold: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndar
 @njit(cache=True, fastmath=True)
 def load_prune_folds_1d(fold: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
     """Fold shape: (nfreqs, 2, nbins)."""
-    return fold[param_idx[-1]]
+    # Single slice case: param_idx is 1D
+    if param_idx.ndim == 1:
+        return fold[param_idx[-1]]
+
+    # Batched case: param_idx is 2D
+    nbins = fold.shape[-1]
+    batch_size = param_idx.shape[0]
+    result = np.empty((batch_size, 2, nbins), dtype=fold.dtype)
+    for i in range(batch_size):
+        freq_idx = param_idx[i, -1]
+        for j in range(2):
+            for k in range(nbins):
+                result[i, j, k] = fold[freq_idx, j, k]
+    return result
 
 
 @njit(cache=True, fastmath=True)
 def load_prune_folds_2d(fold: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
     """Fold shape: (naccels, nfreqs, 2, nbins)."""
-    return fold[param_idx[-2], param_idx[-1]]
+    # Single slice case: param_idx is 1D
+    if param_idx.ndim == 1:
+        return fold[param_idx[-2], param_idx[-1]]
+
+    # Batched case: param_idx is 2D
+    nbins = fold.shape[-1]
+    batch_size = param_idx.shape[0]
+    result = np.empty((batch_size, 2, nbins), dtype=fold.dtype)
+    for i in range(batch_size):
+        accel_idx = param_idx[i, -2]
+        freq_idx = param_idx[i, -1]
+        for j in range(2):
+            for k in range(nbins):
+                result[i, j, k] = fold[accel_idx, freq_idx, j, k]
+
+    return result
 
 
 @njit(cache=True, fastmath=True)
 def load_prune_folds_3d(fold: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
     """Fold shape: (njerks, naccels, nfreqs, 2, nbins)."""
-    return fold[0, param_idx[-2], param_idx[-1]]
+    # Single slice case: param_idx is 1D
+    if param_idx.ndim == 1:
+        return fold[0, param_idx[-2], param_idx[-1]]
+
+    # Batched case: param_idx is 2D
+    nbins = fold.shape[-1]
+    batch_size = param_idx.shape[0]
+    result = np.empty((batch_size, 2, nbins), dtype=fold.dtype)
+    for i in range(batch_size):
+        accel_idx = param_idx[i, -2]
+        freq_idx = param_idx[i, -1]
+        for j in range(2):
+            for k in range(nbins):
+                result[i, j, k] = fold[0, accel_idx, freq_idx, j, k]
+    return result
 
 
 @njit(cache=True, fastmath=True)
 def load_prune_folds_4d(fold: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
     """Fold shape: (nsnap, njerks, naccels, nfreqs, 2, nbins)."""
-    return fold[0, 0, param_idx[-2], param_idx[-1]]
+    # Single slice case: param_idx is 1D
+    if param_idx.ndim == 1:
+        return fold[0, 0, param_idx[-2], param_idx[-1]]
+
+    # Batched case: param_idx is 2D
+    nbins = fold.shape[-1]
+    batch_size = param_idx.shape[0]
+    result = np.empty((batch_size, 2, nbins), dtype=fold.dtype)
+    for i in range(batch_size):
+        accel_idx = param_idx[i, -2]
+        freq_idx = param_idx[i, -1]
+        for j in range(2):
+            for k in range(nbins):
+                result[i, j, k] = fold[0, 0, accel_idx, freq_idx, j, k]
+    return result
 
 
 def set_ffa_load_func(
@@ -148,10 +204,31 @@ def pack(data: np.ndarray) -> np.ndarray:
     return data
 
 
-
 @njit(cache=True, fastmath=True)
 def shift(data: np.ndarray, phase_shift: int) -> np.ndarray:
     return np_utils.nb_roll(data, phase_shift, axis=-1)
+
+
+@njit(cache=True, fastmath=True)
+def shift_add_batch(
+    segment_batch: np.ndarray,
+    phase_shift_batch: np.ndarray,
+    folds: np.ndarray,
+    isuggest_batch: np.ndarray,
+) -> np.ndarray:
+    n_batch, n_comps, n_cols = segment_batch.shape
+    res = np.empty((n_batch, n_comps, n_cols), dtype=segment_batch.dtype)
+    for irow in range(n_batch):
+        shift = phase_shift_batch[irow] % n_cols
+        fold_row = folds[isuggest_batch[irow]]
+        src_idx = (-shift) % n_cols
+        for j in range(n_cols):
+            res[irow, 0, j] = fold_row[0, j] + segment_batch[irow, 0, src_idx]
+            res[irow, 1, j] = fold_row[1, j] + segment_batch[irow, 1, src_idx]
+            src_idx += 1
+            if src_idx == n_cols:
+                src_idx = 0
+    return res
 
 
 @njit(cache=True, fastmath=True)

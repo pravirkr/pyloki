@@ -161,6 +161,42 @@ def snr_score_func(
     return np.max(boxcar_snr_1d(fold, widths, 1.0))
 
 
+@njit("f4[::1](f4[:, :, ::1], i8[::1])", cache=True, fastmath=True, error_model="numpy")
+def snr_score_batch_func(
+    combined_res_batch: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Compute the SNR score for a batched folded suggestion."""
+    batch_size, _, nbins = combined_res_batch.shape
+    n_widths = len(widths)
+    max_width = np.max(widths)
+    prefix_sum = np.empty(nbins + max_width, dtype=np.float32)
+    scores = np.empty(batch_size, dtype=np.float32)
+    fold_norm = np.empty(nbins, dtype=np.float32)
+
+    for i in range(batch_size):
+        ts_e = combined_res_batch[i, 0, :]
+        ts_v = combined_res_batch[i, 1, :]
+        for j in range(nbins):
+            fold_norm[j] = ts_e[j] / np.sqrt(ts_v[j])
+        # Compute prefix sum
+        circular_prefix_sum(fold_norm, prefix_sum)
+        total_sum = prefix_sum[nbins - 1]
+
+        # Compute SNR for each width
+        max_snr = -np.finfo(np.float32).max
+        for iw in range(n_widths):
+            width = widths[iw]
+            size_w = nbins - width
+            height = np.sqrt(size_w / (nbins * width))
+            b = width * height / size_w
+            dmax = diff_max(prefix_sum[width : width + nbins], prefix_sum[:nbins])
+            snr = (height + b) * dmax - (b * total_sum)
+            max_snr = max(max_snr, snr)
+        scores[i] = max_snr
+    return scores
+
+
 class MatchedFilter:
     """Matched filter class for computing SNR for a folded suggestion.
 
@@ -354,7 +390,7 @@ def compute_snr_e_mat(
     snr = np.empty(len(shifts_per_template), dtype=np.float32)
     start = 0
     for i, n_shifts in enumerate(shifts_per_template):
-        end = start + n_shifts
+        end = start + int(n_shifts)
         snr[i] = np.max(projections[start:end]) / stdnoise
         start = end
     return snr

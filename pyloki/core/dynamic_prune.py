@@ -31,6 +31,7 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
         dparams: np.ndarray,
         tseg_ffa: float,
         poly_order: int = 3,
+        branch_max: int = 16,
     ) -> Self:
         """Create a new instance of PruneTaylorDPFuncts."""
         return prune_taylor_dp_functs_init(
@@ -43,6 +44,7 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
             dparams,
             tseg_ffa,
             poly_order,
+            branch_max,
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
@@ -56,12 +58,27 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
     ) -> tuple[np.ndarray, int]:
         return resolve_func(self, leaf, coord_add, coord_init)
 
+    def resolve_batch(
+        self,
+        leaf_batch: np.ndarray,
+        coord_add: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return resolve_batch_func(self, leaf_batch, coord_add, coord_init)
+
     def branch(
         self,
         param_set: np.ndarray,
         coord_cur: tuple[float, float],
     ) -> np.ndarray:
         return branch_func(self, param_set, coord_cur)
+
+    def branch_batch(
+        self,
+        param_set_batch: np.ndarray,
+        coord_cur: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_batch_func(self, param_set_batch, coord_cur)
 
     def suggest(
         self,
@@ -73,6 +90,9 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
     def score(self, combined_res: np.ndarray) -> float:
         return score_func(self, combined_res)
 
+    def score_batch(self, batch_combined_res: np.ndarray) -> np.ndarray:
+        return score_batch_func(self, batch_combined_res)
+
     def add(self, data0: np.ndarray, data1: np.ndarray) -> np.ndarray:
         return add_func(self, data0, data1)
 
@@ -81,6 +101,21 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
 
     def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
         return shift_func(self, data, phase_shift)
+
+    def shift_add_batch(
+        self,
+        segment_batch: np.ndarray,
+        phase_shift_batch: np.ndarray,
+        folds: np.ndarray,
+        isuggest_batch: np.ndarray,
+    ) -> np.ndarray:
+        return shift_add_batch_func(
+            self,
+            segment_batch,
+            phase_shift_batch,
+            folds,
+            isuggest_batch,
+        )
 
     def transform(
         self,
@@ -122,6 +157,7 @@ fields_prune_taylor_dp_funcs = [
     ("dparams", types.f8[:]),
     ("tseg_ffa", types.f8),
     ("poly_order", types.i8),
+    ("branch_max", types.i8),
 ]
 
 structref.define_boxing(PruneTaylorDPFunctsTemplate, PruneTaylorDPFuncts)
@@ -139,6 +175,7 @@ def prune_taylor_dp_functs_init(
     dparams: np.ndarray,
     tseg_ffa: float,
     poly_order: int,
+    branch_max: int,
 ) -> PruneTaylorDPFuncts:
     self = structref.new(PruneTaylorDPFunctsType)
     self.nbins = nbins
@@ -150,6 +187,7 @@ def prune_taylor_dp_functs_init(
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
     self.poly_order = poly_order
+    self.branch_max = branch_max
     return self
 
 
@@ -167,9 +205,25 @@ def resolve_func(
 ) -> tuple[np.ndarray, int]:
     return basic.poly_taylor_resolve(
         leaf,
-        self.param_arr,
         coord_add,
         coord_init,
+        self.param_arr,
+        self.nbins,
+    )
+
+
+@njit(cache=True, fastmath=True)
+def resolve_batch_func(
+    self: PruneTaylorDPFuncts,
+    leaf_batch: np.ndarray,
+    coord_add: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    return basic.poly_taylor_resolve_batch(
+        leaf_batch,
+        coord_add,
+        coord_init,
+        self.param_arr,
         self.nbins,
     )
 
@@ -187,6 +241,23 @@ def branch_func(
         self.tol_bins,
         self.poly_order,
         self.param_limits,
+    )
+
+
+@njit(cache=True, fastmath=True)
+def branch_batch_func(
+    self: PruneTaylorDPFuncts,
+    param_set_batch: np.ndarray,
+    coord_cur: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    return basic.poly_taylor_branch_batch(
+        param_set_batch,
+        coord_cur,
+        self.nbins,
+        self.tol_bins,
+        self.poly_order,
+        self.param_limits,
+        self.branch_max,
     )
 
 
@@ -212,6 +283,14 @@ def score_func(self: PruneTaylorDPFuncts, combined_res: np.ndarray) -> float:
 
 
 @njit(cache=True, fastmath=True)
+def score_batch_func(
+    self: PruneTaylorDPFuncts,
+    combined_res_batch: np.ndarray,
+) -> np.ndarray:
+    return scoring.snr_score_batch_func(combined_res_batch, self.score_widths)
+
+
+@njit(cache=True, fastmath=True)
 def add_func(
     self: PruneTaylorDPFuncts,
     data0: np.ndarray,
@@ -232,6 +311,22 @@ def shift_func(
     phase_shift: int,
 ) -> np.ndarray:
     return defaults.shift(data, phase_shift)
+
+
+@njit(cache=True, fastmath=True)
+def shift_add_batch_func(
+    self: PruneTaylorDPFuncts,
+    segment_batch: np.ndarray,
+    phase_shift_batch: np.ndarray,
+    folds: np.ndarray,
+    isuggest_batch: np.ndarray,
+) -> np.ndarray:
+    return defaults.shift_add_batch(
+        segment_batch,
+        phase_shift_batch,
+        folds,
+        isuggest_batch,
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -301,6 +396,24 @@ def ol_resolve_func(
     return impl
 
 
+@overload_method(PruneTaylorDPFunctsTemplate, "resolve_batch")
+def ol_resolve_batch_func(
+    self: PruneTaylorDPFuncts,
+    leaf_batch: np.ndarray,
+    coord_add: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PruneTaylorDPFuncts,
+        leaf_batch: np.ndarray,
+        coord_add: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return resolve_batch_func(self, leaf_batch, coord_add, coord_init)
+
+    return impl
+
+
 @overload_method(PruneTaylorDPFunctsTemplate, "branch")
 def ol_branch_func(
     self: PruneTaylorDPFuncts,
@@ -313,6 +426,22 @@ def ol_branch_func(
         coord_cur: tuple[float, float],
     ) -> np.ndarray:
         return branch_func(self, param_set, coord_cur)
+
+    return impl
+
+
+@overload_method(PruneTaylorDPFunctsTemplate, "branch_batch")
+def ol_branch_batch_func(
+    self: PruneTaylorDPFuncts,
+    param_set_batch: np.ndarray,
+    coord_cur: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PruneTaylorDPFuncts,
+        param_set_batch: np.ndarray,
+        coord_cur: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_batch_func(self, param_set_batch, coord_cur)
 
     return impl
 
@@ -340,6 +469,20 @@ def ol_score_func(
 ) -> types.FunctionType:
     def impl(self: PruneTaylorDPFuncts, combined_res: np.ndarray) -> float:
         return score_func(self, combined_res)
+
+    return impl
+
+
+@overload_method(PruneTaylorDPFunctsTemplate, "score_batch")
+def ol_score_batch_func(
+    self: PruneTaylorDPFuncts,
+    combined_res_batch: np.ndarray,
+) -> types.FunctionType:
+    def impl(
+        self: PruneTaylorDPFuncts,
+        combined_res_batch: np.ndarray,
+    ) -> np.ndarray:
+        return score_batch_func(self, combined_res_batch)
 
     return impl
 
@@ -380,6 +523,32 @@ def ol_shift_func(
         phase_shift: int,
     ) -> np.ndarray:
         return shift_func(self, data, phase_shift)
+
+    return impl
+
+
+@overload_method(PruneTaylorDPFunctsTemplate, "shift_add_batch")
+def ol_shift_add_batch_func(
+    self: PruneTaylorDPFuncts,
+    segment_batch: np.ndarray,
+    phase_shift_batch: np.ndarray,
+    folds: np.ndarray,
+    isuggest_batch: np.ndarray,
+) -> types.FunctionType:
+    def impl(
+        self: PruneTaylorDPFuncts,
+        segment_batch: np.ndarray,
+        phase_shift_batch: np.ndarray,
+        folds: np.ndarray,
+        isuggest_batch: np.ndarray,
+    ) -> np.ndarray:
+        return shift_add_batch_func(
+            self,
+            segment_batch,
+            phase_shift_batch,
+            folds,
+            isuggest_batch,
+        )
 
     return impl
 

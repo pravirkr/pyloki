@@ -193,7 +193,7 @@ class ScatteredPeriodogram:
     def n_runs(self) -> int:
         return self.data["run_id"].nunique()
 
-    def add_run(self, param_sets: np.ndarray, scores: np.ndarray, run_id: int) -> None:
+    def add_run(self, param_sets: np.ndarray, scores: np.ndarray, run_id: str) -> None:
         """Add a pruning run results to the existing dataframe.
 
         Parameters
@@ -202,7 +202,7 @@ class ScatteredPeriodogram:
             Parameter sets (n_sugg, n_params, 2).
         scores : np.ndarray
             Scores for each parameter set (n_sugg,).
-        run_id : int
+        run_id : str
             Unique Identifier for the specific run being added.
         """
         self._validate_inputs(param_sets, scores)
@@ -215,14 +215,14 @@ class ScatteredPeriodogram:
         run_df["run_id"] = run_id
         self.data = pd.concat([self.data, run_df], ignore_index=True)
 
-    def get_summary_cands(self, n: int = 10, run_id: int | None = None) -> str:
+    def get_summary_cands(self, n: int = 10, run_id: str | None = None) -> str:
         """Return top N candidates, optionally for a specific run.
 
         Parameters
         ----------
         n : int, optional
             Number of top candidates to return, by default 10.
-        run_id : int | None, optional
+        run_id : str | None, optional
             Unique identifier for a specific run, by default None.
 
         Returns
@@ -251,7 +251,7 @@ class ScatteredPeriodogram:
                 for p in self.param_names
             )
             summary.append(
-                f"Run: {row.run_id:03d}, S/N: {row.score:.2f}, {params_str}",
+                f"Run: {row.run_id}, S/N: {row.score:.2f}, {params_str}",
             )
         return "\n".join(summary)
 
@@ -259,7 +259,7 @@ class ScatteredPeriodogram:
         self,
         param_x: str,
         param_y: str,
-        run_id: int | None = None,
+        run_id: str | None = None,
         true_values: dict[str, float] | None = None,
         x_lim: tuple[float, float] | None = None,
         y_lim: tuple[float, float] | None = None,
@@ -318,7 +318,7 @@ class ScatteredPeriodogram:
     def plot_scores(
         self,
         kind: str = "scatter",
-        run_id: int | None = None,
+        run_id: str | None = None,
         figsize: tuple[float, float] = (7, 3.5),
         dpi: int = 100,
     ) -> plt.Figure:
@@ -417,10 +417,11 @@ class ScatteredPeriodogram:
                 raise ValueError(msg)
             param_names = list(f.attrs["param_names"])
             pgram = cls(param_names=param_names)
-            for run_id, run_group in f["runs"].items():
+            for run_id_str, run_group in f["runs"].items():
+                run_id = run_id_str.split("seg_")[-1]
                 param_sets = run_group["param_sets"][:]
                 scores = run_group["scores"][:]
-                pgram.add_run(param_sets, scores, int(run_id))
+                pgram.add_run(param_sets, scores, run_id)
         return pgram
 
     def _validate_inputs(self, param_sets: np.ndarray, scores: np.ndarray) -> None:
@@ -456,7 +457,7 @@ class ScatteredPeriodogram:
 
         for rid, stats in run_stats.iterrows():
             summary.append(
-                f"Run {rid:03d}: {int(stats['score']['count'])} candidates, "
+                f"Run {rid}: {int(stats['score']['count'])} candidates, "
                 f"max S/N: {stats['score']['max']:.2f}, "
                 f"min S/N: {stats['score']['min']:.2f}",
             )
@@ -474,14 +475,14 @@ class PruningStatsPlotter:
     def n_runs(self) -> int:
         return self.data["run_id"].nunique()
 
-    def add_run(self, level_stats: np.ndarray, run_id: int) -> None:
+    def add_run(self, level_stats: np.ndarray, run_id: str) -> None:
         """Add a pruning stats run results to the existing dataframe.
 
         Parameters
         ----------
         level_stats : np.ndarray
             Level statistics (n_levels, 9).
-        run_id : int
+        run_id : str
             Unique Identifier for the specific run being added.
         """
         if not isinstance(level_stats, np.ndarray):
@@ -494,12 +495,12 @@ class PruningStatsPlotter:
         run_df["run_id"] = run_id
         self.data = pd.concat([self.data, run_df], ignore_index=True)
 
-    def get_level_stats(self, run_id: int | None = None) -> pd.DataFrame:
+    def get_level_stats(self, run_id: str | None = None) -> pd.DataFrame:
         """Get level statistics for a specific run.
 
         Parameters
         ----------
-        run_id : int | None, optional
+        run_id : str | None, optional
             Unique identifier for a specific run, by default None.
 
         Returns
@@ -551,7 +552,7 @@ class PruningStatsPlotter:
                 msg = "Not a valid pruning results file"
                 raise ValueError(msg)
             pstats = cls()
-            for run_id, run_group in f["runs"].items():
+            for run_id_str, run_group in f["runs"].items():
                 level_stats = run_group["level_stats"][:]
-                pstats.add_run(level_stats, int(run_id))
+                pstats.add_run(level_stats, run_id_str)
         return pstats

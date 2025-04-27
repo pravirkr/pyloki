@@ -173,6 +173,153 @@ def pruning_iteration(
     return sugg_new, stats, timers
 
 
+@njit(cache=True, fastmath=True)
+def pruning_iteration_batched(
+    sugg: SuggestionStruct,
+    fold_segment: np.ndarray,
+    coord_init: tuple[float, float],
+    coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
+    coord_add: tuple[float, float],
+    coord_valid: tuple[float, float],
+    prune_funcs: DP_FUNCS_TYPE,
+    threshold: float,
+    load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    sugg_max: int = 2**18,
+    batch_size: int = 1024,
+) -> tuple[
+    SuggestionStruct,
+    types.DictType[str, float],
+    np.ndarray,
+]:
+    """Perform a single iteration of the pruning algorithm using batch processing."""
+    sugg_new = sugg.get_new(sugg_max)
+    n_leaves = 0
+    n_leaves_phy = 0
+    score_min = np.inf
+    score_max = -np.inf
+    timers = np.zeros(7, dtype=np.float32)
+    current_threshold = threshold
+
+    trans_matrix = prune_funcs.get_transform_matrix(coord_cur, coord_prev)
+    validation_check = False
+    if validation_check:
+        validation_params = prune_funcs.get_validation_params(coord_valid)
+
+    n_branches = sugg.valid_size
+    batch_size = max(1, min(batch_size, n_branches))
+
+    # Loop over branches in batches
+    for i_batch_start in range(0, n_branches, batch_size):
+        i_batch_end = min(i_batch_start + batch_size, n_branches)
+        cur_batch_indices = np.arange(i_batch_start, i_batch_end)
+
+        # Branching
+        t_start = nb_time_now()
+        batch_leaves, batch_leaf_origins = prune_funcs.branch_batch(
+            sugg.param_sets[i_batch_start:i_batch_end],
+            coord_cur,
+        )
+        n_leaves_batch = len(batch_leaves)
+        n_leaves += n_leaves_batch
+        timers[0] += nb_time_now() - t_start
+        if n_leaves_batch == 0:
+            continue
+
+        # Validation
+        t_start = nb_time_now()
+        if validation_check:
+            batch_leaves = prune_funcs.validate(
+                batch_leaves,
+                coord_valid,
+                validation_params,
+            )
+        n_leaves_batch = len(batch_leaves)
+        n_leaves_phy += n_leaves_batch
+        timers[1] += nb_time_now() - t_start
+
+        # Resolve
+        t_start = nb_time_now()
+        batch_param_idx, batch_phase_shift = prune_funcs.resolve_batch(
+            batch_leaves,
+            coord_add,
+            coord_init,
+        )
+        timers[2] += nb_time_now() - t_start
+
+        # Load, shift, add
+        t_start = nb_time_now()
+        batch_loaded_data = load_func(fold_segment, batch_param_idx)
+        # Map batch_leaf_origins (0 to current_batch_size-1) to global indices
+        isuggest_batch = cur_batch_indices[batch_leaf_origins]
+        batch_combined_res = prune_funcs.shift_add_batch(
+            batch_loaded_data,
+            batch_phase_shift,
+            sugg.folds,
+            isuggest_batch,
+        )
+        timers[3] += nb_time_now() - t_start
+
+        # Score
+        t_start = nb_time_now()
+        batch_scores = prune_funcs.score_batch(batch_combined_res)
+        if n_leaves_batch > 0:
+            score_min = min(score_min, np.min(batch_scores))
+            score_max = max(score_max, np.max(batch_scores))
+        timers[4] += nb_time_now() - t_start
+
+        # Thresholding & Filtering
+        t_start = nb_time_now()
+        passing_mask = batch_scores >= threshold
+        num_passing = np.sum(passing_mask)
+        if num_passing == 0:
+            timers[6] += nb_time_now() - t_start
+            continue
+
+        # Filter results needed for adding to sugg_new
+        filtered_indices = np.where(passing_mask)[0]
+        filtered_leaves = batch_leaves[filtered_indices]
+        filtered_scores = batch_scores[filtered_indices]
+        filtered_combined_res = batch_combined_res[filtered_indices]
+        timers[6] += nb_time_now() - t_start  # Part of time for Threshold step
+
+        # Transform & Backtrack
+        t_start = nb_time_now()
+        filtered_leaves_trans = prune_funcs.transform(
+            filtered_leaves,
+            coord_cur,
+            trans_matrix,
+        )
+        timers[5] += nb_time_now() - t_start
+
+        # Construct Backtrack & Add to sugg_new
+        t_start = nb_time_now()
+        n_add = len(filtered_scores)
+        bt_nparams = batch_param_idx.shape[1]
+        batch_backtrack = np.empty((n_add, sugg.backtracks.shape[1]), dtype=np.int32)
+        batch_backtrack[:, 0] = isuggest_batch[filtered_indices]
+        batch_backtrack[:, 1 : bt_nparams + 1] = batch_param_idx[filtered_indices]
+        batch_backtrack[:, -1] = batch_phase_shift[filtered_indices]
+        current_threshold = sugg_new.add_batch(
+            filtered_leaves_trans,
+            filtered_combined_res,
+            filtered_scores,
+            batch_backtrack,
+            current_threshold,
+        )
+        timers[6] += nb_time_now() - t_start
+
+    # Finalize
+    sugg_new = sugg_new.trim_empty()
+    stats = {
+        "n_leaves": float(n_leaves),
+        "n_leaves_phy": float(n_leaves_phy),
+        "score_min": score_min if np.isfinite(score_min) else 0.0,
+        "score_max": score_max if np.isfinite(score_max) else 0.0,
+    }
+    return sugg_new, stats, timers
+
+
 class Pruning:
     """A class to perform the pruning algorithm on the FFA search results.
 
@@ -199,12 +346,14 @@ class Pruning:
         dyp: DynamicProgramming,
         threshold_scheme: np.ndarray,
         max_sugg: int = 2**17,
+        batch_size: int = 1024,
         kind: str = "taylor",
         logger: logging.Logger | None = None,
     ) -> None:
         self._dyp = dyp
         self._threshold_scheme = threshold_scheme
         self._max_sugg = max_sugg
+        self._batch_size = batch_size
         self._setup_pruning(kind)
         self._logger = logger or get_logger(__name__)
 
@@ -219,6 +368,10 @@ class Pruning:
     @property
     def max_sugg(self) -> int:
         return self._max_sugg
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
 
     @property
     def prune_funcs(self) -> DP_FUNCS_TYPE:
@@ -369,11 +522,13 @@ class Pruning:
         shared_progress: DictProxy | None = None,
         task_id: int | None = None,
     ) -> None:
+        run_name = f"{ref_seg:03d}_{task_id:02d}"
+
         if log_file is None:
-            log_file = Path(outdir) / f"tmp_{ref_seg:03d}_log.txt"
+            log_file = Path(outdir) / f"tmp_{run_name}_log.txt"
             log_file.touch()
         if result_file is None:
-            result_file = Path(outdir) / f"tmp_{ref_seg:03d}_results.h5"
+            result_file = Path(outdir) / f"tmp_{run_name}_results.h5"
         with log_file.open("a") as f:
             f.write(f"Pruning log for ref segment: {ref_seg}\n")
         with Timer(name="prune_initialize", logger=self.logger.info):
@@ -392,7 +547,7 @@ class Pruning:
         delta_t = self.scheme.get_delta(self.prune_level)
         with PruneResultWriter(result_file, mode="a") as writer:
             writer.write_run_results(
-                ref_seg,
+                run_name,
                 self.scheme.data,
                 self.suggestion.get_transformed(delta_t),
                 self.suggestion.scores,
@@ -418,7 +573,7 @@ class Pruning:
         coord_prev = self.scheme.get_coord(self.prune_level - 1)
         coord_add = self.scheme.get_seg_coord(self.prune_level)
         coord_valid = self.scheme.get_valid(self.prune_level)
-        suggestion, stats_dict, timers = pruning_iteration(
+        suggestion, stats_dict, timers = pruning_iteration_batched(
             self.suggestion,
             fold_segment,
             coord_init,
@@ -430,6 +585,7 @@ class Pruning:
             threshold,
             self.load_func,
             self.max_sugg,
+            self.batch_size,
         )
         pstats_cur = PruneStats(
             level=self.prune_level,
@@ -483,6 +639,7 @@ class Pruning:
                 self.dyp.dparams_limited,
                 self.dyp.tseg,
                 self.dyp.cfg.prune_poly_order,
+                self.dyp.cfg.branch_max,
             )
         elif kind == "chebyshev":
             self._prune_funcs = PicklableStructRefWrapper[PruneChebyshevDPFuncts](
@@ -507,13 +664,21 @@ def _prune_dyp_seg(
     log_queue: Queue,
     outdir: str = "./",
     max_sugg: int = 2**18,
+    batch_size: int = 1024,
     kind: str = "taylor",
     log_file: Path | None = None,
     result_file: Path | None = None,
 ) -> None:
     """Execute the pruning for multiprocessing."""
     logger = get_worker_logger(f"worker_{ref_seg:03d}", log_queue=log_queue)
-    prn = Pruning(dyp, threshold_scheme, max_sugg=max_sugg, kind=kind, logger=logger)
+    prn = Pruning(
+        dyp,
+        threshold_scheme,
+        max_sugg=max_sugg,
+        batch_size=batch_size,
+        kind=kind,
+        logger=logger,
+    )
     prn.execute(
         ref_seg,
         outdir=outdir,
@@ -526,9 +691,11 @@ def _prune_dyp_seg(
 
 def prune_dyp_tree(
     dyp: DynamicProgramming,
-    ref_segs: list[int],
     threshold_scheme: np.ndarray,
+    n_runs: int | None = None,
+    ref_segs: list[int] | None = None,
     max_sugg: int = 2**18,
+    batch_size: int = 1024,
     outdir: str = "./",
     file_prefix: str = "test",
     kind: str = "taylor",
@@ -547,8 +714,16 @@ def prune_dyp_tree(
     if log_file.exists() or result_file.exists():
         msg = f"Output files already exist: {log_file}, {result_file}"
         raise FileExistsError(msg)
-    if ref_segs is None:
-        ref_segs = np.arange(0, dyp.nsegments, dyp.nsegments // 16)
+    # n_runs takes precedence over ref_segs
+    if n_runs is not None:
+        if not 1 <= n_runs <= dyp.nsegments:
+            msg = f"n_runs must be between 1 and {dyp.nsegments}, got {n_runs}"
+            raise ValueError(msg)
+        ref_segs = list(np.linspace(0, dyp.nsegments - 1, n_runs, dtype=int))
+    elif ref_segs is None:
+        msg = "Either n_runs or ref_segs must be provided"
+        raise ValueError(msg)
+
     logger.info(f"Starting Pruning for {len(ref_segs)} runs, with {n_workers} workers")
     log_file.write_text("Pruning log\n")
     with PruneResultWriter(result_file) as writer:
@@ -563,6 +738,7 @@ def prune_dyp_tree(
             dyp,
             threshold_scheme,
             max_sugg=max_sugg,
+            batch_size=batch_size,
             kind=kind,
             logger=logger,
         )
@@ -572,6 +748,7 @@ def prune_dyp_tree(
                 outdir=outdir,
                 log_file=log_file,
                 result_file=result_file,
+                task_id=0,
             )
     else:
         with (
@@ -599,6 +776,7 @@ def prune_dyp_tree(
                     log_queue,
                     outdir,
                     max_sugg,
+                    batch_size,
                     kind,
                 )
                 futures_to_seg[future] = ref_seg

@@ -165,3 +165,41 @@ def get_leaves(param_arr: types.ListType, dparams: np.ndarray) -> np.ndarray:
     param_mat = np.expand_dims(param_cart, axis=2)
     dparams_set = np.broadcast_to(np.expand_dims(dparams, 1), param_mat.shape)
     return np.concatenate((param_mat, dparams_set), axis=2)
+
+
+@njit(cache=True, fastmath=True)
+def get_leaves_opt(
+    param_arr: types.ListType,
+    dparams: np.ndarray,
+) -> np.ndarray:
+    nparams = len(param_arr)
+    shapes = np.empty(nparams, dtype=np.int64)
+    for i in range(nparams):
+        shapes[i] = len(param_arr[i])
+    total_size = np.prod(shapes)
+    leaves_taylor = np.empty((total_size, nparams, 2), dtype=np.float64)
+
+    if total_size == 0:
+        return leaves_taylor  # Return empty array if no leaves
+
+    # Fill column 1 (dparams) - this is constant for each parameter across leaves
+    for j in range(nparams):
+        leaves_taylor[:, j, 1] = dparams[j]
+
+    # Fill column 0 (parameter values) using Cartesian product logic
+    # Similar logic to the optimized cartesian_prod, but fills directly
+    elements_per_cycle = np.empty(nparams, dtype=np.int64)
+    elements_in_block = total_size
+
+    for i in range(nparams - 1, -1, -1):
+        elements_in_block //= shapes[i]
+        elements_per_cycle[i] = elements_in_block
+
+    for i in range(total_size):
+        for j in range(nparams):
+            arr = param_arr[j]
+            # Calculate index within the specific parameter's array
+            idx = (i // elements_per_cycle[j]) % shapes[j]
+            leaves_taylor[i, j, 0] = arr[idx]
+
+    return leaves_taylor
