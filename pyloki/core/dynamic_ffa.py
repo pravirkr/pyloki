@@ -8,7 +8,7 @@ from numba import njit, prange, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
-from pyloki.core import basic, defaults
+from pyloki.core import common, taylor
 from pyloki.utils.timing import Timer
 
 if TYPE_CHECKING:
@@ -108,7 +108,7 @@ def init_func(
     ts_v: np.ndarray,
     param_arr: types.ListType[types.Array],
 ) -> np.ndarray:
-    return basic.ffa_init(
+    return taylor.ffa_taylor_init(
         ts_e,
         ts_v,
         param_arr,
@@ -127,7 +127,7 @@ def resolve_func(
     latter: int,
 ) -> tuple[np.ndarray, int]:
     tseg_brute = self.bseg_brute * self.tsamp
-    return basic.ffa_resolve(
+    return taylor.ffa_taylor_resolve(
         pset_cur,
         parr_prev,
         ffa_level,
@@ -143,12 +143,12 @@ def add_func(
     data_tail: np.ndarray,
     data_head: np.ndarray,
 ) -> np.ndarray:
-    return defaults.add(data_tail, data_head)
+    return common.add(data_tail, data_head)
 
 
 @njit(cache=True, fastmath=True)
 def pack_func(self: FFASearchDPFuncts, data: np.ndarray, ffa_level: int) -> np.ndarray:
-    return defaults.pack(data)
+    return common.pack(data)
 
 
 @njit(cache=True, fastmath=True)
@@ -157,7 +157,7 @@ def shift_func(
     data: np.ndarray,
     phase_shift: int,
 ) -> np.ndarray:
-    return defaults.shift(data, phase_shift)
+    return common.shift(data, phase_shift)
 
 
 @overload_method(FFASearchDPFunctsTemplate, "init")

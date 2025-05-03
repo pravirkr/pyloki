@@ -10,7 +10,7 @@ from pyloki.utils.suggestion import SuggestionStruct
 
 
 @njit(cache=True, fastmath=True)
-def ffa_init(
+def ffa_taylor_init(
     ts_e: np.ndarray,
     ts_v: np.ndarray,
     param_arr: types.ListType[types.Array],
@@ -55,7 +55,7 @@ def ffa_init(
 
 
 @njit(cache=True, fastmath=True)
-def ffa_resolve(
+def ffa_taylor_resolve(
     pset_cur: np.ndarray,
     param_arr: types.ListType[types.Array],
     ffa_level: int,

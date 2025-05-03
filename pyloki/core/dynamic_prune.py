@@ -8,7 +8,7 @@ from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
-from pyloki.core import basic, defaults
+from pyloki.core import common, taylor
 from pyloki.detection import scoring
 
 if TYPE_CHECKING:
@@ -203,7 +203,7 @@ def resolve_func(
     coord_add: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> tuple[np.ndarray, int]:
-    return basic.poly_taylor_resolve(
+    return taylor.poly_taylor_resolve(
         leaf,
         coord_add,
         coord_init,
@@ -219,7 +219,7 @@ def resolve_batch_func(
     coord_add: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    return basic.poly_taylor_resolve_batch(
+    return taylor.poly_taylor_resolve_batch(
         leaf_batch,
         coord_add,
         coord_init,
@@ -234,7 +234,7 @@ def branch_func(
     param_set: np.ndarray,
     coord_cur: tuple[float, float],
 ) -> np.ndarray:
-    return basic.poly_taylor_branch(
+    return taylor.poly_taylor_branch(
         param_set,
         coord_cur,
         self.nbins,
@@ -250,7 +250,7 @@ def branch_batch_func(
     param_set_batch: np.ndarray,
     coord_cur: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    return basic.poly_taylor_branch_batch(
+    return taylor.poly_taylor_branch_batch(
         param_set_batch,
         coord_cur,
         self.nbins,
@@ -267,7 +267,7 @@ def suggest_func(
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
 ) -> SuggestionStruct:
-    return basic.poly_taylor_suggest(
+    return taylor.poly_taylor_suggest(
         fold_segment,
         coord_init,
         self.param_arr,
@@ -296,12 +296,12 @@ def add_func(
     data0: np.ndarray,
     data1: np.ndarray,
 ) -> np.ndarray:
-    return defaults.add(data0, data1)
+    return common.add(data0, data1)
 
 
 @njit(cache=True, fastmath=True)
 def pack_func(self: PruneTaylorDPFuncts, data: np.ndarray) -> np.ndarray:
-    return defaults.pack(data)
+    return common.pack(data)
 
 
 @njit(cache=True, fastmath=True)
@@ -310,7 +310,7 @@ def shift_func(
     data: np.ndarray,
     phase_shift: int,
 ) -> np.ndarray:
-    return defaults.shift(data, phase_shift)
+    return common.shift(data, phase_shift)
 
 
 @njit(cache=True, fastmath=True)
@@ -321,7 +321,7 @@ def shift_add_batch_func(
     folds: np.ndarray,
     isuggest_batch: np.ndarray,
 ) -> np.ndarray:
-    return defaults.shift_add_batch(
+    return common.shift_add_batch(
         segment_batch,
         phase_shift_batch,
         folds,
@@ -345,7 +345,7 @@ def get_transform_matrix_func(
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
 ) -> np.ndarray:
-    return defaults.get_trans_matrix(coord_cur, coord_prev)
+    return common.get_trans_matrix(coord_cur, coord_prev)
 
 
 @njit(cache=True, fastmath=True)
@@ -363,7 +363,7 @@ def get_validation_params_func(
     self: PruneTaylorDPFuncts,
     coord_add: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    return defaults.get_validation_params(coord_add)
+    return common.get_validation_params(coord_add)
 
 
 @overload_method(PruneTaylorDPFunctsTemplate, "load")

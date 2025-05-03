@@ -172,7 +172,11 @@ def period_step(tobs: float, nbins: int, p_min: float, tol: float) -> float:
 
 
 @njit(cache=True, fastmath=True)
-def shift_params_d(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
+def shift_params_d(
+    param_vec: np.ndarray,
+    delta_t: float,
+    n_out: int = 3,
+) -> np.ndarray:
     """Shift the kinematic taylor parameters to a new reference time.
 
     Parameters
@@ -183,16 +187,21 @@ def shift_params_d(param_vec: np.ndarray, delta_t: float) -> np.ndarray:
         and n is the number of parameters.
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
+    n_out : int, optional
+        Number of output parameters from end, by default 3.
 
     Returns
     -------
     np.ndarray
         Parameter vector at the new reference time t_j.
+        Shape is (..., n_out).
     """
     nparams = param_vec.shape[-1]
+    n_out = min(n_out, nparams)
     powers = np.tril(np.arange(nparams)[:, np.newaxis] - np.arange(nparams))
     # Calculate the transformation matrix (taylor coefficients)
     t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
+    t_mat = t_mat[-n_out:]
     # transform each vector in correct shape: np.dot(t_mat, param_vec)
     return param_vec @ t_mat.T
 
@@ -221,7 +230,7 @@ def shift_params(param_vec: np.ndarray, delta_t: float) -> tuple[np.ndarray, flo
     dvec_cur = np.zeros(nparams + 1, dtype=param_vec.dtype)
     # Copy till acceleration
     dvec_cur[:-2] = param_vec[:-1]
-    dvec_new = shift_params_d(dvec_cur, delta_t)
+    dvec_new = shift_params_d(dvec_cur, delta_t, n_out=nparams + 1)
     param_vec_new = param_vec.copy()
     param_vec_new[:-1] = dvec_new[:-2]
     param_vec_new[-1] = param_vec[-1] * (1 + dvec_new[-2] / C_VAL)
@@ -253,12 +262,130 @@ def shift_params_batch(
     dvec_cur = np.zeros((size, nparams + 1), dtype=param_vec_batch.dtype)
     # Copy till acceleration
     dvec_cur[:, :-2] = param_vec_batch[:, :-1, 0]
-    dvec_new = shift_params_d(dvec_cur, delta_t)
+    dvec_new = shift_params_d(dvec_cur, delta_t, n_out=nparams + 1)
     param_vec_new = param_vec_batch.copy()
     param_vec_new[:, :-1, 0] = dvec_new[:, :-2]
     param_vec_new[:, -1, 0] = param_vec_batch[:, -1, 0] * (1 + dvec_new[:, -2] / C_VAL)
     delay_rel = dvec_new[:, -1] / C_VAL
     return param_vec_new, delay_rel
+
+
+@njit(cache=True, fastmath=True)
+def shift_params_circular_batch(
+    param_vec_batch: np.ndarray,
+    delta_t: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Specialized version of shift_params for circular orbit batch processing.
+
+    Parameters
+    ----------
+    param_vec_batch : np.ndarray
+        Parameter vector of shape (size, nparams, 2) at reference time t_i.
+    delta_t : float
+        The time difference (t_j - t_i) to shift the parameters by.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Array of transformed search parameters vector at the new reference time t_j
+        and the phase delay d.
+    """
+    size, nparams, _ = param_vec_batch.shape
+    if nparams != 4:
+        msg = "4 parameters are needed for circular orbit resolve."
+        raise ValueError(msg)
+    minus_omega_sq = param_vec_batch[:, 0, 0] / param_vec_batch[:, 2, 0]
+    omega_batch = np.sqrt(-minus_omega_sq)
+    required_orders = np.minimum(
+        (omega_batch * delta_t * np.e + 10).astype(np.int32),
+        100,
+    )
+    max_required_order = np.max(required_orders)
+
+    dvec_cur = np.zeros((size, max_required_order + 1), dtype=param_vec_batch.dtype)
+    # Copy till acceleration
+    dvec_cur[:, -5:-2] = param_vec_batch[:, :-1, 0]
+    # Now fill all the higher order derivatives
+    for i in range(size):
+        req_order = required_orders[i]
+        # Fill higher order derivatives for this set only up to its required_order
+        powers = np.arange(5, req_order + 1)
+        even_mask = powers % 2 == 0
+        odd_mask = ~even_mask
+        if np.any(even_mask):
+            even_powers = powers[even_mask]
+            even_exps = (even_powers - 2) // 2
+            even_coefs = (minus_omega_sq[i] ** even_exps) * param_vec_batch[i, 2, 0]
+            dvec_cur[i, -even_powers - 1] = even_coefs
+
+        if np.any(odd_mask):
+            odd_powers = powers[odd_mask]
+            odd_exps = (odd_powers - 3) // 2
+            odd_coefs = (minus_omega_sq[i] ** odd_exps) * param_vec_batch[i, 1, 0]
+            dvec_cur[i, -odd_powers - 1] = odd_coefs
+
+    dvec_new = shift_params_d(dvec_cur, delta_t, n_out=nparams)
+    param_vec_new = param_vec_batch.copy()
+    param_vec_new[:, :-1, 0] = dvec_new[:, :-2]
+    param_vec_new[:, -1, 0] = param_vec_batch[:, -1, 0] * (1 + dvec_new[:, -2] / C_VAL)
+    delay_rel = dvec_new[:, -1] / C_VAL
+    return param_vec_new, delay_rel
+
+
+@njit(cache=True, fastmath=True)
+def convert_taylor_to_circular(param_sets: np.ndarray) -> np.ndarray:
+    """Convert the Taylor parameters to circular parameters.
+
+    Parameters
+    ----------
+    param_sets : np.ndarray
+        The Taylor parameters to convert. Shape is (nparams, 2).
+        params: [snap, jerk, accel, freq]
+        dparams: [dsnap, djerk, daccel, dfreq]
+
+    Returns
+    -------
+    np.ndarray
+        The circular parameters. Shape is (nparams, 2).
+        params: [omega, freq, x_cos_phi, x_sin_phi]
+        dparams: [domega, dfreq, dx_cos_phi, dx_sin_phi]
+    """
+    snap, jerk, accel, freq = (
+        param_sets[:, 0, 0],
+        param_sets[:, 1, 0],
+        param_sets[:, 2, 0],
+        param_sets[:, 3, 0],
+    )
+    dsnap, djerk, daccel, dfreq = (
+        param_sets[:, 0, 1],
+        param_sets[:, 1, 1],
+        param_sets[:, 2, 1],
+        param_sets[:, 3, 1],
+    )
+    omega_sq = -snap / accel
+    out = np.empty_like(param_sets)
+    out[:, 0, 0] = np.sqrt(omega_sq)
+    out[:, 1, 0] = freq * (1 - (-jerk / (omega_sq)) / C_VAL)
+    out[:, 2, 0] = -accel / (omega_sq * C_VAL)
+    out[:, 3, 0] = -jerk / (omega_sq * np.sqrt(omega_sq) * C_VAL)
+    d_omega_sq = np.sqrt(
+        (dsnap / accel) ** 2 + ((snap * daccel) / (accel**2)) ** 2,
+    )
+    out[:, 0, 1] = 0.5 * d_omega_sq / np.sqrt(omega_sq)
+    out[:, 1, 1] = np.sqrt(
+        ((1 + jerk / (omega_sq * C_VAL)) * dfreq) ** 2
+        + ((freq / (omega_sq * C_VAL)) * djerk) ** 2
+        + ((freq * jerk / (omega_sq**2 * C_VAL)) * d_omega_sq) ** 2,
+    )
+    out[:, 2, 1] = np.sqrt(
+        (daccel / (omega_sq * C_VAL)) ** 2
+        + ((accel * d_omega_sq) / (omega_sq**2 * C_VAL)) ** 2,
+    )
+    out[:, 3, 1] = np.sqrt(
+        (djerk / (omega_sq * np.sqrt(omega_sq) * C_VAL)) ** 2
+        + ((1.5 * jerk * d_omega_sq) / (C_VAL * omega_sq**2.5)) ** 2,
+    )
+    return out
 
 
 @njit(cache=True, fastmath=True)

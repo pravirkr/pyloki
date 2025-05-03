@@ -119,7 +119,6 @@ class ParamLimits:
     def from_circular(
         cls,
         freq: float,
-        poly_order: int,
         p_orb_min: float,
         m_c: float,
         m_p: float = 1.4,
@@ -129,15 +128,13 @@ class ParamLimits:
         Parameters
         ----------
         freq : float
-            Expected frequency of the orbit (in Hz).
-        poly_order : int
-            Highest polynomial order to include in the search.
+            Expected intrinsic spin frequency of the orbit (in Hz).
         p_orb_min : float
-            Minimum orbital period (in seconds).
+            Minimum orbital period to cover (in seconds).
         m_c : float
-            Mass of the companion (in solar masses).
+            Companion mass (in solar masses).
         m_p : float, optional
-            Mass of the pulsar (in solar masses), by default 1.4.
+            Pulsar mass (in solar masses), by default 1.4.
 
         Returns
         -------
@@ -147,7 +144,7 @@ class ParamLimits:
         omega_orb_max = 2 * np.pi / p_orb_min
         # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
         x_orb = 0.005 * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
-        max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
+        max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(4)
         bounds = [(-d, d) for d in max_derivs[2:][::-1]]
         freq_shift = max_derivs[1] / C_VAL
         bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
@@ -180,11 +177,11 @@ class ParamLimits:
         dvec = np.zeros(nparams + 1, dtype=np.float64)
         dvec[1:-2] = true_params[1:-1]  # till acceleration
         dvec[0] = d_range[0]
-        dvec_min_up = psr_utils.shift_params_d(dvec, t_obs / 2)
-        dvec_min_low = psr_utils.shift_params_d(dvec, -t_obs / 2)
+        dvec_min_up = psr_utils.shift_params_d(dvec, t_obs / 2, n_out=nparams + 1)
+        dvec_min_low = psr_utils.shift_params_d(dvec, -t_obs / 2, n_out=nparams + 1)
         dvec[0] = d_range[1]
-        dvec_max_up = psr_utils.shift_params_d(dvec, t_obs / 2)
-        dvec_max_low = psr_utils.shift_params_d(dvec, -t_obs / 2)
+        dvec_max_up = psr_utils.shift_params_d(dvec, t_obs / 2, n_out=nparams + 1)
+        dvec_max_low = psr_utils.shift_params_d(dvec, -t_obs / 2, n_out=nparams + 1)
         dvec_bound_low = np.minimum(dvec_min_low, dvec_max_low)
         dvec_bound_up = np.maximum(dvec_min_up, dvec_max_up)
         bounds_d = [

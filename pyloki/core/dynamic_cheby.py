@@ -10,7 +10,7 @@ from numba.experimental import structref
 from numba.extending import overload_method
 
 from pyloki.core import chebyshev as cheby
-from pyloki.core import defaults
+from pyloki.core import common
 from pyloki.detection import scoring
 from pyloki.utils import maths
 
@@ -371,12 +371,12 @@ def add_func(
     data0: np.ndarray,
     data1: np.ndarray,
 ) -> np.ndarray:
-    return defaults.add(data0, data1)
+    return common.add(data0, data1)
 
 
 @njit(cache=True, fastmath=True)
 def pack_func(self: PruneChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
-    return defaults.pack(data)
+    return common.pack(data)
 
 
 @njit(cache=True, fastmath=True)
@@ -385,7 +385,7 @@ def shift_func(
     data: np.ndarray,
     phase_shift: int,
 ) -> np.ndarray:
-    return defaults.shift(data, phase_shift)
+    return common.shift(data, phase_shift)
 
 
 @njit(cache=True, fastmath=True)

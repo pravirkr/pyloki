@@ -23,13 +23,24 @@ class SuggestionStruct(structref.StructRefProxy):
     Parameters
     ----------
     param_sets : np.ndarray
-        Array of parameter sets with shape (nsuggestions, nparams, 2)
+        Array of parameter sets. Shape: (nsuggestions, nparams + 2, 2)
     folds : np.ndarray
-        Array of folded profiles with shape (nsuggestions, ..., 2, nbins)
+        Array of folded profiles. Shape: (nsuggestions, 2, nbins)
     scores : np.ndarray
-        Array of scores for each suggestion (nsuggestions,)
+        Array of scores. Shape: (nsuggestions,)
     backtracks : np.ndarray
-        Array of backtracks for each suggestion (nsuggestions, 2 + nparams)
+        Array of backtracks. Shape: (nsuggestions, nparams + 2)
+    mode : str
+        The mode (basis) of the nparams in the param_sets.
+        - "taylor" : Taylor basis (snap, jerk, accel, freq, period)
+        - "circular" : Circular basis (omega, freq, x_cos_phi, x_sin_phi)
+        - "chebyshev" : Chebyshev basis (..., freq)
+
+    Notes
+    -----
+    The last two rows of the param_sets are reserved.
+    - row (-2) : f0, _
+    - row (-1) : t0, scale
     """
 
     def __new__(
@@ -38,9 +49,10 @@ class SuggestionStruct(structref.StructRefProxy):
         folds: np.ndarray,
         scores: np.ndarray,
         backtracks: np.ndarray,
+        mode: str = "taylor",
     ) -> Self:
         """Create a new instance of SuggestionStruct."""
-        return suggestion_struct_init(param_sets, folds, scores, backtracks)
+        return suggestion_struct_init(param_sets, folds, scores, backtracks, mode)
 
     @property
     @njit(cache=True, fastmath=True)
@@ -64,6 +76,11 @@ class SuggestionStruct(structref.StructRefProxy):
 
     @property
     @njit(cache=True, fastmath=True)
+    def mode(self) -> str:
+        return self.mode
+
+    @property
+    @njit(cache=True, fastmath=True)
     def valid_size(self) -> int:
         """Get the valid size of the suggestion struct, beyond which is garbage."""
         return self.valid_size
@@ -81,7 +98,7 @@ class SuggestionStruct(structref.StructRefProxy):
     @property
     @njit(cache=True, fastmath=True)
     def nparams(self) -> int:
-        return self.param_sets.shape[1]
+        return self.param_sets.shape[1] - 2
 
     @property
     @njit(cache=True, fastmath=True)
@@ -118,6 +135,9 @@ class SuggestionStruct(structref.StructRefProxy):
             Array of transformed search parameters (nsuggestions, nparams, 2)
         """
         return get_transformed_func(self, delta_t)
+
+    def convert_to_circular(self) -> SuggestionStruct:
+        return convert_to_circular_func(self)
 
     def add(
         self,
@@ -177,6 +197,7 @@ fields_suggestion_struct = [
     ("folds", types.f4[:, :, ::1]),
     ("scores", types.f4[:]),
     ("backtracks", types.i4[:, ::1]),
+    ("mode", types.unicode_type),
     ("valid_size", types.int64),
     ("size", types.int64),
 ]
@@ -191,12 +212,14 @@ def suggestion_struct_init(
     folds: np.ndarray,
     scores: np.ndarray,
     backtracks: np.ndarray,
+    mode: str = "taylor",
 ) -> SuggestionStruct:
     self = structref.new(SuggestionStructType)
     self.param_sets = param_sets
     self.folds = folds
     self.scores = scores
     self.backtracks = backtracks
+    self.mode = mode
     self.valid_size = param_sets.shape[0]
     self.size = param_sets.shape[0]
     return self
@@ -234,6 +257,31 @@ def get_transformed_func(self: SuggestionStruct, delta_t: float) -> np.ndarray:
     # Exclude last two rows
     trans_params, _ = psr_utils.shift_params_batch(self.param_sets[:, :-2, :], delta_t)
     return trans_params
+
+
+@njit(cache=True, fastmath=True)
+def convert_to_circular_func(self: SuggestionStruct) -> SuggestionStruct:
+    if self.mode != "taylor":
+        msg = "Suggestion struct is not in Taylor basis."
+        raise ValueError(msg)
+    if self.nparams != 4:
+        msg = "Taylor suggestion struct must have 4 parameters."
+        raise ValueError(msg)
+    # Mask invalid parameters
+    snap = self.param_sets[:, 0, 0]
+    accel = self.param_sets[:, 2, 0]
+    omega_sq = -snap / accel
+    mask = np.logical_and(snap != 0, accel != 0, omega_sq > 0)
+    circular_params = psr_utils.convert_taylor_to_circular(
+        self.param_sets[:, : self.nparams, :][mask],
+    )
+    return SuggestionStruct(
+        param_sets=circular_params,
+        folds=self.folds[mask],
+        scores=self.scores[mask],
+        backtracks=self.backtracks[mask],
+        mode="circular",
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -319,7 +367,7 @@ def trim_empty_func(self: SuggestionStruct) -> SuggestionStruct:
 @njit(cache=True, fastmath=True)
 def trim_repeats_func(self: SuggestionStruct) -> None:
     idx = get_unique_indices_scores(
-        self.param_sets[: self.valid_size],
+        self.param_sets[: self.valid_size, : self.nparams, 0],
         self.scores[: self.valid_size],
     )
     idx_bool = np.zeros(self.valid_size, dtype=np.bool_)
@@ -331,7 +379,7 @@ def trim_repeats_func(self: SuggestionStruct) -> None:
 def trim_repeats_threshold_func(self: SuggestionStruct) -> float:
     threshold = np.median(self.scores[: self.valid_size])
     idx = get_unique_indices_scores(
-        self.param_sets[: self.valid_size],
+        self.param_sets[: self.valid_size, : self.nparams, 0],
         self.scores[: self.valid_size],
     )
     idx_bool = np.zeros(self.valid_size, dtype=np.bool_)
@@ -493,13 +541,13 @@ def ol_keep_func(self: SuggestionStruct, indices: np.ndarray) -> types.FunctionT
 
 
 @njit(cache=True, fastmath=True)
-def get_unique_indices(params: np.ndarray) -> np.ndarray:
-    nparams = params.shape[0]
+def get_unique_indices(param_sets: np.ndarray) -> np.ndarray:
+    nparams = param_sets.shape[0]
     unique_dict = {}
     unique_indices = np.empty(nparams, dtype=np.int64)
     count = 0
     for ii in range(nparams):
-        key = int(np.round(params[ii][-1:, 0][0] * 10**9))
+        key = int(np.round(param_sets[ii][-1:, 0][0] * 10**9))
         if key not in unique_dict:
             unique_dict[key] = True
             unique_indices[count] = ii
@@ -509,15 +557,15 @@ def get_unique_indices(params: np.ndarray) -> np.ndarray:
 
 
 @njit(cache=True, fastmath=True)
-def get_unique_indices_scores(params: np.ndarray, scores: np.ndarray) -> np.ndarray:
-    nparams = params.shape[0]
+def get_unique_indices_scores(param_sets: np.ndarray, scores: np.ndarray) -> np.ndarray:
+    nparams = param_sets.shape[0]
     unique_dict: dict[int, bool] = {}
     scores_dict: dict[int, float] = {}
     count_dict: dict[int, int] = {}
     unique_indices = np.empty(nparams, dtype=np.int64)
     count = 0
     for ii in range(nparams):
-        key = int(np.sum(params[ii][-2:, 0] * 10**9) + 0.5)
+        key = int(np.sum(param_sets[ii][-2:, 0] * 10**9) + 0.5)
         if unique_dict.get(key, False):
             if scores[ii] > scores_dict[key]:
                 scores_dict[key] = scores[ii]

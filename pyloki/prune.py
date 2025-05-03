@@ -42,7 +42,8 @@ DP_FUNCS_TYPE = PruneTaylorDPFuncts | PruneChebyshevDPFuncts
 logger = get_logger(__name__)
 
 
-@njit(cache=True, fastmath=True)
+# Cache is disabled because there are random fails becasue of callable args
+@njit(cache=False, fastmath=True)
 def pruning_iteration(
     sugg: SuggestionStruct,
     fold_segment: np.ndarray,
@@ -173,7 +174,8 @@ def pruning_iteration(
     return sugg_new, stats, timers
 
 
-@njit(cache=True, fastmath=True)
+# Cache is disabled because there are random fails becasue of callable args
+@njit(cache=False, fastmath=True)
 def pruning_iteration_batched(
     sugg: SuggestionStruct,
     fold_segment: np.ndarray,
