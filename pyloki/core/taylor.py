@@ -185,6 +185,76 @@ def poly_taylor_resolve_batch(
 
 
 @njit(cache=True, fastmath=True)
+def poly_taylor_resolve_snap_batch(
+    leaf_batch: np.ndarray,
+    coord_add: tuple[float, float],
+    coord_init: tuple[float, float],
+    param_arr: types.ListType[types.Array],
+    fold_bins: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve a batch of leaf params to find the closest grid index and phase shift."""
+    # only works for circular orbit when nparams = 4
+    n_leaves = len(leaf_batch)
+    nparams = len(param_arr)
+    delta_t = coord_add[0] - coord_init[0]
+    param_vec_batch = leaf_batch[:, :-2]  # Take last dimension as it is
+    freq_old_batch = leaf_batch[:, -3, 0]
+    snap_old_batch = leaf_batch[:, 0, 0]
+    dsnap_old_batch = leaf_batch[:, 0, 1]
+    accel_old_batch = leaf_batch[:, 2, 0]
+    mask = (
+        (accel_old_batch != 0)
+        & (snap_old_batch != 0)
+        & ((-snap_old_batch / accel_old_batch) > 0)
+        & (np.abs(snap_old_batch / dsnap_old_batch) > 5)
+    )
+    idx_circular = np.where(mask)[0]
+    idx_normal = np.where(~mask)[0]
+    kvec_new_batch = np.empty_like(param_vec_batch)
+    delay_batch = np.empty(n_leaves, dtype=param_vec_batch.dtype)
+    if idx_circular.size > 0:
+        kvec_new_circ, delay_circ = psr_utils.shift_params_circular_batch(
+            param_vec_batch[idx_circular],
+            delta_t,
+        )
+        if kvec_new_circ.shape == kvec_new_batch[idx_circular].shape:
+            kvec_new_batch[idx_circular] = kvec_new_circ
+            delay_batch[idx_circular] = delay_circ
+        else:
+            msg = "kvec_new_circ.shape != kvec_new_batch[idx_circular].shape"
+            raise ValueError(msg)
+
+    if idx_normal.size > 0:
+        kvec_new_norm, delay_norm = psr_utils.shift_params_batch(
+            param_vec_batch[idx_normal],
+            delta_t,
+        )
+        if kvec_new_norm.shape == kvec_new_batch[idx_normal].shape:
+            kvec_new_batch[idx_normal] = kvec_new_norm
+            delay_batch[idx_normal] = delay_norm
+        else:
+            msg = "kvec_new_norm.shape != kvec_new_batch[idx_normal].shape"
+            raise ValueError(msg)
+
+    relative_phase_batch = psr_utils.get_phase_idx(
+        delta_t,
+        freq_old_batch,
+        fold_bins,
+        delay_batch,
+    )
+    param_idx_batch = np.zeros((n_leaves, nparams), dtype=np.int64)
+    param_idx_batch[:, -1] = np_utils.find_nearest_sorted_idx_vect(
+        param_arr[-1],
+        kvec_new_batch[:, -1, 0],
+    )
+    param_idx_batch[:, -2] = np_utils.find_nearest_sorted_idx_vect(
+        param_arr[-2],
+        kvec_new_batch[:, -2, 0],
+    )
+    return param_idx_batch, relative_phase_batch
+
+
+@njit(cache=True, fastmath=True)
 def split_taylor_params(
     param_cur: np.ndarray,
     dparam_cur: np.ndarray,

@@ -139,9 +139,9 @@ class StatesInfo:
         """Print a summary of the threshold scheme using rich table."""
         branching_pattern = self.get_info("nbranches")
         survive_prob = self.get_info("success_h1_cumul")[-1]
-        pruning_complexity = self.get_info("complexity_cumul")[-1]
-        total_cost = self.get_info("cost")[-1]
-        mean_exp_bp = 2 ** (np.mean(np.log2(branching_pattern)))
+        pruning_complexity = np.log2(self.get_info("complexity_cumul")[-1])
+        total_cost = np.log2(self.get_info("cost")[-1])
+        mean_bp = 2 ** (np.mean(np.log2(branching_pattern)))
         n_options = np.sum(np.log2(branching_pattern))
         n_independent = len(self.thresholds) / self.thresholds[-1]
         total_survive_prob = 1 - (1 - survive_prob) ** n_independent
@@ -176,11 +176,8 @@ class StatesInfo:
         table.add_column("Value", justify="right", style="green")
 
         # Add rows to the table
-        table.add_row("Branching mean exponential growth", f"{mean_exp_bp:.2f}")
-        table.add_row(
-            "Branching max exponential growth",
-            f"{np.max(branching_pattern):.2f}",
-        )
+        table.add_row("Branching mean", f"{mean_bp:.2f}")
+        table.add_row("Branching max", f"{np.max(branching_pattern):.2f}")
         table.add_row("Total enumerated options", f"{n_options:.2f}")
         table.add_row("Pruning complexity", f"{pruning_complexity:.2f}")
         table.add_row("Crude survival probability", f"{survive_prob:.2f}")

@@ -219,6 +219,14 @@ def resolve_batch_func(
     coord_add: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
+    if self.poly_order == 4:
+        return taylor.poly_taylor_resolve_snap_batch(
+            leaf_batch,
+            coord_add,
+            coord_init,
+            self.param_arr,
+            self.nbins,
+        )
     return taylor.poly_taylor_resolve_batch(
         leaf_batch,
         coord_add,

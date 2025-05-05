@@ -31,11 +31,12 @@ class CircularModulating:
     """A circular modulating function."""
 
     amplitude: float
-    period: float
+    p_orb: float
     phi: float
 
     def generate(self, t: np.ndarray) -> np.ndarray:
-        delay = self.amplitude * np.sin(2 * np.pi / self.period * t + self.phi)
+        omega = 2 * np.pi / self.p_orb
+        delay = self.amplitude * np.sin(omega * t + self.phi)
         return t + delay / C_VAL
 
 

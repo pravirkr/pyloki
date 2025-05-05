@@ -12,6 +12,54 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
+@njit(cache=True, fastmath=True)
+def brutefold_single(
+    ts: np.ndarray,
+    proper_time: np.ndarray,
+    freq: float,
+    nsegments: int,
+    nbins: int,
+) -> np.ndarray:
+    """Fold a time series for a given set of frequencies.
+
+    Parameters
+    ----------
+    ts : np.ndarray
+        Time series
+    proper_time : np.ndarray
+        Proper time of the signal in time units
+    freq : float
+        Frequency to fold the time series
+    nsegments : int
+        Number of segments to fold
+    nbins : int
+        Number of bins in the folded profile
+
+    Returns
+    -------
+    np.ndarray
+        Folded time series with shape (nsegments, nfreqs, 2, nbins)
+
+    Raises
+    ------
+    ValueError
+        if freq_arr is empty or if the nsamples is not a multiple of segment_len
+    """
+    nsamples = len(ts)
+    if len(proper_time) != nsamples:
+        msg = "ts and proper_time must have the same length."
+        raise ValueError(msg)
+    phase_map = psr_utils.get_phase_idx(proper_time, freq, nbins, 0)
+    segment_len = nsamples // nsegments
+    nsamps_fold = nsegments * segment_len
+    segments_idxs = np.arange(nsamps_fold) // segment_len
+    fold = np.zeros((nsegments, nbins), dtype=np.float32)
+    for isamp in range(nsamps_fold):
+        fold[segments_idxs[isamp], phase_map[isamp]] += ts[isamp]
+    return fold
+
+
+
 @njit(["f4[:,:,:](f4[:],f4[:],f8[:],f8,i8,i8)"], cache=True, fastmath=True)
 def brutefold(
     ts_e: np.ndarray,

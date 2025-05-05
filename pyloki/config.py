@@ -122,6 +122,7 @@ class ParamLimits:
         p_orb_min: float,
         m_c: float,
         m_p: float = 1.4,
+        poly_order: int = 4,
     ) -> ParamLimits:
         """Generate search parameter limits from circular orbit parameters.
 
@@ -135,16 +136,19 @@ class ParamLimits:
             Companion mass (in solar masses).
         m_p : float, optional
             Pulsar mass (in solar masses), by default 1.4.
+        poly_order : int, optional
+            Order of the polynomial to use for the search, by default 4.
 
         Returns
         -------
         ParamLimits
             Object with the search parameter limits.
         """
+        poly_order = max(poly_order, 2)
         omega_orb_max = 2 * np.pi / p_orb_min
         # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
         x_orb = 0.005 * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
-        max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(4)
+        max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
         bounds = [(-d, d) for d in max_derivs[2:][::-1]]
         freq_shift = max_derivs[1] / C_VAL
         bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
@@ -198,12 +202,12 @@ class ParamLimits:
     def from_keplerian(
         cls,
         freq: tuple[float, float],
-        poly_order: int,
         p_orb_min: float,
         ecc_max: float,
         tobs: float,
         m_c: float,
         m_p: float = 1.4,
+        poly_order: int = 4,
     ) -> ParamLimits:
         """Generate search parameter limits from Keplerian orbit parameters.
 
@@ -211,8 +215,6 @@ class ParamLimits:
         ----------
         freq : tuple[float, float]
             Frequency range to search (min, max).
-        poly_order : int
-            Highest polynomial order to include in the search.
         p_orb_min : float
             Minimum orbital period (in seconds).
         ecc_max : float
@@ -223,12 +225,15 @@ class ParamLimits:
             Mass of the companion (in solar masses).
         m_p : float, optional
             Mass of the pulsar (in solar masses), by default 1.4.
+        poly_order : int, optional
+            Highest polynomial order to include in the search, by default 4.
 
         Returns
         -------
         ParamLimits
             Object with the search parameter limits.
         """
+        poly_order = max(poly_order, 2)
         out = [(float(freq[0]), float(freq[1]))]
         omega_orb_max = 2 * np.pi / p_orb_min
         # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
