@@ -42,6 +42,27 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
     return iphase
 
 
+@vectorize(nopython=True, cache=True)
+def get_phase_idx_complete(
+    proper_time: float,
+    freq: float,
+    nbins: int,
+    delay: float,
+) -> float:
+    """Calculate the (unrounded) phase index of the proper time."""
+    if freq <= 0:
+        msg = "Frequency must be positive."
+        raise ValueError(msg)
+    if nbins <= 0:
+        msg = "Number of bins must be positive."
+        raise ValueError(msg)
+    phase = ((proper_time + delay) * freq) % 1
+    iphase = phase * nbins
+    if iphase == nbins:
+        return 0
+    return iphase
+
+
 @njit(cache=True, fastmath=True)
 def poly_taylor_step_f(
     nparams: int,
@@ -262,68 +283,6 @@ def shift_params_batch(
     dvec_cur = np.zeros((size, nparams + 1), dtype=param_vec_batch.dtype)
     # Copy till acceleration
     dvec_cur[:, :-2] = param_vec_batch[:, :-1, 0]
-    dvec_new = shift_params_d(dvec_cur, delta_t, n_out=nparams + 1)
-    param_vec_new = param_vec_batch.copy()
-    param_vec_new[:, :-1, 0] = dvec_new[:, :-2]
-    param_vec_new[:, -1, 0] = param_vec_batch[:, -1, 0] * (1 + dvec_new[:, -2] / C_VAL)
-    delay_rel = dvec_new[:, -1] / C_VAL
-    return param_vec_new, delay_rel
-
-
-@njit(cache=True, fastmath=True)
-def shift_params_circular_batch_old(
-    param_vec_batch: np.ndarray,
-    delta_t: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Specialized version of shift_params for circular orbit batch processing.
-
-    Parameters
-    ----------
-    param_vec_batch : np.ndarray
-        Parameter vector of shape (size, nparams, 2) at reference time t_i.
-    delta_t : float
-        The time difference (t_j - t_i) to shift the parameters by.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        Array of transformed search parameters vector at the new reference time t_j
-        and the phase delay d.
-    """
-    size, nparams, _ = param_vec_batch.shape
-    if nparams != 4:
-        msg = "4 parameters are needed for circular orbit resolve."
-        raise ValueError(msg)
-    minus_omega_sq = param_vec_batch[:, 0, 0] / param_vec_batch[:, 2, 0]
-    omega_batch = np.sqrt(-minus_omega_sq)
-    required_orders = np.minimum(
-        (omega_batch * delta_t * np.e + 10).astype(np.int32),
-        100,
-    )
-    max_required_order = np.max(required_orders)
-
-    dvec_cur = np.zeros((size, max_required_order + 1), dtype=param_vec_batch.dtype)
-    # Copy till acceleration
-    dvec_cur[:, -5:-2] = param_vec_batch[:, :-1, 0]
-    # Now fill all the higher order derivatives
-    for i in range(size):
-        req_order = required_orders[i]
-        # Fill higher order derivatives for this set only up to its required_order
-        powers = np.arange(5, req_order + 1)
-        even_mask = powers % 2 == 0
-        odd_mask = ~even_mask
-        if np.any(even_mask):
-            even_powers = powers[even_mask]
-            even_exps = (even_powers - 2) // 2
-            even_coefs = (minus_omega_sq[i] ** even_exps) * param_vec_batch[i, 2, 0]
-            dvec_cur[i, -even_powers - 1] = even_coefs
-
-        if np.any(odd_mask):
-            odd_powers = powers[odd_mask]
-            odd_exps = (odd_powers - 3) // 2
-            odd_coefs = (minus_omega_sq[i] ** odd_exps) * param_vec_batch[i, 1, 0]
-            dvec_cur[i, -odd_powers - 1] = odd_coefs
-
     dvec_new = shift_params_d(dvec_cur, delta_t, n_out=nparams + 1)
     param_vec_new = param_vec_batch.copy()
     param_vec_new[:, :-1, 0] = dvec_new[:, :-2]

@@ -8,7 +8,7 @@ from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
-from pyloki.core import circular, dynamic_prune
+from pyloki.core import circular, dynamic_taylor
 
 if TYPE_CHECKING:
     import numpy as np
@@ -47,7 +47,7 @@ class PruneCircularDPFuncts(structref.StructRefProxy):
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
-        return dynamic_prune.load_func(self, fold, seg_idx)
+        return dynamic_taylor.load_func(self, fold, seg_idx)
 
     def resolve_batch(
         self,
@@ -72,7 +72,7 @@ class PruneCircularDPFuncts(structref.StructRefProxy):
         return suggest_func(self, fold_segment, coord_init)
 
     def score_batch(self, batch_combined_res: np.ndarray) -> np.ndarray:
-        return dynamic_prune.score_batch_func(self, batch_combined_res)
+        return dynamic_taylor.score_batch_func(self, batch_combined_res)
 
     def shift_add_batch(
         self,
@@ -81,7 +81,7 @@ class PruneCircularDPFuncts(structref.StructRefProxy):
         folds: np.ndarray,
         isuggest_batch: np.ndarray,
     ) -> np.ndarray:
-        return dynamic_prune.shift_add_batch_func(
+        return dynamic_taylor.shift_add_batch_func(
             self,
             segment_batch,
             phase_shift_batch,
@@ -95,14 +95,14 @@ class PruneCircularDPFuncts(structref.StructRefProxy):
         coord_cur: tuple[float, float],
         trans_matrix: np.ndarray,
     ) -> np.ndarray:
-        return dynamic_prune.transform_func(self, leaf, coord_cur, trans_matrix)
+        return dynamic_taylor.transform_func(self, leaf, coord_cur, trans_matrix)
 
     def get_transform_matrix(
         self,
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
     ) -> np.ndarray:
-        return dynamic_prune.get_transform_matrix_func(self, coord_cur, coord_prev)
+        return dynamic_taylor.get_transform_matrix_func(self, coord_cur, coord_prev)
 
     def validate(
         self,
@@ -110,13 +110,18 @@ class PruneCircularDPFuncts(structref.StructRefProxy):
         coord_valid: tuple[float, float],
         validation_params: tuple[np.ndarray, np.ndarray, float],
     ) -> np.ndarray:
-        return dynamic_prune.validate_func(self, leaves, coord_valid, validation_params)
+        return dynamic_taylor.validate_func(
+            self,
+            leaves,
+            coord_valid,
+            validation_params,
+        )
 
     def get_validation_params(
         self,
         coord_add: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray, float]:
-        return dynamic_prune.get_validation_params_func(self, coord_add)
+        return dynamic_taylor.get_validation_params_func(self, coord_add)
 
 
 fields_prune_circular_dp_funcs = [
@@ -214,7 +219,7 @@ def ol_load_func(
     seg_idx: int,
 ) -> types.FunctionType:
     def impl(self: PruneCircularDPFuncts, fold: np.ndarray, seg_idx: int) -> np.ndarray:
-        return dynamic_prune.load_func(self, fold, seg_idx)
+        return dynamic_taylor.load_func(self, fold, seg_idx)
 
     return impl
 
@@ -232,7 +237,12 @@ def ol_resolve_batch_func(
         coord_add: tuple[float, float],
         coord_init: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return dynamic_prune.resolve_batch_func(self, leaf_batch, coord_add, coord_init)
+        return dynamic_taylor.resolve_batch_func(
+            self,
+            leaf_batch,
+            coord_add,
+            coord_init,
+        )
 
     return impl
 
@@ -248,7 +258,7 @@ def ol_branch_batch_func(
         param_set_batch: np.ndarray,
         coord_cur: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return dynamic_prune.branch_batch_func(self, param_set_batch, coord_cur)
+        return dynamic_taylor.branch_batch_func(self, param_set_batch, coord_cur)
 
     return impl
 
@@ -278,7 +288,7 @@ def ol_score_batch_func(
         self: PruneCircularDPFuncts,
         combined_res_batch: np.ndarray,
     ) -> np.ndarray:
-        return dynamic_prune.score_batch_func(self, combined_res_batch)
+        return dynamic_taylor.score_batch_func(self, combined_res_batch)
 
     return impl
 
@@ -298,7 +308,7 @@ def ol_shift_add_batch_func(
         folds: np.ndarray,
         isuggest_batch: np.ndarray,
     ) -> np.ndarray:
-        return dynamic_prune.shift_add_batch_func(
+        return dynamic_taylor.shift_add_batch_func(
             self,
             segment_batch,
             phase_shift_batch,
@@ -322,7 +332,7 @@ def ol_transform_func(
         coord_cur: tuple[float, float],
         trans_matrix: np.ndarray,
     ) -> np.ndarray:
-        return dynamic_prune.transform_func(self, leaf, coord_cur, trans_matrix)
+        return dynamic_taylor.transform_func(self, leaf, coord_cur, trans_matrix)
 
     return impl
 
@@ -338,7 +348,7 @@ def ol_get_transform_matrix_func(
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
     ) -> np.ndarray:
-        return dynamic_prune.get_transform_matrix_func(self, coord_cur, coord_prev)
+        return dynamic_taylor.get_transform_matrix_func(self, coord_cur, coord_prev)
 
     return impl
 
@@ -356,7 +366,12 @@ def ol_validate_func(
         coord_valid: tuple[float, float],
         validation_params: tuple[np.ndarray, np.ndarray, float],
     ) -> np.ndarray:
-        return dynamic_prune.validate_func(self, leaves, coord_valid, validation_params)
+        return dynamic_taylor.validate_func(
+            self,
+            leaves,
+            coord_valid,
+            validation_params,
+        )
 
     return impl
 
@@ -370,6 +385,6 @@ def ol_get_validation_params_func(
         self: PruneCircularDPFuncts,
         coord_add: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray, float]:
-        return dynamic_prune.get_validation_params_func(self, coord_add)
+        return dynamic_taylor.get_validation_params_func(self, coord_add)
 
     return impl

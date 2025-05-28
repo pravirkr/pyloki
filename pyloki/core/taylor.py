@@ -105,6 +105,34 @@ def ffa_taylor_resolve(
 
 
 @njit(cache=True, fastmath=True)
+def ffa_taylor_resolve_fft(
+    pset_cur: np.ndarray,
+    param_arr: types.ListType[types.Array],
+    ffa_level: int,
+    latter: int,
+    tseg_brute: float,
+    fold_bins: int,
+) -> tuple[np.ndarray, float]:
+    nparams = len(pset_cur)
+    if nparams == 1:
+        delta_t = latter * 2 ** (ffa_level - 1) * tseg_brute
+        pset_prev, delay = pset_cur, 0
+    else:
+        delta_t = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
+        pset_prev, delay = psr_utils.shift_params(pset_cur, delta_t)
+    relative_phase = psr_utils.get_phase_idx_complete(
+        delta_t,
+        pset_cur[-1],
+        fold_bins,
+        delay,
+    )
+    pindex_prev = np.zeros(nparams, dtype=np.int64)
+    for ip in range(nparams):
+        pindex_prev[ip] = np_utils.find_nearest_sorted_idx(param_arr[ip], pset_prev[ip])
+    return pindex_prev, relative_phase
+
+
+@njit(cache=True, fastmath=True)
 def poly_taylor_resolve(
     leaf: np.ndarray,
     coord_add: tuple[float, float],

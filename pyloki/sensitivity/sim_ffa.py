@@ -32,8 +32,8 @@ def plot_sensitivity(filename: str | Path) -> plt.Figure:
         ducy_arr = f["ducy_arr"][:]
         tol_bins_arr = f["tol_bins_arr"][:]
         losses = f["losses"][:]
-    set_seaborn(**{"text.usetex": True})
-    fig, axs = plt.subplots(2, 2, figsize=(16, 10))
+    set_seaborn(use_latex=True, font_size=16)
+    fig, axs = plt.subplots(2, 2, figsize=(16, 10), layout="constrained")
     titles = ["Folding loss", "Shifting loss", "Dynamic FFA loss", "Empirical FFA loss"]
     for iax, ax in enumerate(axs.flat):
         for itol_bin in range(len(tol_bins_arr)):
@@ -45,13 +45,12 @@ def plot_sensitivity(filename: str | Path) -> plt.Figure:
                 markersize=8,
                 label=f"tol = {tol_bins_arr[itol_bin]}",
             )
-            ax.set_xlabel("Duty Cycle")
-            ax.set_ylabel("Recovered significance")
-            ax.set_title(titles[iax])
-            ax.legend()
-            if iax == 0:
-                ax.set_ylim(0.2, 1.2)
-    fig.tight_layout()
+        ax.set_xlabel("Duty Cycle")
+        ax.set_ylabel("Recovered significance")
+        ax.set_title(titles[iax])
+        ax.legend()
+        if iax == 0:
+            ax.set_ylim(0.2, 1.2)
     return fig
 
 

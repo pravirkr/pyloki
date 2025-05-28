@@ -43,10 +43,6 @@ class TimeSeries:
         ts_v = np_utils.downsample_1d(self.ts_v, factor)
         return TimeSeries(ts_e, ts_v, self.dt)
 
-    def resample(self, accel: float) -> TimeSeries:
-        ts_e, ts_v = common.resample(self.ts_e, self.ts_v, self.dt, accel)
-        return TimeSeries(ts_e, ts_v, self.dt)
-
     def fold_ephem(
         self,
         freq: float,
@@ -82,7 +78,7 @@ class TimeSeries:
             return np.divide(
                 fold[..., 0, :],
                 np.sqrt(fold[..., 1, :]),
-                out=np.full_like(fold[..., 0, :], np.nan),
+                out=np.zeros_like(fold[..., 0, :], dtype=np.float32),
                 where=~np.isclose(fold[..., 1, :], 0, atol=1e-5),
             )
         return fold
@@ -106,7 +102,6 @@ class TimeSeries:
             mod_kwargs=mod_kwargs,
         )
         ephem_fold_subints = self.fold_ephem(freq, fold_bins, nsubints=nsubints)
-        fold_bins = len(ephem_fold)
         sig_boxcar = sig_filters.MatchedFilter(
             ephem_fold,
             loc_method="norm",

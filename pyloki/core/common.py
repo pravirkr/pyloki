@@ -6,7 +6,6 @@ import numpy as np
 from numba import njit, prange, types
 
 from pyloki.utils import np_utils, psr_utils
-from pyloki.utils.misc import C_VAL
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -59,7 +58,6 @@ def brutefold_single(
     return fold
 
 
-
 @njit(["f4[:,:,:](f4[:],f4[:],f8[:],f8,i8,i8)"], cache=True, fastmath=True)
 def brutefold(
     ts_e: np.ndarray,
@@ -110,26 +108,6 @@ def brutefold(
         fold[segments_idxs[isamp], 0, phase_map[isamp]] += ts_e[isamp]
         fold[segments_idxs[isamp], 1, phase_map[isamp]] += ts_v[isamp]
     return fold
-
-
-@njit
-def resample(ts_e: np.ndarray, ts_v: np.ndarray, tsamp: float, accel: float) -> tuple:
-    nsamps = len(ts_e) - 1 if accel > 0 else len(ts_e)
-    ts_e_resamp = np.zeros_like(ts_e)
-    ts_v_resamp = np.zeros_like(ts_v)
-
-    partial_calc = (accel * tsamp) / (2 * C_VAL)
-    tot_drift = partial_calc * (nsamps // 2) ** 2
-    last_bin = 0
-    for isamp in range(nsamps):
-        index = int(isamp + partial_calc * (isamp - nsamps // 2) ** 2 - tot_drift)
-        ts_e_resamp[index] = ts_e[isamp]
-        ts_v_resamp[index] = ts_v[isamp]
-        if index - last_bin > 1:
-            ts_e_resamp[index - 1] = ts_e[isamp]
-            ts_v_resamp[index - 1] = ts_v[isamp]
-        last_bin = index
-    return ts_e_resamp, ts_v_resamp
 
 
 @njit(
@@ -256,6 +234,7 @@ def get_leaves_opt(
             leaves_taylor[i, j, 0] = arr[idx]
 
     return leaves_taylor
+
 
 @njit(cache=True, fastmath=True)
 def load_folds_1d(fold: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
@@ -453,6 +432,25 @@ def pack(data: np.ndarray) -> np.ndarray:
 @njit(cache=True, fastmath=True)
 def shift(data: np.ndarray, phase_shift: int) -> np.ndarray:
     return np_utils.nb_roll(data, phase_shift, axis=-1)
+
+
+@njit(cache=True, fastmath=True)
+def shift_add(
+    data_tail: np.ndarray,
+    data_head: np.ndarray,
+    phase_shift_tail: int,
+    phase_shift_head: int,
+) -> np.ndarray:
+    n_comps, n_cols = data_tail.shape
+    res = np.empty((n_comps, n_cols), dtype=data_tail.dtype)
+    shift_tail = phase_shift_tail % n_cols
+    shift_head = phase_shift_head % n_cols
+    for j in range(n_cols):
+        idx1 = (j - shift_tail) % n_cols
+        idx2 = (j - shift_head) % n_cols
+        res[0, j] = data_tail[0, idx1] + data_head[0, idx2]
+        res[1, j] = data_tail[1, idx1] + data_head[1, idx2]
+    return res
 
 
 @njit(cache=True, fastmath=True)

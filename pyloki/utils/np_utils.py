@@ -110,8 +110,7 @@ def nb_roll(
     shift: int | tuple[int, ...],
     axis: int | tuple[int, ...] | None = None,
 ) -> np.ndarray:
-    """
-    Roll array elements along a given axis.
+    """Roll array elements along a given axis.
 
     Implemented in rocket-fft. This function is a njit-compiled wrapper
     around np.roll.
@@ -313,8 +312,7 @@ def cpad2len(arr: np.ndarray, size: int) -> np.ndarray:
 
 @njit(cache=True)
 def interpolate_missing(profile: np.ndarray, count: np.ndarray) -> np.ndarray:
-    """
-    Interpolate missing values in a profile.
+    """Interpolate missing values in a profile.
 
     Parameters
     ----------

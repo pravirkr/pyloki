@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Self
 
+import numpy as np
 from numba import njit, prange, types
 from numba.experimental import structref
 from numba.extending import overload_method
@@ -13,8 +14,6 @@ from pyloki.utils.timing import Timer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    import numpy as np
 
     from pyloki.config import PulsarSearchConfig
 
@@ -35,7 +34,12 @@ class FFASearchDPFuncts(structref.StructRefProxy):
 
     def __new__(cls, cfg: PulsarSearchConfig) -> Self:
         """Create a new instance of FFASearchDPFuncts."""
-        return ffa_search_dp_functs_init(cfg.tsamp, cfg.nbins, cfg.bseg_brute)
+        return ffa_search_dp_functs_init(
+            cfg.tsamp,
+            cfg.nbins,
+            cfg.bseg_brute,
+            cfg.use_fft_shifts,
+        )
 
     def init(
         self,
@@ -62,26 +66,69 @@ class FFASearchDPFuncts(structref.StructRefProxy):
             latter,
         )
 
-    def add(self, data_tail: np.ndarray, data_head: np.ndarray) -> np.ndarray:
-        """Addition rule for the FFA search."""
-        return add_func(self, data_tail, data_head)
+    def resolve_fft(
+        self,
+        pset_cur: np.ndarray,
+        parr_prev: np.ndarray,
+        ffa_level: int,
+        latter: int,
+    ) -> tuple[np.ndarray, float]:
+        return resolve_fft_func(
+            self,
+            pset_cur,
+            parr_prev,
+            ffa_level,
+            latter,
+        )
 
     def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:
         """Bit packing rule for the FFA search."""
         return pack_func(self, data, ffa_level)
 
-    def shift(self, data: np.ndarray, phase_shift: int) -> np.ndarray:
-        """Shift the data by a phase shift.
+    def shift_add(
+        self,
+        data_tail: np.ndarray,
+        data_head: np.ndarray,
+        phase_shift_tail: int,
+        phase_shift_head: int,
+    ) -> np.ndarray:
+        """Add two data segments after shifting them by a phase shift.
 
-        Can we handle non-integer phase shifts?
+        Can only handle integer phase shifts.
         """
-        return shift_func(self, data, phase_shift)
+        return shift_add_func(
+            self,
+            data_tail,
+            data_head,
+            phase_shift_tail,
+            phase_shift_head,
+        )
+
+    def shift_add_fft(
+        self,
+        data_tail: np.ndarray,
+        data_head: np.ndarray,
+        phase_shift_tail: float,
+        phase_shift_head: float,
+    ) -> np.ndarray:
+        """Add two data segments after shifting them by a phase shift.
+
+        Can handle non-integer phase shifts. Input data arrays are assumed to be FFTed.
+        """
+        return shift_add_fft_func(
+            self,
+            data_tail,
+            data_head,
+            phase_shift_tail,
+            phase_shift_head,
+        )
 
 
 fields_ffa_search_dp_funcs = [
     ("tsamp", types.float64),
     ("nbins", types.int64),
     ("bseg_brute", types.int64),
+    ("use_fft_shifts", types.bool_),
 ]
 
 structref.define_boxing(FFASearchDPFunctsTemplate, FFASearchDPFuncts)
@@ -93,11 +140,13 @@ def ffa_search_dp_functs_init(
     tsamp: float,
     nbins: int,
     bseg_brute: int,
+    use_fft_shifts: bool,
 ) -> FFASearchDPFuncts:
     self = structref.new(FFASearchDPFunctsType)
     self.tsamp = tsamp
     self.nbins = nbins
     self.bseg_brute = bseg_brute
+    self.use_fft_shifts = use_fft_shifts
     return self
 
 
@@ -138,12 +187,22 @@ def resolve_func(
 
 
 @njit(cache=True, fastmath=True)
-def add_func(
+def resolve_fft_func(
     self: FFASearchDPFuncts,
-    data_tail: np.ndarray,
-    data_head: np.ndarray,
-) -> np.ndarray:
-    return common.add(data_tail, data_head)
+    pset_cur: np.ndarray,
+    parr_prev: np.ndarray,
+    ffa_level: int,
+    latter: int,
+) -> tuple[np.ndarray, float]:
+    tseg_brute = self.bseg_brute * self.tsamp
+    return taylor.ffa_taylor_resolve_fft(
+        pset_cur,
+        parr_prev,
+        ffa_level,
+        latter,
+        tseg_brute,
+        self.nbins,
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -152,12 +211,35 @@ def pack_func(self: FFASearchDPFuncts, data: np.ndarray, ffa_level: int) -> np.n
 
 
 @njit(cache=True, fastmath=True)
-def shift_func(
+def shift_add_func(
     self: FFASearchDPFuncts,
-    data: np.ndarray,
-    phase_shift: int,
+    data_tail: np.ndarray,
+    data_head: np.ndarray,
+    phase_shift_tail: int,
+    phase_shift_head: int,
 ) -> np.ndarray:
-    return common.shift(data, phase_shift)
+    return common.shift_add(
+        data_tail,
+        data_head,
+        phase_shift_tail,
+        phase_shift_head,
+    )
+
+
+@njit(cache=True, fastmath=True)
+def shift_add_fft_func(
+    self: FFASearchDPFuncts,
+    data_tail: np.ndarray,
+    data_head: np.ndarray,
+    phase_shift_tail: float,
+    phase_shift_head: float,
+) -> np.ndarray:
+    nbins_f = data_tail.shape[-1]
+    k = np.arange(nbins_f)
+    fold_bins = self.nbins
+    phase1 = np.exp(-2j * np.pi * k * phase_shift_tail / fold_bins)
+    phase2 = np.exp(-2j * np.pi * k * phase_shift_head / fold_bins)
+    return (data_tail * phase1) + (data_head * phase2)
 
 
 @overload_method(FFASearchDPFunctsTemplate, "init")
@@ -198,18 +280,22 @@ def ol_resolve(
     return impl
 
 
-@overload_method(FFASearchDPFunctsTemplate, "add")
-def ol_add_func(
+@overload_method(FFASearchDPFunctsTemplate, "resolve_fft")
+def ol_resolve_fft(
     self: FFASearchDPFuncts,
-    data_tail: np.ndarray,
-    data_head: np.ndarray,
+    pset_cur: np.ndarray,
+    parr_prev: np.ndarray,
+    ffa_level: int,
+    latter: int,
 ) -> types.FunctionType:
     def impl(
         self: FFASearchDPFuncts,
-        data_tail: np.ndarray,
-        data_head: np.ndarray,
-    ) -> np.ndarray:
-        return add_func(self, data_tail, data_head)
+        pset_cur: np.ndarray,
+        parr_prev: np.ndarray,
+        ffa_level: int,
+        latter: int,
+    ) -> tuple[np.ndarray, float]:
+        return resolve_fft_func(self, pset_cur, parr_prev, ffa_level, latter)
 
     return impl
 
@@ -230,18 +316,54 @@ def ol_pack_func(
     return impl
 
 
-@overload_method(FFASearchDPFunctsTemplate, "shift")
-def ol_shift_func(
+@overload_method(FFASearchDPFunctsTemplate, "shift_add")
+def ol_shift_add_func(
     self: FFASearchDPFuncts,
-    data: np.ndarray,
-    phase_shift: int,
+    data_tail: np.ndarray,
+    data_head: np.ndarray,
+    phase_shift_tail: int,
+    phase_shift_head: int,
 ) -> types.FunctionType:
     def impl(
         self: FFASearchDPFuncts,
-        data: np.ndarray,
-        phase_shift: int,
+        data_tail: np.ndarray,
+        data_head: np.ndarray,
+        phase_shift_tail: int,
+        phase_shift_head: int,
     ) -> np.ndarray:
-        return shift_func(self, data, phase_shift)
+        return shift_add_func(
+            self,
+            data_tail,
+            data_head,
+            phase_shift_tail,
+            phase_shift_head,
+        )
+
+    return impl
+
+
+@overload_method(FFASearchDPFunctsTemplate, "shift_add_fft")
+def ol_shift_add_fft_func(
+    self: FFASearchDPFuncts,
+    data_tail: np.ndarray,
+    data_head: np.ndarray,
+    phase_shift_tail: float,
+    phase_shift_head: float,
+) -> types.FunctionType:
+    def impl(
+        self: FFASearchDPFuncts,
+        data_tail: np.ndarray,
+        data_head: np.ndarray,
+        phase_shift_tail: float,
+        phase_shift_head: float,
+    ) -> np.ndarray:
+        return shift_add_fft_func(
+            self,
+            data_tail,
+            data_head,
+            phase_shift_tail,
+            phase_shift_head,
+        )
 
     return impl
 
@@ -293,12 +415,49 @@ def unify_fold(
             1,
         )
         for ipair in range(fold_out.shape[0]):
-            fold_tail = dp_funcs.shift(
-                load_func(fold_in, ipair * 2, p_idx_tail),
+            fold_tail = load_func(fold_in, ipair * 2, p_idx_tail)
+            fold_head = load_func(fold_in, ipair * 2 + 1, p_idx_head)
+            fold_out[ipair, iparam_set] = dp_funcs.shift_add(
+                fold_tail,
+                fold_head,
                 phase_shift_tail,
-            )
-            fold_head = dp_funcs.shift(
-                load_func(fold_in, ipair * 2 + 1, p_idx_head),
                 phase_shift_head,
             )
-            fold_out[ipair, iparam_set] = dp_funcs.add(fold_tail, fold_head)
+
+
+@Timer(name="unify_fold")
+@njit(cache=True, fastmath=True, parallel=True, nogil=True)
+def unify_fold_fft(
+    fold_in: np.ndarray,
+    param_arr_prev: types.ListType[types.Array],
+    fold_out: np.ndarray,
+    param_cart_cur: np.ndarray,
+    ffa_level: int,
+    dp_funcs: FFASearchDPFuncts,
+    load_func: Callable[[np.ndarray, int, np.ndarray], np.ndarray],
+) -> None:
+    for iparam_set in prange(len(param_cart_cur)):
+        p_set = param_cart_cur[iparam_set]
+
+        # Resolve parameters for tail and head
+        p_idx_tail, phase_shift_tail = dp_funcs.resolve_fft(
+            p_set,
+            param_arr_prev,
+            ffa_level,
+            0,
+        )
+        p_idx_head, phase_shift_head = dp_funcs.resolve_fft(
+            p_set,
+            param_arr_prev,
+            ffa_level,
+            1,
+        )
+        for ipair in range(fold_out.shape[0]):
+            fold_tail = load_func(fold_in, ipair * 2, p_idx_tail)
+            fold_head = load_func(fold_in, ipair * 2 + 1, p_idx_head)
+            fold_out[ipair, iparam_set] = dp_funcs.shift_add_fft(
+                fold_tail,
+                fold_head,
+                phase_shift_tail,
+                phase_shift_head,
+            )

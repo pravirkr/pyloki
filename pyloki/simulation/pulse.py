@@ -46,7 +46,7 @@ class PulseSignalConfig:
     _mod_func: modulate.DerivativeModulating = attrs.field(init=False, repr=False)
 
     def __attrs_post_init__(self) -> None:
-        self._mod_func = modulate.type_to_mods["derivative"](**self.mod_kwargs)
+        self._mod_func = modulate.type_to_mods[self.mod_type](**self.mod_kwargs)
         self._check()
 
     @property

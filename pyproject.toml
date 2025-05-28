@@ -75,7 +75,17 @@ indent-style = "space"
 
 [tool.ruff.lint]
 select = ["ALL"]
-ignore = ["D1", "ANN003", "PLR2004", "PD901", "G004", "E712"]
+ignore = [
+    "D1",
+    "ANN003",
+    "PLR2004",
+    "PD901",
+    "G004",
+    "E712",
+    "FBT001",
+    "TD",
+    "FIX",
+]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15

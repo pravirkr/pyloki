@@ -70,7 +70,7 @@ chi_sq_minus_logsf_table = gen_chi_sq_minus_logsf_table(64, chi_sq_max, chi_sq_r
 norm_isf_table = gen_norm_isf_table(max_minus_logsf, minus_logsf_res)
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def norm_isf_func(minus_logsf: float) -> float:
     pos = minus_logsf / minus_logsf_res
     frac_pos = pos % 1
@@ -82,7 +82,7 @@ def norm_isf_func(minus_logsf: float) -> float:
     return norm_isf_table[-1] * (minus_logsf / max_minus_logsf) ** 0.5
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def chi_sq_minus_logsf_func(chi_sq_score: float, df: int) -> float:
     tab_pos = chi_sq_score / chi_sq_res
     frac_pos = tab_pos % 1
@@ -94,9 +94,9 @@ def chi_sq_minus_logsf_func(chi_sq_score: float, df: int) -> float:
     return chi_sq_minus_logsf_table[df, -1] * chi_sq_score / chi_sq_max
 
 
-def gen_chebyshev_polys_table_np(order: int, n_derivs: int) -> np.ndarray:
-    tab = np.zeros((n_derivs + 1, order + 1, order + 1))
-    basis = [polynomial.chebyshev.Chebyshev.basis(i) for i in range(order + 1)]
+def gen_chebyshev_polys_table_np(order_max: int, n_derivs: int) -> np.ndarray:
+    tab = np.zeros((n_derivs + 1, order_max + 1, order_max + 1))
+    basis = [polynomial.chebyshev.Chebyshev.basis(i) for i in range(order_max + 1)]
 
     for ideriv in range(n_derivs + 1):
         for iorder, poly in enumerate(basis):
@@ -155,12 +155,8 @@ def gen_chebyshev_polys_table(order_max: int, n_derivs: int) -> np.ndarray:
 
 
 @njit(cache=True, fastmath=True)
-def gen_design_matrix_taylor(
-    t_vals: np.ndarray,
-    order_max: int,
-) -> np.ndarray:
-    """
-    Generate the design matrix for a Taylor series.
+def gen_design_matrix_taylor(t_vals: np.ndarray, order_max: int) -> np.ndarray:
+    """Generate the design matrix for a Taylor series.
 
     Parameters
     ----------
@@ -250,7 +246,7 @@ def is_power_of_two(n: int) -> bool:
     return (n != 0) and (n & (n - 1) == 0)
 
 
-@njit
+@njit(fastmath=True)
 def compute_connection_coefficient_s(k: int, m: int) -> float:
     """Compute the connection coefficient S_{k,m}.
 
@@ -274,7 +270,7 @@ def compute_connection_coefficient_s(k: int, m: int) -> float:
     return 2 ** (1 - k - deltam0) * nbinom(k, n)
 
 
-@njit
+@njit(fastmath=True)
 def compute_connection_coefficient_r(k: int, m: int) -> float:
     """Compute the connection coefficient R_{k,m}.
 
@@ -299,7 +295,7 @@ def compute_connection_coefficient_r(k: int, m: int) -> float:
     return ((-1) ** n) * (2 ** (m - 1)) * (2 * k / (k + m)) * nbinom(r, n)
 
 
-@njit
+@njit(fastmath=True)
 def compute_transformation_coefficient_c(n: int, k: int, p: float, q: float) -> float:
     """Compute the transformation coefficient C_{n,k}(p,q).
 
@@ -333,7 +329,7 @@ def compute_transformation_coefficient_c(n: int, k: int, p: float, q: float) -> 
     return result
 
 
-@njit
+@njit(fastmath=True)
 def compute_connection_matrix_s(k_max: int) -> np.ndarray:
     """Compute the connection coefficient matrix S.
 
@@ -359,7 +355,7 @@ def compute_connection_matrix_s(k_max: int) -> np.ndarray:
     return s_mat
 
 
-@njit
+@njit(fastmath=True)
 def compute_connection_matrix_r(k_max: int) -> np.ndarray:
     """Compute the connection coefficient matrix R.
 
@@ -382,7 +378,7 @@ def compute_connection_matrix_r(k_max: int) -> np.ndarray:
     return r_mat
 
 
-@njit
+@njit(fastmath=True)
 def poly_chebyshev_transform_matrix(
     poly_order: int,
     tc1: float,

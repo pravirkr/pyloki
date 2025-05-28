@@ -98,7 +98,7 @@ class SuggestionStruct(structref.StructRefProxy):
     @property
     @njit(cache=True, fastmath=True)
     def nparams(self) -> int:
-        return self.param_sets.shape[1] - 2
+        return self.nparams
 
     @property
     @njit(cache=True, fastmath=True)
@@ -200,6 +200,7 @@ fields_suggestion_struct = [
     ("mode", types.unicode_type),
     ("valid_size", types.int64),
     ("size", types.int64),
+    ("nparams", types.int64),
 ]
 
 structref.define_boxing(SuggestionStructTemplate, SuggestionStruct)
@@ -222,6 +223,7 @@ def suggestion_struct_init(
     self.mode = mode
     self.valid_size = param_sets.shape[0]
     self.size = param_sets.shape[0]
+    self.nparams = param_sets.shape[1] - 2
     return self
 
 
@@ -254,8 +256,21 @@ def get_best_func(self: SuggestionStruct) -> tuple[np.ndarray, np.ndarray, float
 
 @njit(cache=True, fastmath=True)
 def get_transformed_func(self: SuggestionStruct, delta_t: float) -> np.ndarray:
-    # Exclude last two rows
-    trans_params, _ = psr_utils.shift_params_batch(self.param_sets[:, :-2, :], delta_t)
+    if self.nparams < 4:
+        # Exclude last two rows
+        trans_params, _ = psr_utils.shift_params_batch(
+            self.param_sets[:, :-2, :],
+            delta_t,
+        )
+    elif self.nparams == 4:
+        # Exclude last two rows
+        trans_params, _ = psr_utils.shift_params_circular_batch(
+            self.param_sets[:, :-2, :],
+            delta_t,
+        )
+    else:
+        msg = "suggestion struct must have less than 4 parameters."
+        raise ValueError(msg)
     return trans_params
 
 
