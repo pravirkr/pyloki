@@ -44,6 +44,10 @@ dependencies = [
 Repository = "https://github.com/pravirkr/pyloki"
 
 [project.optional-dependencies]
+cuda = [
+    "cuda-python",
+    "numba-cuda",
+]
 tests = [
     "pytest",
     "pytest-cov",
