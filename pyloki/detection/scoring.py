@@ -72,13 +72,25 @@ def circular_prefix_sum(
 
 
 @njit("f4(f4[::1], f4[::1])", cache=True, fastmath=True)
-def diff_max(x: npt.NDArray[np.float32], y: npt.NDArray[np.float32]) -> np.float32:
-    """Find the maximum difference between two arrays efficiently."""
+def diff_max_old(x: npt.NDArray[np.float32], y: npt.NDArray[np.float32]) -> np.float32:
+    """Find the maximum difference between two arrays efficiently.
+
+    Not vectorised. Slower for large arrays.
+    """
     max_diff = -np.finfo(np.float32).max
     for i in range(len(x)):
         diff = x[i] - y[i]
         max_diff = max(max_diff, diff)
     return max_diff
+
+
+@njit("f4(f4[::1], f4[::1])", cache=True, fastmath=True)
+def diff_max(x: npt.NDArray[np.float32], y: npt.NDArray[np.float32]) -> np.float32:
+    """Find the maximum difference between two arrays efficiently."""
+    buffer = np.empty(len(x), dtype=np.float32)
+    for i in range(len(x)):
+        buffer[i] = x[i] - y[i]
+    return np.max(buffer)
 
 
 @njit(
@@ -124,6 +136,13 @@ def boxcar_snr_1d(
         snr[iw] = ((height + b) * dmax - (b * total_sum)) * inv_stdnoise
     return snr
 
+# res = zeros(n)
+# for w in widths:
+#     a = prefix_sum[w:w+size] - prefix_sum[:size]
+#     signs = a < res
+#     res = res * signs + a * (1 - signs)
+# return max(res)
+#
 
 @njit("f4[:, ::1](f4[:, ::1], i8[::1], f8)", cache=True, fastmath=True, parallel=True)
 def boxcar_snr_2d(
@@ -161,6 +180,16 @@ def snr_score_func(
     return np.max(boxcar_snr_1d(fold, widths, 1.0))
 
 
+@njit("f4(c8[:, ::1], i8[::1])", cache=True, fastmath=True)
+def snr_score_func_complex(
+    combined_res: npt.NDArray[np.complex64],
+    widths: npt.NDArray[np.int64],
+) -> float:
+    """Compute the SNR score for a folded suggestion."""
+    combined_res_t = np.fft.irfft(combined_res)
+    return snr_score_func(combined_res_t, widths)
+
+
 @njit("f4[::1](f4[:, :, ::1], i8[::1])", cache=True, fastmath=True, error_model="numpy")
 def snr_score_batch_func(
     combined_res_batch: npt.NDArray[np.float32],
@@ -195,6 +224,16 @@ def snr_score_batch_func(
             max_snr = max(max_snr, snr)
         scores[i] = max_snr
     return scores
+
+
+@njit("f4[::1](c8[:, :, ::1], i8[::1])", cache=True, fastmath=True, error_model="numpy")
+def snr_score_batch_func_complex(
+    combined_res_batch: npt.NDArray[np.complex64],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Compute the SNR score for a batched folded suggestion stored in FFT format."""
+    combined_res_batch_t = np.fft.irfft(combined_res_batch)
+    return snr_score_batch_func(combined_res_batch_t, widths)
 
 
 class MatchedFilter:

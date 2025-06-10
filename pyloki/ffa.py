@@ -5,7 +5,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import typed
 
-from pyloki.core import FFASearchDPFuncts, set_ffa_load_func, unify_fold, unify_fold_fft
+from pyloki.core import (
+    FFATaylorComplexDPFuncts,
+    FFATaylorDPFuncts,
+    set_ffa_load_func,
+    unify_fold,
+)
 from pyloki.utils import np_utils
 from pyloki.utils.misc import PicklableStructRefWrapper, get_logger, track_progress
 from pyloki.utils.timing import Timer
@@ -18,6 +23,7 @@ if TYPE_CHECKING:
     from pyloki.config import PulsarSearchConfig
     from pyloki.io.timeseries import TimeSeries
 
+DP_FUNCS_TYPE = FFATaylorDPFuncts | FFATaylorComplexDPFuncts
 
 logger = get_logger(__name__)
 
@@ -38,14 +44,17 @@ class DynamicProgramming:
         self._cfg = cfg
         if cfg.use_fft_shifts:
             self._data_type = np.complex64
+            self._dp_funcs = PicklableStructRefWrapper[DP_FUNCS_TYPE](
+                FFATaylorComplexDPFuncts,
+                cfg,
+            )
         else:
             self._data_type = np.float32  # type: ignore[assignment]
-        self._dp_funcs = PicklableStructRefWrapper[FFASearchDPFuncts](
-            FFASearchDPFuncts,
-            cfg,
-        )
+            self._dp_funcs = PicklableStructRefWrapper[DP_FUNCS_TYPE](
+                FFATaylorDPFuncts,
+                cfg,
+            )
         self._load_func = set_ffa_load_func(cfg.nparams)
-        self._unify_fold_func = unify_fold_fft if cfg.use_fft_shifts else unify_fold
 
     @property
     def ts_data(self) -> TimeSeries:
@@ -60,16 +69,12 @@ class DynamicProgramming:
         return self._data_type
 
     @property
-    def dp_funcs(self) -> FFASearchDPFuncts:
+    def dp_funcs(self) -> DP_FUNCS_TYPE:
         return self._dp_funcs.get_instance()
 
     @property
     def load_func(self) -> Callable[[np.ndarray, int, np.ndarray], np.ndarray]:
         return self._load_func
-
-    @property
-    def unify_fold_func(self) -> Callable:
-        return self._unify_fold_func
 
     @property
     def fold(self) -> np.ndarray:
@@ -139,8 +144,6 @@ class DynamicProgramming:
         # Initialize the fold structure and reshape to correct dimensions
         param_arr_t = typed.List(param_arr)
         fold = self.dp_funcs.init(self.ts_data.ts_e, self.ts_data.ts_v, param_arr_t)
-        if self.cfg.use_fft_shifts:
-            fold = np.fft.rfft(fold)
         fold = np.expand_dims(fold, axis=list(range(1, self.cfg.nparams)))
         fold = self.dp_funcs.pack(fold, self.ffa_level)
 
@@ -183,7 +186,7 @@ class DynamicProgramming:
             (self.nsegments // 2, len(param_cart_cur), *self.fold.shape[-2:]),
             self.fold.dtype,
         )
-        self.unify_fold_func(
+        unify_fold(
             self.fold,
             self.param_arr,
             fold_cur,

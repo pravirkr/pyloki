@@ -6,7 +6,7 @@ from numba import njit, typed, types
 from pyloki.core import common
 from pyloki.detection import scoring
 from pyloki.utils import np_utils, psr_utils
-from pyloki.utils.suggestion import SuggestionStruct
+from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
 
 @njit(cache=True, fastmath=True)
@@ -62,8 +62,8 @@ def ffa_taylor_resolve(
     latter: int,
     tseg_brute: float,
     fold_bins: int,
-) -> tuple[np.ndarray, int]:
-    """Resolve the params to find the closest index in grid and phase shift.
+) -> tuple[np.ndarray, float]:
+    """Resolve the params to find the closest index in grid and absolute phase shift.
 
     Parameters
     ----------
@@ -82,37 +82,16 @@ def ffa_taylor_resolve(
 
     Returns
     -------
-    tuple[np.ndarray, int]
+    tuple[np.ndarray, float]
         The resolved parameter index in the ``param_arr`` and the relative phase shift.
+
+    phase_shift is absolute phase shift with fractional part.
 
     Notes
     -----
     delta_t is the time difference between the reference time of the current segment
     (0) and the reference time of the previous segment.
     """
-    nparams = len(pset_cur)
-    if nparams == 1:
-        delta_t = latter * 2 ** (ffa_level - 1) * tseg_brute
-        pset_prev, delay = pset_cur, 0
-    else:
-        delta_t = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
-        pset_prev, delay = psr_utils.shift_params(pset_cur, delta_t)
-    relative_phase = psr_utils.get_phase_idx(delta_t, pset_cur[-1], fold_bins, delay)
-    pindex_prev = np.zeros(nparams, dtype=np.int64)
-    for ip in range(nparams):
-        pindex_prev[ip] = np_utils.find_nearest_sorted_idx(param_arr[ip], pset_prev[ip])
-    return pindex_prev, relative_phase
-
-
-@njit(cache=True, fastmath=True)
-def ffa_taylor_resolve_fft(
-    pset_cur: np.ndarray,
-    param_arr: types.ListType[types.Array],
-    ffa_level: int,
-    latter: int,
-    tseg_brute: float,
-    fold_bins: int,
-) -> tuple[np.ndarray, float]:
     nparams = len(pset_cur)
     if nparams == 1:
         delta_t = latter * 2 ** (ffa_level - 1) * tseg_brute
@@ -194,7 +173,7 @@ def poly_taylor_resolve_batch(
     param_vec_batch = leaf_batch[:, :-2]  # Take last dimension as it is
     freq_old_batch = leaf_batch[:, -3, 0]
     kvec_new_batch, delay_batch = psr_utils.shift_params_batch(param_vec_batch, delta_t)
-    relative_phase_batch = psr_utils.get_phase_idx(
+    relative_phase_batch = psr_utils.get_phase_idx_complete(
         delta_t,
         freq_old_batch,
         fold_bins,
@@ -264,7 +243,7 @@ def poly_taylor_resolve_snap_batch(
             msg = "kvec_new_norm.shape != kvec_new_batch[idx_normal].shape"
             raise ValueError(msg)
 
-    relative_phase_batch = psr_utils.get_phase_idx(
+    relative_phase_batch = psr_utils.get_phase_idx_complete(
         delta_t,
         freq_old_batch,
         fold_bins,
@@ -566,6 +545,48 @@ def poly_taylor_suggest(
         scores[iparam] = scoring.snr_score_func(data[iparam], score_widths)
     backtracks = np.zeros((n_param_sets, 2 + len(param_arr)), dtype=np.int32)
     return SuggestionStruct(param_sets, data, scores, backtracks)
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_suggest_complex(
+    fold_segment: np.ndarray,
+    coord_init: tuple[float, float],
+    param_arr: types.ListType,
+    dparams: np.ndarray,
+    poly_order: int,
+    score_widths: np.ndarray,
+) -> SuggestionStructComplex:
+    """Generate a suggestion struct from a fold segment in FFT format.
+
+    Parameters
+    ----------
+    fold_segment : np.ndarray
+        The fold segment to generate suggestions for. The shape of the array is
+        (n_accel, n_period, 2, n_bins). Parameter dimensions are first two.
+    coord_init : tuple[float, float]
+        The coordinates for the starting segment (level 0).
+    param_arr : types.ListType
+        Parameter values for each dimension (accel, period).
+    dparams : np.ndarray
+        Parameter step (grid) sizes for each dimension in a 1D array.
+    poly_order : int
+        The order of the Taylor polynomial.
+    score_func : _type_
+        Function to score the folded data.
+
+    Returns
+    -------
+    SuggestionStructComplex
+        Suggestion struct
+    """
+    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
+    param_sets = poly_taylor_leaves(param_arr, dparams, poly_order, coord_init)
+    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
+    scores = np.zeros(n_param_sets, dtype=np.float32)
+    for iparam in range(n_param_sets):
+        scores[iparam] = scoring.snr_score_func_complex(data[iparam], score_widths)
+    backtracks = np.zeros((n_param_sets, 2 + len(param_arr)), dtype=np.int32)
+    return SuggestionStructComplex(param_sets, data, scores, backtracks)
 
 
 @njit(cache=True, fastmath=True)

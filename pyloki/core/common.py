@@ -438,13 +438,13 @@ def shift(data: np.ndarray, phase_shift: int) -> np.ndarray:
 def shift_add(
     data_tail: np.ndarray,
     data_head: np.ndarray,
-    phase_shift_tail: int,
-    phase_shift_head: int,
+    shift_tail: int,
+    shift_head: int,
 ) -> np.ndarray:
     n_comps, n_cols = data_tail.shape
     res = np.empty((n_comps, n_cols), dtype=data_tail.dtype)
-    shift_tail = phase_shift_tail % n_cols
-    shift_head = phase_shift_head % n_cols
+    shift_tail = shift_tail % n_cols
+    shift_head = shift_head % n_cols
     for j in range(n_cols):
         idx1 = (j - shift_tail) % n_cols
         idx2 = (j - shift_head) % n_cols
@@ -456,14 +456,14 @@ def shift_add(
 @njit(cache=True, fastmath=True)
 def shift_add_batch(
     segment_batch: np.ndarray,
-    phase_shift_batch: np.ndarray,
+    shift_batch: np.ndarray,
     folds: np.ndarray,
     isuggest_batch: np.ndarray,
 ) -> np.ndarray:
     n_batch, n_comps, n_cols = segment_batch.shape
     res = np.empty((n_batch, n_comps, n_cols), dtype=segment_batch.dtype)
     for irow in range(n_batch):
-        shift = phase_shift_batch[irow] % n_cols
+        shift = shift_batch[irow] % n_cols
         fold_row = folds[isuggest_batch[irow]]
         src_idx = (-shift) % n_cols
         for j in range(n_cols):

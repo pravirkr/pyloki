@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from queue import Queue
     from typing import Any
 
+
 C_VAL = float(constants.c.value)
 T = TypeVar("T")
 CONSOLE = Console()

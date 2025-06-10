@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Self
 
 import numpy as np
-from numba import njit, types
+from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
@@ -27,22 +27,24 @@ class PruneChebyshevDPFunctsTemplate(types.StructRef):
 class PruneChebyshevDPFuncts(structref.StructRefProxy):
     def __new__(
         cls,
-        cfg: PulsarSearchConfig,
         param_arr: types.ListType[types.Array],
         dparams: np.ndarray,
         tseg_ffa: float,
-        poly_order: int = 13,
+        cfg: PulsarSearchConfig,
     ) -> Self:
         """Create a new instance of PruneChebyshevDPFuncts."""
         return prune_chebyshev_dp_functs_init(
+            param_arr,
+            dparams,
+            tseg_ffa,
             cfg.nbins,
             cfg.tol_bins,
             cfg.param_limits,
             cfg.bseg_brute,
-            param_arr,
-            dparams,
-            tseg_ffa,
-            poly_order,
+            cfg.score_widths,
+            cfg.prune_poly_order,
+            cfg.branch_max,
+            cfg.use_fft_shifts,
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
@@ -78,7 +80,7 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         leaf: np.ndarray,
         coord_add: tuple[float, float],
         coord_init: tuple[float, float],
-    ) -> tuple[np.ndarray, int]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Resolve the leaf parameters to find the closest param index and phase shift.
 
         Parameters
@@ -137,7 +139,7 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         """
         return suggest_func(self, fold_segment, coord_init)
 
-    def score(self, combined_res: np.ndarray) -> float:
+    def score(self, combined_res: np.ndarray) -> np.ndarray:
         """Calculate the statistical detection score of the combined fold.
 
         Parameters
@@ -270,28 +272,32 @@ PruneChebyshevDPFunctsType = PruneChebyshevDPFunctsTemplate(
 
 @njit(cache=True, fastmath=True)
 def prune_chebyshev_dp_functs_init(
-    nbins: int,
-    tol_bins: float,
-    param_limits: types.ListType[types.Tuple[float, float]],
-    bseg_brute: int,
-    score_widths: np.ndarray,
-    param_arr: types.ListType[types.Array],
+    param_arr: list[np.ndarray],
     dparams: np.ndarray,
     tseg_ffa: float,
+    nbins: int,
+    tol_bins: float,
+    param_limits: list[tuple[float, float]],
+    bseg_brute: int,
+    score_widths: np.ndarray,
     poly_order: int,
-    n_derivs: int = 2,
+    branch_max: int,
+    use_fft_shifts: bool,
 ) -> PruneChebyshevDPFuncts:
     """Initialize the PruneChebyshevDPFuncts struct."""
     self = structref.new(PruneChebyshevDPFunctsType)
-    self.nbins = nbins
-    self.tol_bins = tol_bins
-    self.param_limits = param_limits
-    self.bseg_brute = bseg_brute
-    self.score_widths = score_widths
     self.param_arr = param_arr
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
+    self.nbins = nbins
+    self.tol_bins = tol_bins
+    self.param_limits = typed.List(param_limits)
+    self.bseg_brute = bseg_brute
+    self.score_widths = score_widths
     self.poly_order = poly_order
+    self.branch_max = branch_max
+    self.use_fft_shifts = use_fft_shifts
+    n_derivs = 2  # fix later
     self.n_derivs = n_derivs
     self.cheb_table = maths.gen_chebyshev_polys_table(poly_order, n_derivs)
     return self

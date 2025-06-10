@@ -9,6 +9,7 @@ from numba import njit, types
 
 from pyloki.core import (
     PruneChebyshevDPFuncts,
+    PruneTaylorComplexDPFuncts,
     PruneTaylorDPFuncts,
     set_prune_load_func,
 )
@@ -35,13 +36,15 @@ if TYPE_CHECKING:
     from queue import Queue
 
     from pyloki.ffa import DynamicProgramming
-    from pyloki.utils.suggestion import SuggestionStruct
+    from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
-DP_FUNCS_TYPE = PruneTaylorDPFuncts | PruneChebyshevDPFuncts
+DP_FUNCS_TYPE = (
+    PruneTaylorDPFuncts | PruneTaylorComplexDPFuncts | PruneChebyshevDPFuncts
+)
 
 logger = get_logger(__name__)
 
-
+"""
 # Cache is disabled because there are random fails becasue of callable args
 @njit(cache=False, fastmath=True)
 def pruning_iteration(
@@ -61,33 +64,6 @@ def pruning_iteration(
     types.DictType[str, float],
     np.ndarray,
 ]:
-    """Perform a single iteration of the pruning algorithm.
-
-    Parameters
-    ----------
-    sugg : SuggestionStruct
-        The suggestion structure to be pruned.
-    fold_segment : np.ndarray
-        The fold segment of the current pruning level to be used for pruning.
-    prune_funcs : PruningTaylorDPFunctions
-        A container for the functions to be used in the pruning algorithm.
-    scheme : SnailScheme
-        A container describing the indexing scheme used in the pruning algorithm.
-    threshold : float
-        The threshold score for the current pruning level.
-    prune_level : int
-        The current pruning level.
-    load_func : Callable[[np.ndarray, np.ndarray], np.ndarray]
-        A function to load the desired fold from the input structure.
-    sugg_max : int, optional
-        Maximum number of suggestions to keep in the output SuggestionStruct,
-        by default 2**17
-
-    Returns
-    -------
-    tuple[SuggestionStruct, PruneStats]
-        The pruned suggestion structure and the statistics of the pruning iteration.
-    """
     sugg_new = sugg.get_new(sugg_max)
     n_leaves = 0
     n_leaves_phy = 0
@@ -172,6 +148,7 @@ def pruning_iteration(
         "score_max": score_max,
     }
     return sugg_new, stats, timers
+"""
 
 
 # Cache is disabled because there are random fails becasue of callable args
@@ -194,7 +171,33 @@ def pruning_iteration_batched(
     types.DictType[str, float],
     np.ndarray,
 ]:
-    """Perform a single iteration of the pruning algorithm using batch processing."""
+    """Perform a single iteration of the pruning algorithm using batch processing.
+
+    Parameters
+    ----------
+    sugg : SuggestionStruct
+        The suggestion structure to be pruned.
+    fold_segment : np.ndarray
+        The fold segment of the current pruning level to be used for pruning.
+    prune_funcs : PruningTaylorDPFunctions
+        A container for the functions to be used in the pruning algorithm.
+    scheme : SnailScheme
+        A container describing the indexing scheme used in the pruning algorithm.
+    threshold : float
+        The threshold score for the current pruning level.
+    prune_level : int
+        The current pruning level.
+    load_func : Callable[[np.ndarray, np.ndarray], np.ndarray]
+        A function to load the desired fold from the input structure.
+    sugg_max : int, optional
+        Maximum number of suggestions to keep in the output SuggestionStruct,
+        by default 2**17
+
+    Returns
+    -------
+    tuple[SuggestionStruct, PruneStats]
+        The pruned suggestion structure and the statistics of the pruning iteration.
+    """
     sugg_new = sugg.get_new(sugg_max)
     n_leaves = 0
     n_leaves_phy = 0
@@ -218,7 +221,7 @@ def pruning_iteration_batched(
 
         # Branching
         t_start = nb_time_now()
-        batch_leaves, batch_leaf_origins = prune_funcs.branch_batch(
+        batch_leaves, batch_leaf_origins = prune_funcs.branch(
             sugg.param_sets[i_batch_start:i_batch_end],
             coord_cur,
         )
@@ -242,7 +245,7 @@ def pruning_iteration_batched(
 
         # Resolve
         t_start = nb_time_now()
-        batch_param_idx, batch_phase_shift = prune_funcs.resolve_batch(
+        batch_param_idx, batch_phase_shift = prune_funcs.resolve(
             batch_leaves,
             coord_add,
             coord_init,
@@ -254,7 +257,7 @@ def pruning_iteration_batched(
         batch_loaded_data = load_func(fold_segment, batch_param_idx)
         # Map batch_leaf_origins (0 to current_batch_size-1) to global indices
         isuggest_batch = cur_batch_indices[batch_leaf_origins]
-        batch_combined_res = prune_funcs.shift_add_batch(
+        batch_combined_res = prune_funcs.shift_add(
             batch_loaded_data,
             batch_phase_shift,
             sugg.folds,
@@ -264,7 +267,7 @@ def pruning_iteration_batched(
 
         # Score
         t_start = nb_time_now()
-        batch_scores = prune_funcs.score_batch(batch_combined_res)
+        batch_scores = prune_funcs.score(batch_combined_res)
         if n_leaves_batch > 0:
             score_min = min(score_min, np.min(batch_scores))
             score_max = max(score_max, np.max(batch_scores))
@@ -400,7 +403,7 @@ class Pruning:
         return self._scheme
 
     @property
-    def suggestion(self) -> SuggestionStruct:
+    def suggestion(self) -> SuggestionStruct | SuggestionStructComplex:
         return self._suggestion
 
     @property
@@ -455,7 +458,7 @@ class Pruning:
             dtype=np.dtype(
                 [
                     ("param_sets", np.float64, (self.dyp.cfg.prune_poly_order + 2, 2)),
-                    ("folds", np.float32, fold_segment.shape[-2:]),
+                    ("folds", self.dyp.fold.dtype, fold_segment.shape[-2:]),
                     ("scores", np.float32),
                 ],
             ),
@@ -476,45 +479,6 @@ class Pruning:
             f.write(pstats_cur.get_summary())
         self._pstats.update_stats(pstats_cur)
 
-    def execute1(
-        self,
-        outdir: str = "./",
-        file_prefix: str = "test",
-        ref_seg_list: np.ndarray | None = None,
-    ) -> str:
-        """Execute the pruning algorithm.
-
-        Parameters
-        ----------
-        outdir : str, optional
-            The output directory to store the results, by default "./".
-        file_prefix : str, optional
-            The prefix for the output files, by default "test".
-        ref_seg_list : np.ndarray | None, optional
-            The reference segment list to start the pruning algorithm, by default None.
-
-        Returns
-        -------
-        list[tuple[int, SuggestionStruct]]
-            A list of tuples containing the reference segment and the suggestion.
-        """
-        filebase = f"{file_prefix}_pruning_nstages_{self.dyp.nsegments}"
-        log_file = Path(outdir) / f"{filebase}_log.txt"
-        result_file = Path(outdir) / f"{filebase}_results.h5"
-        log_file.write_text("Pruning log\n")
-        if ref_seg_list is None:
-            ref_seg_list = np.arange(0, self.dyp.nsegments, self.dyp.nsegments // 16)
-        with PruneResultWriter(result_file) as writer:
-            writer.write_metadata(
-                self.dyp.cfg.param_names,
-                self.dyp.nsegments,
-                self.max_sugg,
-                self.threshold_scheme,
-            )
-        for ref_seg in ref_seg_list:
-            self.execute_run(ref_seg, outdir, file_prefix, log_file, result_file)
-        return result_file.as_posix()
-
     def execute(
         self,
         ref_seg: int,
@@ -524,6 +488,23 @@ class Pruning:
         shared_progress: DictProxy | None = None,
         task_id: int | None = None,
     ) -> None:
+        """Execute the pruning algorithm.
+
+        Parameters
+        ----------
+        ref_seg : int
+            The reference segment to start the pruning algorithm.
+        outdir : str, optional
+            The output directory to store the results, by default "./".
+        log_file : Path, optional
+            The file to store the log of the pruning algorithm, by default None.
+        result_file : Path, optional
+            The file to store the results of the pruning algorithm, by default None.
+        shared_progress : DictProxy, optional
+            The shared progress dictionary, by default None.
+        task_id : int, optional
+            The task ID for progress tracking, by default None.
+        """
         run_name = f"{ref_seg:03d}_{task_id:02d}"
 
         if log_file is None:
@@ -633,24 +614,29 @@ class Pruning:
             msg = "Pruning only supports initial data with up to 4 param dimensions."
             raise ValueError(msg)
         self._load_func = set_prune_load_func(self.dyp.fold.ndim - 3)
-        if kind == "taylor":
-            self._prune_funcs = PicklableStructRefWrapper[PruneTaylorDPFuncts](
-                PruneTaylorDPFuncts,
-                self.dyp.cfg,
+        if kind == "taylor" and self.dyp.cfg.use_fft_shifts:
+            self._prune_funcs = PicklableStructRefWrapper[PruneTaylorComplexDPFuncts](
+                PruneTaylorComplexDPFuncts,
                 self.dyp.param_arr,
                 self.dyp.dparams_limited,
                 self.dyp.tseg,
-                self.dyp.cfg.prune_poly_order,
-                self.dyp.cfg.branch_max,
+                self.dyp.cfg,
+            )
+        elif kind == "taylor" and not self.dyp.cfg.use_fft_shifts:
+            self._prune_funcs = PicklableStructRefWrapper[PruneTaylorDPFuncts](
+                PruneTaylorDPFuncts,
+                self.dyp.param_arr,
+                self.dyp.dparams_limited,
+                self.dyp.tseg,
+                self.dyp.cfg,
             )
         elif kind == "chebyshev":
             self._prune_funcs = PicklableStructRefWrapper[PruneChebyshevDPFuncts](
                 PruneChebyshevDPFuncts,
-                self.dyp.cfg,
                 self.dyp.param_arr,
                 self.dyp.dparams_limited,
                 self.dyp.tseg,
-                self.dyp.cfg.prune_poly_order,
+                self.dyp.cfg,
             )
         else:
             msg = f"Invalid pruning kind: {kind}"
