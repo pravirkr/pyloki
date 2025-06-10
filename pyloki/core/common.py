@@ -111,7 +111,7 @@ def brutefold(
 
 
 @njit(
-    ["f4[:,:,:,:](f4[:],f4[:],f8[:],i8,i8,f8,f8)"],
+    ["f4[:,:,:,::1](f4[::1],f4[::1],f8[::1],i8,i8,f8,f8)"],
     cache=True,
     parallel=True,
     fastmath=True,
