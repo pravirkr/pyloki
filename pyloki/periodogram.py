@@ -11,6 +11,8 @@ import xarray as xr
 from matplotlib import pyplot as plt
 from sigpyproc.viz.styles import set_seaborn
 
+from pyloki.utils import np_utils
+
 
 def get_precision(d: float) -> int:
     """Get the number of decimal places to display for a given number."""
@@ -59,6 +61,19 @@ class Periodogram:
             for name, idx in zip(self.data.dims, best_indices, strict=False)
         }
         return {"snr": best_snr, **best_params}
+
+    def get_indices_summary(self, true_values: dict[str, float] | None = None) -> str:
+        best_indices = self.find_best_indices()
+        summary: list[str] = []
+        if true_values:
+            true_indices = [
+                np_utils.find_nearest_sorted_idx(self.params[name], true_values[name])
+                for name in self.param_names
+                if name in true_values
+            ]
+            summary += [f"True param indices: {tuple(true_indices)}"]
+        summary += [f"Best param indices: {best_indices}"]
+        return "\n".join(summary)
 
     def get_summary(self) -> str:
         best_params = self.find_best_params()

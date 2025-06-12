@@ -4,6 +4,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.offsetbox import AnchoredText
 from sigpyproc.core import filters as sig_filters
+from sigpyproc.timeseries import TimeSeries as sigTimeSeries
 from sigpyproc.viz.styles import PlotTable
 
 from pyloki.core import common
@@ -127,7 +128,7 @@ class TimeSeries:
         ducy = sig_boxcar.best_temp.width / len(ephem_fold)
         table = PlotTable(
             col_offsets={
-                "name": 0.01,
+                "name": 0.10,
                 "value": 0.75,
                 "unit": 0.85,
             },
@@ -135,13 +136,13 @@ class TimeSeries:
             line_height=0.12,
             font_size=12,
         )
-        table.add_entry("Tsamp", f"{self.dt * 1e3:.3f}")
-        table.add_entry("Period", 1 / freq)
+        table.add_entry("Tsamp", f"{self.dt * 1e3:.3f}", unit="ms")
+        table.add_entry("Period", 1 / freq, unit="s")
         table.add_entry("Accel", mod_kwargs.get("acc", 0))
         table.add_entry("Jerk", mod_kwargs.get("jerk", 0))
         table.add_entry("Snap", mod_kwargs.get("snap", 0))
-        table.add_entry("Width", sig_boxcar.best_temp.width)
-        table.add_entry("Ducy", f"{ducy:.3f}")
+        table.add_entry("Width (box)", sig_boxcar.best_temp.width)
+        table.add_entry("Ducy (box)", f"{ducy:.3f}")
         table.plot(axtable)
 
         axsubints.imshow(
@@ -182,6 +183,20 @@ class TimeSeries:
         axprofile.add_artist(at)
         axprofile.legend(loc="upper right")
         return figure
+
+    @classmethod
+    def from_tim(cls, timfile: str, tim_type: str = "dat") -> TimeSeries:
+        if tim_type == "dat":
+            tim_load = sigTimeSeries.from_dat(timfile)
+        elif tim_type == "tim":
+            tim_load = sigTimeSeries.from_tim(timfile)
+        else:
+            msg = f"Invalid tim type: {tim_type}"
+            raise ValueError(msg)
+        tim_load = tim_load.deredden(method="median", window=4.0, fast=True)
+        tim_load = tim_load.normalise()
+        signal = tim_load.data
+        return cls(signal, np.ones_like(signal), tim_load.header.tsamp)
 
     def __str__(self) -> str:
         name = type(self).__name__

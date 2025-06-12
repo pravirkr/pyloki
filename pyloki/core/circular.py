@@ -40,7 +40,7 @@ def poly_circular_resolve_batch(
         -(omega_batch**2) * (new_x_cos_om_t_plus_phi_batch - x_cos_phi_batch) * C_VAL
     )
 
-    relative_phase_batch = psr_utils.get_phase_idx(
+    relative_phase_batch = psr_utils.get_phase_idx_int(
         delta_t,
         freq_old_batch,
         fold_bins,

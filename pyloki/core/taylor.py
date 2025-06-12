@@ -85,7 +85,7 @@ def ffa_taylor_resolve(
     tuple[np.ndarray, float]
         The resolved parameter index in the ``param_arr`` and the relative phase shift.
 
-    phase_shift is absolute phase shift with fractional part.
+    phase_shift is complete phase shift with fractional part.
 
     Notes
     -----
@@ -99,12 +99,7 @@ def ffa_taylor_resolve(
     else:
         delta_t = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
         pset_prev, delay = psr_utils.shift_params(pset_cur, delta_t)
-    relative_phase = psr_utils.get_phase_idx_complete(
-        delta_t,
-        pset_cur[-1],
-        fold_bins,
-        delay,
-    )
+    relative_phase = psr_utils.get_phase_idx(delta_t, pset_cur[-1], fold_bins, delay)
     pindex_prev = np.zeros(nparams, dtype=np.int64)
     for ip in range(nparams):
         pindex_prev[ip] = np_utils.find_nearest_sorted_idx(param_arr[ip], pset_prev[ip])
@@ -118,7 +113,7 @@ def poly_taylor_resolve(
     coord_init: tuple[float, float],
     param_arr: types.ListType[types.Array],
     fold_bins: int,
-) -> tuple[np.ndarray, int]:
+) -> tuple[np.ndarray, float]:
     """Resolve the leaf params to find the closest index in grid and phase shift.
 
     Parameters
@@ -136,13 +131,15 @@ def poly_taylor_resolve(
 
     Returns
     -------
-    tuple[np.ndarray, int]
+    tuple[np.ndarray, float]
         The resolved parameter index in the ``param_arr`` and the relative phase shift.
 
     Notes
     -----
     leaf is referenced to coord_init, so we need to shift it to coord_add to get the
     resolved parameters index and relative phase shift.
+
+    relative_phase is complete phase shift with fractional part.
 
     """
     nparams = len(param_arr)
@@ -173,7 +170,7 @@ def poly_taylor_resolve_batch(
     param_vec_batch = leaf_batch[:, :-2]  # Take last dimension as it is
     freq_old_batch = leaf_batch[:, -3, 0]
     kvec_new_batch, delay_batch = psr_utils.shift_params_batch(param_vec_batch, delta_t)
-    relative_phase_batch = psr_utils.get_phase_idx_complete(
+    relative_phase_batch = psr_utils.get_phase_idx(
         delta_t,
         freq_old_batch,
         fold_bins,
@@ -243,7 +240,7 @@ def poly_taylor_resolve_snap_batch(
             msg = "kvec_new_norm.shape != kvec_new_batch[idx_normal].shape"
             raise ValueError(msg)
 
-    relative_phase_batch = psr_utils.get_phase_idx_complete(
+    relative_phase_batch = psr_utils.get_phase_idx(
         delta_t,
         freq_old_batch,
         fold_bins,

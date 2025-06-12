@@ -9,7 +9,7 @@ from pyloki.utils.misc import C_VAL
 
 
 @vectorize(nopython=True, cache=True)
-def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> int:
+def get_phase_idx_int(proper_time: float, freq: float, nbins: int, delay: float) -> int:
     """Calculate the phase index of the proper time in the folded profile.
 
     Parameters
@@ -43,12 +43,7 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
 
 
 @vectorize(nopython=True, cache=True)
-def get_phase_idx_complete(
-    proper_time: float,
-    freq: float,
-    nbins: int,
-    delay: float,
-) -> float:
+def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> float:
     """Calculate the (unrounded) phase index of the proper time."""
     if freq <= 0:
         msg = "Frequency must be positive."

@@ -4,9 +4,9 @@ import logging
 import multiprocessing
 import time
 from logging.handlers import QueueHandler, QueueListener
+from pathlib import Path
 from typing import TYPE_CHECKING, Generic, Self, TypeVar
 
-import numpy as np
 from astropy import constants
 from rich.console import Console
 from rich.logging import RichHandler
@@ -34,33 +34,33 @@ T = TypeVar("T")
 CONSOLE = Console()
 
 
-def get_indices(
-    proper_time: np.ndarray,
-    periods: float | list | np.ndarray,
-    nbins: int,
-) -> np.ndarray:
-    """Calculate the indices of the folded time series.
+def mkdir_p(dir_path: str | Path, must_not_exist: list[str] | None = None) -> Path:
+    """Create a directory and all intermediate directories if they do not exist.
 
     Parameters
     ----------
-    proper_time : np.ndarray
-        The proper time of the signal
-    period : float | list | np.ndarray
-        The period of the signal
-    nbins : int
-        The number of bins in the folded time series
-
-    Returns
-    -------
-    np.ndarray
-        The indices of the folded time series
+    dir_path : str | Path
+        Path to directory.
+    must_not_exist : list[str], optional
+        List of files that must not exist in the directory, by default None.
     """
-    if isinstance(periods, float | int):
-        periods = [periods]
-    periods = np.asarray(periods)
-    factor = nbins / periods[:, np.newaxis]
-    indices = np.round((proper_time % periods[:, np.newaxis]) * factor) % nbins
-    return indices.astype(np.uint32).squeeze()
+    path = Path(dir_path)
+
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        msg = f"Failed to create directory {path}: {e}"
+        raise OSError(msg) from e
+
+    if must_not_exist:
+        existing = [f for f in must_not_exist if (path / f).exists()]
+        if existing:
+            msg = (
+                f"Files already exist in directory {path}: {existing}\n"
+                f"Provide a different directory or remove the files."
+            )
+            raise FileExistsError(msg)
+    return path
 
 
 def get_handler(console: Console | None = None) -> logging.Handler:

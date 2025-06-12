@@ -342,14 +342,14 @@ def resolve_complex_func(
     coord_init: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     if self.poly_order == 4:
-        return taylor.poly_taylor_resolve_snap_batch_complex(
+        return taylor.poly_taylor_resolve_snap_batch(
             leaf_batch,
             coord_add,
             coord_init,
             self.param_arr,
             self.nbins,
         )
-    return taylor.poly_taylor_resolve_batch_complex(
+    return taylor.poly_taylor_resolve_batch(
         leaf_batch,
         coord_add,
         coord_init,

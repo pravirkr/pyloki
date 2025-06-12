@@ -332,7 +332,7 @@ class PruneResultWriter:
 
 
 def merge_prune_result_files(
-    results_dir: str,
+    results_dir: str | Path,
     log_file: Path,
     result_file: Path,
 ) -> None:

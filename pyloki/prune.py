@@ -24,6 +24,7 @@ from pyloki.utils.misc import (
     PicklableStructRefWrapper,
     get_logger,
     get_worker_logger,
+    mkdir_p,
     prune_track,
 )
 from pyloki.utils.psr_utils import SnailScheme
@@ -482,7 +483,7 @@ class Pruning:
     def execute(
         self,
         ref_seg: int,
-        outdir: str = "./",
+        outdir: str | Path = "./",
         log_file: Path | None = None,
         result_file: Path | None = None,
         shared_progress: DictProxy | None = None,
@@ -494,7 +495,7 @@ class Pruning:
         ----------
         ref_seg : int
             The reference segment to start the pruning algorithm.
-        outdir : str, optional
+        outdir : str | Path, optional
             The output directory to store the results, by default "./".
         log_file : Path, optional
             The file to store the log of the pruning algorithm, by default None.
@@ -650,7 +651,7 @@ def _prune_dyp_seg(
     shared_progress: DictProxy,
     task_id: int,
     log_queue: Queue,
-    outdir: str = "./",
+    outdir: str | Path = "./",
     max_sugg: int = 2**18,
     batch_size: int = 1024,
     kind: str = "taylor",
@@ -684,7 +685,7 @@ def prune_dyp_tree(
     ref_segs: list[int] | None = None,
     max_sugg: int = 2**18,
     batch_size: int = 1024,
-    outdir: str = "./",
+    outdir: str | Path = "./",
     file_prefix: str = "test",
     kind: str = "taylor",
     n_workers: int = 4,
@@ -699,9 +700,7 @@ def prune_dyp_tree(
     filebase = f"{file_prefix}_pruning_nstages_{dyp.nsegments}"
     log_file = Path(outdir) / f"{filebase}_log.txt"
     result_file = Path(outdir) / f"{filebase}_results.h5"
-    if log_file.exists() or result_file.exists():
-        msg = f"Output files already exist: {log_file}, {result_file}"
-        raise FileExistsError(msg)
+    outdir = mkdir_p(outdir, must_not_exist=[log_file.name, result_file.name])
     # n_runs takes precedence over ref_segs
     if n_runs is not None:
         if not 1 <= n_runs <= dyp.nsegments:

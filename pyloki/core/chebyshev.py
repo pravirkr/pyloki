@@ -239,7 +239,7 @@ def poly_chebyshev_resolve(
     delay = (d_t_add - d_t_init) / C_VAL
 
     # phase is measured relative to the phase at 0
-    relative_phase = psr_utils.get_phase_idx(coord_add[0], f0, nbins, delay)
+    relative_phase = psr_utils.get_phase_idx_int(coord_add[0], f0, nbins, delay)
     idx_a = np_utils.find_nearest_sorted_idx(param_arr[-2], new_a)
     idx_f = np_utils.find_nearest_sorted_idx(param_arr[-1], new_f)
     index_prev = np.empty(len(param_arr), dtype=np.int64)

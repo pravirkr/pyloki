@@ -48,7 +48,7 @@ def brutefold_single(
     if len(proper_time) != nsamples:
         msg = "ts and proper_time must have the same length."
         raise ValueError(msg)
-    phase_map = psr_utils.get_phase_idx(proper_time, freq, nbins, 0)
+    phase_map = psr_utils.get_phase_idx_int(proper_time, freq, nbins, 0)
     segment_len = nsamples // nsegments
     nsamps_fold = nsegments * segment_len
     segments_idxs = np.arange(nsamps_fold) // segment_len
@@ -98,7 +98,7 @@ def brutefold(
     if len(ts_v) != nsamples or len(proper_time) != nsamples:
         msg = "ts_e, ts_v, and proper_time must have the same length."
         raise ValueError(msg)
-    phase_map = psr_utils.get_phase_idx(proper_time, freq, nbins, 0)
+    phase_map = psr_utils.get_phase_idx_int(proper_time, freq, nbins, 0)
     segment_len = nsamples // nsegments
     nsamps_fold = nsegments * segment_len
     segments_idxs = np.arange(nsamps_fold) // segment_len
@@ -155,7 +155,7 @@ def brutefold_start(
     proper_time = np.arange(segment_len) * tsamp - t_ref
     phase_map = np.zeros((nfreqs, segment_len), dtype=np.int32)
     for ifreq in range(nfreqs):
-        phase_map[ifreq] = psr_utils.get_phase_idx(
+        phase_map[ifreq] = psr_utils.get_phase_idx_int(
             proper_time,
             freq_arr[ifreq],
             nbins,
