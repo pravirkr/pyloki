@@ -706,7 +706,7 @@ def prune_dyp_tree(
         if not 1 <= n_runs <= dyp.nsegments:
             msg = f"n_runs must be between 1 and {dyp.nsegments}, got {n_runs}"
             raise ValueError(msg)
-        ref_segs = list(np.linspace(0, dyp.nsegments - 1, n_runs, dtype=int))
+        ref_segs = list(np.round(np.linspace(0, dyp.nsegments - 1, n_runs)).astype(int))
     elif ref_segs is None:
         msg = "Either n_runs or ref_segs must be provided"
         raise ValueError(msg)

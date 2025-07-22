@@ -576,7 +576,7 @@ class SnailScheme:
             raise ValueError(msg)
 
     def __attrs_post_init__(self) -> None:
-        data = np.argsort(np.abs(np.arange(self.nseg) - self.ref_idx))
+        data = np.argsort(np.abs(np.arange(self.nseg) - self.ref_idx), kind="stable")
         object.__setattr__(self, "data", data)
 
     @property

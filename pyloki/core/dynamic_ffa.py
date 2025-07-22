@@ -229,6 +229,8 @@ def resolve_func(
         self.nbins,
     )
     relative_phase_int = int(relative_phase + 0.5)
+    if relative_phase_int == self.nbins:
+        relative_phase_int = 0
     return pindex_prev, relative_phase_int
 
 

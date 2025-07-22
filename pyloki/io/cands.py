@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -331,6 +332,14 @@ class PruneResultWriter:
             )
 
 
+def extract_ref_seg(file_path: Path) -> int:
+    # Extracts the ref_seg from the filename, e.g., tmp_003_01_log.txt -> 3
+    match = re.search(r"tmp_(\d{3})_\d{2}_(log\.txt|results\.h5)", file_path.name)
+    if match:
+        return int(match.group(1))
+    return 0
+
+
 def merge_prune_result_files(
     results_dir: str | Path,
     log_file: Path,
@@ -340,7 +349,8 @@ def merge_prune_result_files(
 
     This function merges temporary HDF5 files created during the multiprocessing
     of pruning results into a final result file. It also merges log files into a
-    single log file. The temporary files are deleted after merging.
+    single log file. The temporary files are deleted after merging. Merging order
+    is determined by ref_seg.
 
     Parameters
     ----------
@@ -354,6 +364,10 @@ def merge_prune_result_files(
     """
     temp_log_files = list(Path(results_dir).glob("tmp_*_log.txt"))
     temp_h5_files = list(Path(results_dir).glob("tmp_*_results.h5"))
+
+    # Sort files by ref_seg
+    temp_log_files.sort(key=extract_ref_seg)
+    temp_h5_files.sort(key=extract_ref_seg)
 
     with log_file.open("a") as main_log:
         for temp_log in temp_log_files:

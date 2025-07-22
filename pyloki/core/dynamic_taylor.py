@@ -307,6 +307,19 @@ def load_func(self: PruneTaylorDPFuncts, fold: np.ndarray, seg_idx: int) -> np.n
 
 
 @njit(cache=True, fastmath=True)
+def round_phase_func(phase_batch: np.ndarray, nbins: int) -> np.ndarray:
+    n_batch = len(phase_batch)
+    res = np.empty(n_batch, dtype=np.int32)
+    for irow in range(n_batch):
+        iphase = int(phase_batch[irow] + 0.5)
+        if iphase == nbins:
+            res[irow] = 0
+        else:
+            res[irow] = iphase
+    return res
+
+
+@njit(cache=True, fastmath=True)
 def resolve_func(
     self: PruneTaylorDPFuncts,
     leaf_batch: np.ndarray,
@@ -321,7 +334,7 @@ def resolve_func(
             self.param_arr,
             self.nbins,
         )
-        relative_phase_batch_int = np.round(relative_phase_batch).astype(np.int32)
+        relative_phase_batch_int = round_phase_func(relative_phase_batch, self.nbins)
         return param_idx_batch, relative_phase_batch_int
     param_idx_batch, relative_phase_batch = taylor.poly_taylor_resolve_batch(
         leaf_batch,
@@ -330,7 +343,7 @@ def resolve_func(
         self.param_arr,
         self.nbins,
     )
-    relative_phase_batch_int = np.round(relative_phase_batch).astype(np.int32)
+    relative_phase_batch_int = round_phase_func(relative_phase_batch, self.nbins)
     return param_idx_batch, relative_phase_batch_int
 
 

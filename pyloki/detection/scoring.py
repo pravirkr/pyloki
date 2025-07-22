@@ -72,10 +72,10 @@ def circular_prefix_sum(
 
 
 @njit("f4(f4[::1], f4[::1])", cache=True, fastmath=True)
-def diff_max_old(x: npt.NDArray[np.float32], y: npt.NDArray[np.float32]) -> np.float32:
+def diff_max(x: npt.NDArray[np.float32], y: npt.NDArray[np.float32]) -> np.float32:
     """Find the maximum difference between two arrays efficiently.
 
-    Not vectorised. Slower for large arrays.
+    Not vectorised on some architectures. Slower for large arrays.
     """
     max_diff = -np.finfo(np.float32).max
     for i in range(len(x)):
@@ -85,7 +85,10 @@ def diff_max_old(x: npt.NDArray[np.float32], y: npt.NDArray[np.float32]) -> np.f
 
 
 @njit("f4(f4[::1], f4[::1])", cache=True, fastmath=True)
-def diff_max(x: npt.NDArray[np.float32], y: npt.NDArray[np.float32]) -> np.float32:
+def diff_max_buffer(
+    x: npt.NDArray[np.float32],
+    y: npt.NDArray[np.float32],
+) -> np.float32:
     """Find the maximum difference between two arrays efficiently."""
     buffer = np.empty(len(x), dtype=np.float32)
     for i in range(len(x)):
@@ -136,13 +139,6 @@ def boxcar_snr_1d(
         snr[iw] = ((height + b) * dmax - (b * total_sum)) * inv_stdnoise
     return snr
 
-# res = zeros(n)
-# for w in widths:
-#     a = prefix_sum[w:w+size] - prefix_sum[:size]
-#     signs = a < res
-#     res = res * signs + a * (1 - signs)
-# return max(res)
-#
 
 @njit("f4[:, ::1](f4[:, ::1], i8[::1], f8)", cache=True, fastmath=True, parallel=True)
 def boxcar_snr_2d(
