@@ -200,7 +200,7 @@ def init_complex_func(
     ts_v: np.ndarray,
     param_arr: types.ListType[types.Array],
 ) -> np.ndarray:
-    fold_t = taylor.ffa_taylor_init(
+    return taylor.ffa_taylor_init_complex(
         ts_e,
         ts_v,
         param_arr,
@@ -208,7 +208,6 @@ def init_complex_func(
         self.nbins,
         self.tsamp,
     )
-    return np.fft.rfft(fold_t)
 
 
 @njit(cache=True, fastmath=True)

@@ -176,6 +176,124 @@ def brutefold_start(
     return fold
 
 
+@njit(
+    ["c8[:,:,:,::1](f4[::1],f4[::1],f8[::1],i8,i8,f8,f8)"],
+    cache=True,
+    parallel=True,
+    fastmath=True,
+)
+def brutefold_start_complex(
+    ts_e: np.ndarray,
+    ts_v: np.ndarray,
+    freq_arr: np.ndarray,
+    segment_len: int,
+    nbins: int,
+    tsamp: float,
+    t_ref: float = 0,
+) -> np.ndarray:
+    """Folds a time series directly into the Fourier domain using harmonic summing.
+
+    This function computes the complex Fourier coefficients of the folded profile for
+    each time series segment and trial frequency without intermediate time-domain
+    binning, thus preserving sensitivity.
+
+    Parameters
+    ----------
+    ts_e : np.ndarray
+        Time series signal (intensity).
+    ts_v : np.ndarray
+        Time series variance.
+    freq_arr : np.ndarray
+        Array of frequencies to fold the time series.
+    segment_len : int
+        Length of the segment (in samples) to fold.
+    nbins : int
+        Number of bins in the final time-domain folded profile.
+    tsamp : float
+        Sampling time of the time series.
+    t_ref : float, optional
+        Reference time in segment e.g. start, middle, etc. (default: 0).
+
+    Returns
+    -------
+    np.ndarray
+        Complex folded profiles with shape (nsegments, nfreqs, 2, nbins_f)
+        where nbins_f = (nbins // 2) + 1.
+    """
+    nfreqs = len(freq_arr)
+    nsamples = len(ts_e)
+    nsegments = int(np.ceil(nsamples / segment_len))
+
+    # Number of complex Fourier coefficients needed for an nbins profile
+    nbins_f = (nbins // 2) + 1
+
+    proper_time = np.arange(segment_len, dtype=np.float64) * tsamp - t_ref
+    fold = np.zeros((nsegments, nfreqs, 2, nbins_f), dtype=np.complex64)
+    for iseg in prange(nsegments):
+        start = iseg * segment_len
+        end = min(start + segment_len, nsamples)
+        seg_len = end - start
+        ts_e_seg = ts_e[start:end]
+        ts_v_seg = ts_v[start:end]
+
+        # Handle the DC component (harmonic m=0)
+        # This is simply the sum of the data in the segment
+        sum_e = 0.0
+        sum_v = 0.0
+        for t in range(seg_len):
+            sum_e += ts_e_seg[t]
+            sum_v += ts_v_seg[t]
+
+        for ifreq in range(nfreqs):
+            freq = freq_arr[ifreq]
+            fold[iseg, ifreq, 0, 0] = sum_e + 0j
+            fold[iseg, ifreq, 1, 0] = sum_v + 0j
+
+            # build “base phasor” for harmonic m=1
+            # (complex array stored as two real arrays)
+            base_r = np.empty(seg_len, dtype=np.float64)
+            base_i = np.empty(seg_len, dtype=np.float64)
+            for t in range(seg_len):
+                ang = 2.0 * np.pi * freq * proper_time[t]
+                base_r[t] = np.cos(ang)
+                base_i[t] = -np.sin(ang)
+            # cur_r/cur_i will step through m=1,2,… phasors by repeated multiply
+            cur_r = base_r.copy()
+            cur_i = base_i.copy()
+            # loop over AC harmonics m=1..nbins_f-1
+            for m in range(1, nbins_f):
+                # accumulate sums for E and V
+                acc_e_r = 0.0
+                acc_e_i = 0.0
+                acc_v_r = 0.0
+                acc_v_i = 0.0
+                for t in range(seg_len):
+                    xr = ts_e_seg[t]
+                    yr = ts_v_seg[t]
+                    pr = cur_r[t]
+                    pi = cur_i[t]
+                    # E * phasor
+                    acc_e_r += xr * pr
+                    acc_e_i += xr * pi
+                    # V * phasor
+                    acc_v_r += yr * pr
+                    acc_v_i += yr * pi
+                fold[iseg, ifreq, 0, m] = acc_e_r + 1j * acc_e_i
+                fold[iseg, ifreq, 1, m] = acc_v_r + 1j * acc_v_i
+
+                # update current phasor ← current * base
+                for t in range(seg_len):
+                    pr = cur_r[t]
+                    pi = cur_i[t]
+                    br = base_r[t]
+                    bi = base_i[t]
+                    # (pr + i pi)*(br + i bi)
+                    cur_r[t] = pr * br - pi * bi
+                    cur_i[t] = pr * bi + pi * br
+
+    return fold
+
+
 @njit(cache=True, fastmath=True)
 def get_leaves(param_arr: types.ListType, dparams: np.ndarray) -> np.ndarray:
     """Get the leaf parameter sets for pruning.

@@ -55,6 +55,51 @@ def ffa_taylor_init(
 
 
 @njit(cache=True, fastmath=True)
+def ffa_taylor_init_complex(
+    ts_e: np.ndarray,
+    ts_v: np.ndarray,
+    param_arr: types.ListType[types.Array],
+    bseg_brute: int,
+    fold_bins: int,
+    tsamp: float,
+) -> np.ndarray:
+    """Initialize the fold for the FFA search (complex-domain).
+
+    Parameters
+    ----------
+    ts_e : np.ndarray
+        Time series intensity (signal weighted by E/V).
+    ts_v : np.ndarray
+        Time series variance (E**2/V).
+    param_arr : types.ListType[types.Array]
+        Parameter grid array for each search parameter dimension.
+    bseg_brute : int
+        Brute force segment size in bins.
+    fold_bins : int
+        Number of bins in the folded profile.
+    tsamp : float
+        Sampling time of the data.
+
+    Returns
+    -------
+    np.ndarray
+        Initial fold for the FFA search.
+    """
+    freq_arr = param_arr[-1]
+    nparams = len(param_arr)
+    t_ref = 0 if nparams == 1 else bseg_brute * tsamp / 2
+    return common.brutefold_start_complex(
+        ts_e,
+        ts_v,
+        freq_arr,
+        bseg_brute,
+        fold_bins,
+        tsamp,
+        t_ref,
+    )
+
+
+@njit(cache=True, fastmath=True)
 def ffa_taylor_resolve(
     pset_cur: np.ndarray,
     param_arr: types.ListType[types.Array],
