@@ -261,3 +261,36 @@ class DynamicProgramming:
                 if nvals > 1:
                     msg = f"param_arr has {nvals} values, should have only one"
                     raise ValueError(msg)
+
+
+def compute_ffa(
+    tseries: TimeSeries,
+    cfg: PulsarSearchConfig,
+    *,
+    quiet: bool = False,
+    show_progress: bool = False,
+) -> np.ndarray:
+    """Compute the FFA for a given configuration.
+
+    Parameters
+    ----------
+    tseries : TimeSeries
+        Input time series data.
+    cfg : PulsarSearchConfig
+        A configuration object for the FFA search.
+    quiet : bool, optional
+        If True, suppresses logging output, by default False.
+    show_progress : bool, optional
+        Whether to show progress bar, by default False.
+
+    Returns
+    -------
+    DynamicProgramming
+        The dynamic programming object with the FFA results.
+    """
+    if quiet:
+        logger.setLevel("ERROR")
+    dyp = DynamicProgramming(tseries, cfg)
+    dyp.initialize()
+    dyp.execute(show_progress=show_progress)
+    return dyp.fold
