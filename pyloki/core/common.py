@@ -177,6 +177,119 @@ def brutefold_start(
 
 
 @njit(
+    ["f4[:,:,:,::1](f4[::1],f4[::1],f8[::1],i8,i8,f8,f8)"],
+    cache=True,
+    parallel=True,
+    fastmath=True,
+)
+def brutefold_bucketed(
+    ts_e: np.ndarray,
+    ts_v: np.ndarray,
+    freq_arr: np.ndarray,
+    segment_len: int,
+    nbins: int,
+    tsamp: float,
+    t_ref: float = 0,
+) -> np.ndarray:
+    """Fold a time series for a given set of frequencies using bucketed folding.
+
+    Parameters
+    ----------
+    ts_e : np.ndarray
+        Time series signal (intensity).
+    ts_v : np.ndarray
+        Time series variance.
+    freq_arr : np.ndarray
+        Array of frequencies to fold the time series.
+    segment_len : int
+        Length of the segment (in samples) to fold.
+    nbins : int
+        Number of bins in the folded profile.
+    tsamp : float
+        Sampling time of the time series.
+    t_ref : float, optional
+        Reference time in segment e.g. start, middle, etc. (default: 0).
+
+    Returns
+    -------
+    np.ndarray
+        Folded time series with shape (nsegments, nfreqs, 2, nbins).
+    """
+    nfreqs = len(freq_arr)
+    nsamps = len(ts_e)
+    nsegments = nsamps // segment_len
+    if nsamps % segment_len != 0:
+        msg = "The number of samples must be a multiple of the segment length."
+        raise ValueError(msg)
+    proper_time = np.arange(segment_len) * tsamp - t_ref
+    phase_map = np.zeros((nfreqs, segment_len), dtype=np.int32)
+    for ifreq in range(nfreqs):
+        phase_map[ifreq] = psr_utils.get_phase_idx_int(
+            proper_time,
+            freq_arr[ifreq],
+            nbins,
+            0,
+        )
+
+    # Build counts and buckets for efficient folding
+    total_buckets = nfreqs * nbins
+    counts = np.zeros(total_buckets, dtype=np.int32)
+    for ifreq in range(nfreqs):
+        base = ifreq * nbins
+        for isamp in range(segment_len):
+            iph = phase_map[ifreq, isamp]
+            counts[base + iph] += 1
+
+    offsets = np.empty(total_buckets + 1, dtype=np.int32)
+    offsets[0] = 0
+    for i in range(total_buckets):
+        offsets[i + 1] = offsets[i] + counts[i]
+
+    bucket_indices = np.empty(offsets[-1], dtype=np.int32)
+    writers = offsets.copy()
+    for ifreq in range(nfreqs):
+        base = ifreq * nbins
+        for isamp in range(segment_len):
+            iph = phase_map[ifreq, isamp]
+            bidx = base + iph
+            bucket_indices[writers[bidx]] = isamp
+            writers[bidx] += 1
+
+    fold = np.zeros((nsegments, nfreqs, 2, nbins), dtype=np.float32)
+    for iseg in prange(nsegments):
+        start = iseg * segment_len
+        ts_e_seg = ts_e[start : start + segment_len]
+        ts_v_seg = ts_v[start : start + segment_len]
+        for ifreq in range(nfreqs):
+            base = ifreq * nbins
+            for iph in range(nbins):
+                bstart = offsets[base + iph]
+                bend = offsets[base + iph + 1]
+                size = bend - bstart
+                if size == 0:
+                    continue
+                sum_e = np.float32(0.0)
+                sum_v = np.float32(0.0)
+                main_loop = size - (size % 8)  # Unroll factor
+                for i in range(0, main_loop, 8):
+                    for j in range(8):
+                        idx = bucket_indices[bstart + i + j]
+                        sum_e += ts_e_seg[idx]
+                        sum_v += ts_v_seg[idx]
+                # remainder
+                for i in range(main_loop, size):
+                    idx = bucket_indices[bstart + i]
+                    sum_e += ts_e_seg[idx]
+                    sum_v += ts_v_seg[idx]
+
+                # identical in-place accumulation
+                fold[iseg, ifreq, 0, iph] = sum_e
+                fold[iseg, ifreq, 1, iph] = sum_v
+
+    return fold
+
+
+@njit(
     ["c8[:,:,:,::1](f4[::1],f4[::1],f8[::1],i8,i8,f8,f8)"],
     cache=True,
     parallel=True,
@@ -227,7 +340,7 @@ def brutefold_start_complex(
     # Number of complex Fourier coefficients needed for an nbins profile
     nbins_f = (nbins // 2) + 1
 
-    proper_time = np.arange(segment_len, dtype=np.float64) * tsamp - t_ref
+    proper_time = np.arange(segment_len, dtype=np.float32) * tsamp - t_ref
     fold = np.zeros((nsegments, nfreqs, 2, nbins_f), dtype=np.complex64)
     for iseg in prange(nsegments):
         start = iseg * segment_len
@@ -236,60 +349,58 @@ def brutefold_start_complex(
         ts_e_seg = ts_e[start:end]
         ts_v_seg = ts_v[start:end]
 
+        base_r = np.empty(seg_len, dtype=np.float32)
+        base_i = np.empty(seg_len, dtype=np.float32)
+        cur_r = np.empty(seg_len, dtype=np.float32)
+        cur_i = np.empty(seg_len, dtype=np.float32)
+
         # Handle the DC component (harmonic m=0)
         # This is simply the sum of the data in the segment
-        sum_e = 0.0
-        sum_v = 0.0
+        sum_e = np.float32(0.0)
+        sum_v = np.float32(0.0)
         for t in range(seg_len):
             sum_e += ts_e_seg[t]
             sum_v += ts_v_seg[t]
 
         for ifreq in range(nfreqs):
-            freq = freq_arr[ifreq]
+            freq = np.float32(freq_arr[ifreq])
             fold[iseg, ifreq, 0, 0] = sum_e + 0j
             fold[iseg, ifreq, 1, 0] = sum_v + 0j
 
             # build “base phasor” for harmonic m=1
             # (complex array stored as two real arrays)
-            base_r = np.empty(seg_len, dtype=np.float64)
-            base_i = np.empty(seg_len, dtype=np.float64)
+            phase_factor = -2.0 * np.pi * freq
             for t in range(seg_len):
-                ang = 2.0 * np.pi * freq * proper_time[t]
+                ang = np.float32(phase_factor * proper_time[t])
                 base_r[t] = np.cos(ang)
-                base_i[t] = -np.sin(ang)
+                base_i[t] = np.sin(ang)
             # cur_r/cur_i will step through m=1,2,… phasors by repeated multiply
-            cur_r = base_r.copy()
-            cur_i = base_i.copy()
+            for t in range(seg_len):
+                cur_r[t] = base_r[t]
+                cur_i[t] = base_i[t]
             # loop over AC harmonics m=1..nbins_f-1
             for m in range(1, nbins_f):
                 # accumulate sums for E and V
-                acc_e_r = 0.0
-                acc_e_i = 0.0
-                acc_v_r = 0.0
-                acc_v_i = 0.0
+                acc_e_r = np.float32(0.0)
+                acc_e_i = np.float32(0.0)
+                acc_v_r = np.float32(0.0)
+                acc_v_i = np.float32(0.0)
                 for t in range(seg_len):
-                    xr = ts_e_seg[t]
-                    yr = ts_v_seg[t]
+                    # E * phasor
+                    acc_e_r += ts_e_seg[t] * cur_r[t]
+                    acc_e_i += ts_e_seg[t] * cur_i[t]
+                    # V * phasor
+                    acc_v_r += ts_v_seg[t] * cur_r[t]
+                    acc_v_i += ts_v_seg[t] * cur_i[t]
+                    # update current phasor ← current * base
                     pr = cur_r[t]
                     pi = cur_i[t]
-                    # E * phasor
-                    acc_e_r += xr * pr
-                    acc_e_i += xr * pi
-                    # V * phasor
-                    acc_v_r += yr * pr
-                    acc_v_i += yr * pi
+                    # (pr + i pi)*(br + i bi)
+                    cur_r[t] = pr * base_r[t] - pi * base_i[t]
+                    cur_i[t] = pr * base_i[t] + pi * base_r[t]
+
                 fold[iseg, ifreq, 0, m] = acc_e_r + 1j * acc_e_i
                 fold[iseg, ifreq, 1, m] = acc_v_r + 1j * acc_v_i
-
-                # update current phasor ← current * base
-                for t in range(seg_len):
-                    pr = cur_r[t]
-                    pi = cur_i[t]
-                    br = base_r[t]
-                    bi = base_i[t]
-                    # (pr + i pi)*(br + i bi)
-                    cur_r[t] = pr * br - pi * bi
-                    cur_i[t] = pr * bi + pi * br
 
     return fold
 

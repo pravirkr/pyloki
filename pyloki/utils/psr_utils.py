@@ -34,7 +34,7 @@ def get_phase_idx_int(proper_time: float, freq: float, nbins: int, delay: float)
     if nbins <= 0:
         msg = "Number of bins must be positive."
         raise ValueError(msg)
-    phase = ((proper_time + delay) * freq) % 1
+    phase = ((proper_time + delay) * freq) % 1.0
     # phase is in [0, 1). Round and wrap to ensure it is in [0, nbins).
     iphase = int(phase * nbins + 0.5)
     if iphase == nbins:
@@ -51,7 +51,7 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
     if nbins <= 0:
         msg = "Number of bins must be positive."
         raise ValueError(msg)
-    phase = ((proper_time + delay) * freq) % 1
+    phase = ((proper_time + delay) * freq) % 1.0
     iphase = phase * nbins
     if iphase == nbins:
         return 0

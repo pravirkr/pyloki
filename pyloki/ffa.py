@@ -186,9 +186,10 @@ class DynamicProgramming:
             (self.nsegments // 2, len(param_cart_cur), *self.fold.shape[-2:]),
             self.fold.dtype,
         )
+        param_arr_t = typed.List(self.param_arr)
         unify_fold(
             self.fold,
-            self.param_arr,
+            param_arr_t,
             fold_cur,
             param_cart_cur,
             self.ffa_level,
