@@ -56,7 +56,7 @@ class FFATaylorDPFuncts(structref.StructRefProxy):
         parr_prev: np.ndarray,
         ffa_level: int,
         latter: int,
-    ) -> tuple[np.ndarray, int]:
+    ) -> tuple[np.ndarray, float]:
         """Resolve the current parameters among the previous level parameters."""
         return resolve_func(self, pset_cur, parr_prev, ffa_level, latter)
 
@@ -68,13 +68,10 @@ class FFATaylorDPFuncts(structref.StructRefProxy):
         self,
         data_tail: np.ndarray,
         data_head: np.ndarray,
-        shift_tail: int,
-        shift_head: int,
+        shift_tail: float,
+        shift_head: float,
     ) -> np.ndarray:
-        """Add two data segments after shifting them by a phase shift.
-
-        Can only handle integer phase shifts.
-        """
+        """Add two data segments after shifting them by a phase shift."""
         return shift_add_func(self, data_tail, data_head, shift_tail, shift_head)
 
 
@@ -108,7 +105,7 @@ class FFATaylorComplexDPFuncts(structref.StructRefProxy):
         latter: int,
     ) -> tuple[np.ndarray, float]:
         """Resolve the current parameters among the previous level parameters."""
-        return resolve_complex_func(self, pset_cur, parr_prev, ffa_level, latter)
+        return resolve_func(self, pset_cur, parr_prev, ffa_level, latter)
 
     def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:
         """Bit packing rule for the FFA search."""
@@ -217,29 +214,6 @@ def resolve_func(
     parr_prev: np.ndarray,
     ffa_level: int,
     latter: int,
-) -> tuple[np.ndarray, int]:
-    tseg_brute = self.bseg_brute * self.tsamp
-    pindex_prev, relative_phase = taylor.ffa_taylor_resolve(
-        pset_cur,
-        parr_prev,
-        ffa_level,
-        latter,
-        tseg_brute,
-        self.nbins,
-    )
-    relative_phase_int = int(relative_phase + 0.5)
-    if relative_phase_int == self.nbins:
-        relative_phase_int = 0
-    return pindex_prev, relative_phase_int
-
-
-@njit(cache=True, fastmath=True)
-def resolve_complex_func(
-    self: FFATaylorComplexDPFuncts,
-    pset_cur: np.ndarray,
-    parr_prev: np.ndarray,
-    ffa_level: int,
-    latter: int,
 ) -> tuple[np.ndarray, float]:
     tseg_brute = self.bseg_brute * self.tsamp
     return taylor.ffa_taylor_resolve(
@@ -262,8 +236,8 @@ def shift_add_func(
     self: FFATaylorDPFuncts,
     data_tail: np.ndarray,
     data_head: np.ndarray,
-    shift_tail: int,
-    shift_head: int,
+    shift_tail: float,
+    shift_head: float,
 ) -> np.ndarray:
     return common.shift_add(data_tail, data_head, shift_tail, shift_head)
 
@@ -343,15 +317,15 @@ def ol_shift_add_func(
     self: FFATaylorDPFuncts,
     data_tail: np.ndarray,
     data_head: np.ndarray,
-    phase_shift_tail: int,
-    phase_shift_head: int,
+    phase_shift_tail: float,
+    phase_shift_head: float,
 ) -> types.FunctionType:
     def impl(
         self: FFATaylorDPFuncts,
         data_tail: np.ndarray,
         data_head: np.ndarray,
-        phase_shift_tail: int,
-        phase_shift_head: int,
+        phase_shift_tail: float,
+        phase_shift_head: float,
     ) -> np.ndarray:
         return shift_add_func(
             self,
@@ -397,7 +371,7 @@ def ol_resolve_complex(
         ffa_level: int,
         latter: int,
     ) -> tuple[np.ndarray, float]:
-        return resolve_complex_func(self, pset_cur, parr_prev, ffa_level, latter)
+        return resolve_func(self, pset_cur, parr_prev, ffa_level, latter)
 
     return impl
 
@@ -496,6 +470,6 @@ def unify_fold(
             fold_out[ipair, iparam_set] = dp_funcs.shift_add(
                 fold_tail,
                 fold_head,
-                shift_tail,  # type: ignore[arg-type]
-                shift_head,  # type: ignore[arg-type]
+                shift_tail,
+                shift_head,
             )

@@ -222,38 +222,39 @@ def brutefold_bucketed(
         msg = "The number of samples must be a multiple of the segment length."
         raise ValueError(msg)
     proper_time = np.arange(segment_len) * tsamp - t_ref
-    phase_map = np.zeros((nfreqs, segment_len), dtype=np.int32)
-    for ifreq in range(nfreqs):
-        phase_map[ifreq] = psr_utils.get_phase_idx_int(
-            proper_time,
-            freq_arr[ifreq],
-            nbins,
-            0,
-        )
+
+    total_buckets = nfreqs * nbins
+    phase_map = np.empty(nfreqs * segment_len, dtype=np.uint32)
+    bucket_indices = np.empty(nfreqs * segment_len, dtype=np.uint32)
+    offsets = np.zeros(total_buckets + 1, dtype=np.uint32)
 
     # Build counts and buckets for efficient folding
-    total_buckets = nfreqs * nbins
-    counts = np.zeros(total_buckets, dtype=np.int32)
+    counts = np.zeros(total_buckets, dtype=np.int64)
     for ifreq in range(nfreqs):
-        base = ifreq * nbins
+        freq_offset_in = ifreq * segment_len
         for isamp in range(segment_len):
-            iph = phase_map[ifreq, isamp]
-            counts[base + iph] += 1
+            proper_time = (isamp * tsamp) - t_ref
+            iphase = psr_utils.get_phase_idx_int(
+                proper_time,
+                freq_arr[ifreq],
+                nbins,
+                0,
+            )
+            phase_map[freq_offset_in + isamp] = iphase
+            bucket_idx = ifreq * nbins + iphase
+            counts[bucket_idx] += 1
 
-    offsets = np.empty(total_buckets + 1, dtype=np.int32)
-    offsets[0] = 0
-    for i in range(total_buckets):
-        offsets[i + 1] = offsets[i] + counts[i]
+    for i in range(1, total_buckets + 1):
+        offsets[i] = offsets[i - 1] + counts[i - 1]
 
-    bucket_indices = np.empty(offsets[-1], dtype=np.int32)
     writers = offsets.copy()
     for ifreq in range(nfreqs):
-        base = ifreq * nbins
+        freq_offset_in = ifreq * segment_len
         for isamp in range(segment_len):
-            iph = phase_map[ifreq, isamp]
-            bidx = base + iph
-            bucket_indices[writers[bidx]] = isamp
-            writers[bidx] += 1
+            iphase = phase_map[freq_offset_in + isamp]
+            bucket_idx = ifreq * nbins + iphase
+            bucket_indices[writers[bucket_idx]] = isamp
+            writers[bucket_idx] += 1
 
     fold = np.zeros((nsegments, nfreqs, 2, nbins), dtype=np.float32)
     for iseg in prange(nsegments):
@@ -262,29 +263,21 @@ def brutefold_bucketed(
         ts_v_seg = ts_v[start : start + segment_len]
         for ifreq in range(nfreqs):
             base = ifreq * nbins
-            for iph in range(nbins):
-                bstart = offsets[base + iph]
-                bend = offsets[base + iph + 1]
-                size = bend - bstart
-                if size == 0:
+            for iphase in range(nbins):
+                bucket_idx = base + iphase
+                buck_start = offsets[bucket_idx]
+                buck_end = offsets[bucket_idx + 1]
+                buck_size = buck_end - buck_start
+                if buck_size == 0:
                     continue
                 sum_e = np.float32(0.0)
                 sum_v = np.float32(0.0)
-                main_loop = size - (size % 8)  # Unroll factor
-                for i in range(0, main_loop, 8):
-                    for j in range(8):
-                        idx = bucket_indices[bstart + i + j]
-                        sum_e += ts_e_seg[idx]
-                        sum_v += ts_v_seg[idx]
-                # remainder
-                for i in range(main_loop, size):
-                    idx = bucket_indices[bstart + i]
+                for i in range(buck_size):
+                    idx = bucket_indices[buck_start + i]
                     sum_e += ts_e_seg[idx]
                     sum_v += ts_v_seg[idx]
-
-                # identical in-place accumulation
-                fold[iseg, ifreq, 0, iph] = sum_e
-                fold[iseg, ifreq, 1, iph] = sum_v
+                fold[iseg, ifreq, 0, iphase] = sum_e
+                fold[iseg, ifreq, 1, iphase] = sum_v
 
     return fold
 
@@ -667,13 +660,15 @@ def shift(data: np.ndarray, phase_shift: int) -> np.ndarray:
 def shift_add(
     data_tail: np.ndarray,
     data_head: np.ndarray,
-    shift_tail: int,
-    shift_head: int,
+    phase_shift_tail: float,
+    phase_shift_head: float,
 ) -> np.ndarray:
     n_comps, n_cols = data_tail.shape
     res = np.empty((n_comps, n_cols), dtype=data_tail.dtype)
-    shift_tail = shift_tail % n_cols
-    shift_head = shift_head % n_cols
+    phase_shift_tail_float = np.float32(phase_shift_tail)
+    phase_shift_head_float = np.float32(phase_shift_head)
+    shift_tail = round(phase_shift_tail_float) % n_cols
+    shift_head = round(phase_shift_head_float) % n_cols
     for j in range(n_cols):
         idx1 = (j - shift_tail) % n_cols
         idx2 = (j - shift_head) % n_cols

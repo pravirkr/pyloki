@@ -9,13 +9,16 @@ from pyloki.utils.misc import C_VAL
 
 
 @vectorize(nopython=True, cache=True)
-def get_phase_idx_int(proper_time: float, freq: float, nbins: int, delay: float) -> int:
-    """Calculate the phase index of the proper time in the folded profile.
+def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> float:
+    """Compute the absolute phase index for a periodic signal.
+
+    The phase is calculated as the fractional part of the total cycles and then scaled
+    by the number of bins. Handles negative time and delay.
 
     Parameters
     ----------
     proper_time : float
-        Proper time of the signal in time units.
+        Proper time of the signal in time units (arrival time).
     freq : float
         Frequency of the signal in Hz. Must be positive.
     nbins : int
@@ -25,8 +28,8 @@ def get_phase_idx_int(proper_time: float, freq: float, nbins: int, delay: float)
 
     Returns
     -------
-    int
-        Phase bin index of the proper time in the folded profile.
+    float
+        Phase bin index as a float in the range [0, nbins).
     """
     if freq <= 0:
         msg = "Frequency must be positive."
@@ -35,27 +38,18 @@ def get_phase_idx_int(proper_time: float, freq: float, nbins: int, delay: float)
         msg = "Number of bins must be positive."
         raise ValueError(msg)
     phase = ((proper_time + delay) * freq) % 1.0
-    # phase is in [0, 1). Round and wrap to ensure it is in [0, nbins).
-    iphase = int(phase * nbins + 0.5)
-    if iphase == nbins:
+    iphase = phase * float(nbins)
+    # Clamp to ensure iphase ∈ [0, nbins)
+    if iphase >= nbins:
         return 0
     return iphase
 
 
 @vectorize(nopython=True, cache=True)
-def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> float:
-    """Calculate the (unrounded) phase index of the proper time."""
-    if freq <= 0:
-        msg = "Frequency must be positive."
-        raise ValueError(msg)
-    if nbins <= 0:
-        msg = "Number of bins must be positive."
-        raise ValueError(msg)
-    phase = ((proper_time + delay) * freq) % 1.0
-    iphase = phase * nbins
-    if iphase == nbins:
-        return 0
-    return iphase
+def get_phase_idx_int(proper_time: float, freq: float, nbins: int, delay: float) -> int:
+    shifts = get_phase_idx(proper_time, freq, nbins, delay)
+    shifts_float = np.float32(shifts)
+    return round(shifts_float) % nbins
 
 
 @njit(cache=True, fastmath=True)

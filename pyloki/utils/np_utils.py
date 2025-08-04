@@ -10,7 +10,12 @@ if TYPE_CHECKING:
 
 
 @njit(cache=True, fastmath=True)
-def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
+def find_nearest_sorted_idx(
+    array: np.ndarray,
+    value: float,
+    rtol: float = 1e-5,
+    atol: float = 1e-8,
+) -> int:
     """Find the index of the closest value in a sorted array.
 
     In case of a tie, the index of the smaller value is returned.
@@ -22,6 +27,10 @@ def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
         Sorted array. Must contain at least one element.
     value : float
         Value to search for.
+    rtol : float, optional
+        Relative tolerance for floating-point comparison, by default 1e-5.
+    atol : float, optional
+        Absolute tolerance for floating-point comparison, by default 1e-8.
 
     Returns
     -------
@@ -37,15 +46,21 @@ def find_nearest_sorted_idx(array: np.ndarray, value: float) -> int:
         msg = "Array must not be empty"
         raise ValueError(msg)
     idx = int(np.searchsorted(array, value, side="left"))
-    if idx > 0 and (
-        idx == len(array) or abs(value - array[idx - 1]) <= abs(value - array[idx])
-    ):
-        return idx - 1
+    if idx > 0:
+        diff_prev = abs(value - array[idx - 1])
+        diff_curr = abs(value - array[idx]) if idx < len(array) else np.inf
+        if diff_prev <= diff_curr * (1 + rtol) + atol:
+            return idx - 1
     return idx
 
 
 @njit(cache=True, fastmath=True)
-def find_nearest_sorted_idx_vect(array: np.ndarray, values: np.ndarray) -> np.ndarray:
+def find_nearest_sorted_idx_vect(
+    array: np.ndarray,
+    values: np.ndarray,
+    rtol: float = 1e-5,
+    atol: float = 1e-8,
+) -> np.ndarray:
     """Find the indices of the closest values in a sorted array (vectorized)."""
     if len(array) == 0:
         msg = "Array must not be empty"
@@ -57,10 +72,13 @@ def find_nearest_sorted_idx_vect(array: np.ndarray, values: np.ndarray) -> np.nd
     out = np.empty(len(values), dtype=np.int64)
     for i in range(len(values)):
         idx = idxs[i]
-        if idx > 0 and (
-            idx == n or abs(values[i] - array[idx - 1]) <= abs(values[i] - array[idx])
-        ):
-            out[i] = idx - 1
+        if idx > 0:
+            diff_prev = abs(values[i] - array[idx - 1])
+            diff_curr = abs(values[i] - array[idx]) if idx < n else np.inf
+            if diff_prev <= diff_curr * (1 + rtol) + atol:
+                out[i] = idx - 1
+            else:
+                out[i] = idx
         else:
             out[i] = idx
     return out
@@ -306,7 +324,7 @@ def cpadpow2(arr: np.ndarray) -> np.ndarray:
 def cpad2len(arr: np.ndarray, size: int) -> np.ndarray:
     """Circularly pad the last dimension of ndarray 'arr' to given length with zeros."""
     padding_needed = size - arr.shape[-1]
-    zero_arr = np.zeros(arr.shape[:-1] + (padding_needed,))
+    zero_arr = np.zeros((*arr.shape[:-1], padding_needed))
     return np.concatenate((arr, zero_arr), axis=-1)
 
 
