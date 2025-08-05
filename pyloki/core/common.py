@@ -334,6 +334,16 @@ def brutefold_start_complex(
     nbins_f = (nbins // 2) + 1
 
     proper_time = np.arange(segment_len, dtype=np.float32) * tsamp - t_ref
+    base_r = np.empty((nfreqs, segment_len), dtype=np.float32)
+    base_i = np.empty((nfreqs, segment_len), dtype=np.float32)
+
+    for ifreq in prange(nfreqs):
+        phase_factor = np.float32(-2.0 * np.pi * freq_arr[ifreq])
+        for t in range(segment_len):
+            ang = phase_factor * proper_time[t]
+            base_r[ifreq, t] = np.cos(ang)
+            base_i[ifreq, t] = np.sin(ang)
+
     fold = np.zeros((nsegments, nfreqs, 2, nbins_f), dtype=np.complex64)
     for iseg in prange(nsegments):
         start = iseg * segment_len
@@ -342,8 +352,6 @@ def brutefold_start_complex(
         ts_e_seg = ts_e[start:end]
         ts_v_seg = ts_v[start:end]
 
-        base_r = np.empty(seg_len, dtype=np.float32)
-        base_i = np.empty(seg_len, dtype=np.float32)
         cur_r = np.empty(seg_len, dtype=np.float32)
         cur_i = np.empty(seg_len, dtype=np.float32)
 
@@ -356,21 +364,13 @@ def brutefold_start_complex(
             sum_v += ts_v_seg[t]
 
         for ifreq in range(nfreqs):
-            freq = np.float32(freq_arr[ifreq])
             fold[iseg, ifreq, 0, 0] = sum_e + 0j
             fold[iseg, ifreq, 1, 0] = sum_v + 0j
 
-            # build “base phasor” for harmonic m=1
-            # (complex array stored as two real arrays)
-            phase_factor = -2.0 * np.pi * freq
-            for t in range(seg_len):
-                ang = np.float32(phase_factor * proper_time[t])
-                base_r[t] = np.cos(ang)
-                base_i[t] = np.sin(ang)
             # cur_r/cur_i will step through m=1,2,… phasors by repeated multiply
             for t in range(seg_len):
-                cur_r[t] = base_r[t]
-                cur_i[t] = base_i[t]
+                cur_r[t] = base_r[ifreq, t]
+                cur_i[t] = base_i[ifreq, t]
             # loop over AC harmonics m=1..nbins_f-1
             for m in range(1, nbins_f):
                 # accumulate sums for E and V
@@ -389,8 +389,8 @@ def brutefold_start_complex(
                     pr = cur_r[t]
                     pi = cur_i[t]
                     # (pr + i pi)*(br + i bi)
-                    cur_r[t] = pr * base_r[t] - pi * base_i[t]
-                    cur_i[t] = pr * base_i[t] + pi * base_r[t]
+                    cur_r[t] = pr * base_r[ifreq, t] - pi * base_i[ifreq, t]
+                    cur_i[t] = pr * base_i[ifreq, t] + pi * base_r[ifreq, t]
 
                 fold[iseg, ifreq, 0, m] = acc_e_r + 1j * acc_e_i
                 fold[iseg, ifreq, 1, m] = acc_v_r + 1j * acc_v_i
