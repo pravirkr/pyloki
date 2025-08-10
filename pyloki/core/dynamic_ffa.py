@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Self
 
-import numpy as np
 from numba import njit, prange, types
 from numba.experimental import structref
 from numba.extending import overload_method
@@ -14,6 +13,8 @@ from pyloki.utils.timing import Timer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    import numpy as np
 
     from pyloki.config import PulsarSearchConfig
 
@@ -250,12 +251,7 @@ def shift_add_complex_func(
     shift_tail: float,
     shift_head: float,
 ) -> np.ndarray:
-    nbins_f = data_tail.shape[-1]
-    k = np.arange(nbins_f)
-    fold_bins = self.nbins
-    phase1 = np.exp(-2j * np.pi * k * shift_tail / fold_bins)
-    phase2 = np.exp(-2j * np.pi * k * shift_head / fold_bins)
-    return (data_tail * phase1) + (data_head * phase2)
+    return common.shift_add_complex(data_tail, data_head, shift_tail, shift_head)
 
 
 @overload_method(FFATaylorDPFunctsTemplate, "init")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import time
+from contextlib import contextmanager
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, Self, TypeVar
@@ -23,7 +24,7 @@ from rich.progress import (
 from rich.text import Text
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
+    from collections.abc import Callable, Generator, Iterable, Sequence
     from multiprocessing.managers import DictProxy
     from queue import Queue
     from typing import Any
@@ -63,57 +64,86 @@ def mkdir_p(dir_path: str | Path, must_not_exist: list[str] | None = None) -> Pa
     return path
 
 
-def get_handler(console: Console | None = None) -> logging.Handler:
+def get_rich_handler(console: Console | None = None) -> logging.Handler:
     console = console or CONSOLE
     handler = RichHandler(
         console=console,
         show_path=False,
         rich_tracebacks=True,
         log_time_format="%Y-%m-%d %H:%M:%S",
+        markup=True,
     )
     formatter = logging.Formatter(fmt="- %(name)s - %(message)s")
     handler.setFormatter(formatter)
     return handler
 
 
-def get_logger(
-    name: str,
+def setup_root_logging(
+    package_name: str,
     *,
     console: Console | None = None,
     level: int | str = logging.INFO,
     quiet: bool = False,
     log_file: str | None = None,
 ) -> logging.Logger:
-    """Get a fancy configured logger.
+    """Set up logging for the entire package.
+
+    This should be called once when the package is imported/initialized.
 
     Parameters
     ----------
-    name : str
-        logger name
+    package_name : str
+        Root package name.
+    console : Console, optional
+        Rich console instance
     level : int or str, optional
-        logging level, by default logging.INFO
+        Logging level, by default logging.INFO
     quiet : bool, optional
-        if True set `level` as logging.WARNING, by default False
+        If True set level to WARNING, by default False
     log_file : str, optional
-        path to log file, by default None
+        Path to log file, by default None
 
     Returns
     -------
     logging.Logger
-        a logging object
+        Root package logger
     """
     console = console or CONSOLE
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.WARNING if quiet else level)
-    if not logger.hasHandlers():
-        handler = get_handler(console)
-        logger.addHandler(handler)
+    root_logger = logging.getLogger(package_name)
+    root_logger.setLevel(logging.WARNING if quiet else level)
+
+    # Clear any existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+    handler = get_rich_handler(console)
+    root_logger.addHandler(handler)
     if log_file:
         file_handler = logging.FileHandler(log_file)
         formatter = logging.Formatter(fmt="- %(name)s - %(message)s")
         file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    return logger
+        file_handler.setLevel(level)
+        root_logger.addHandler(file_handler)
+    # Prevent propagation to root logger to avoid duplicate messages
+    root_logger.propagate = False
+    return root_logger
+
+
+def get_logger(name: str) -> logging.Logger:
+    """Get a logger for a specific module.
+
+    This creates a child logger that inherits from the package root logger.
+    Make sure setup_root_logging() has been called first.
+
+    Parameters
+    ----------
+    name : str
+        Module name (typically __name__)
+
+    Returns
+    -------
+    logging.Logger
+        Module logger that inherits from package root
+    """
+    return logging.getLogger(name)
 
 
 def get_worker_logger(
@@ -150,6 +180,41 @@ def get_worker_logger(
     logger.addHandler(handler)
 
     return logger
+
+
+@contextmanager
+def quiet_logger(
+    logger_name: str | None = None,
+    *,
+    quiet: bool = False,
+    level: int = logging.ERROR,
+) -> Generator[None, None, None]:
+    """Context manager to temporarily change logging level.
+
+    Parameters
+    ----------
+    logger_name : str, optional
+        Logger name to quiet. If None, affects the root package logger.
+        Use your package root name (e.g., 'pyloki') to quiet all loggers.
+    quiet : bool, optional
+        Whether to actually quiet the logger
+    level : int, optional
+        Level to set when quiet=True, by default logging.ERROR
+    """
+    if not quiet:
+        yield
+        return
+    if logger_name is None:
+        logger_name = "pyloki"
+
+    target_logger = logging.getLogger(logger_name)
+    original_level = target_logger.level
+
+    target_logger.setLevel(level)
+    try:
+        yield
+    finally:
+        target_logger.setLevel(original_level)
 
 
 class ScoreColumn(ProgressColumn):
@@ -284,7 +349,10 @@ class MultiprocessProgressTracker:
         self.log_queue = self.manager.Queue()
         # Create a handler that uses the same console as the tracker
         # Set up a listener for logs from worker processes
-        self.log_listener = QueueListener(self.log_queue, get_handler(self.console))
+        self.log_listener = QueueListener(
+            self.log_queue,
+            get_rich_handler(self.console),
+        )
         self.log_listener.start()
 
         # Single unified Progress instance

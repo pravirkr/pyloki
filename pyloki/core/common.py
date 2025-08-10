@@ -656,46 +656,128 @@ def shift(data: np.ndarray, phase_shift: int) -> np.ndarray:
     return np_utils.nb_roll(data, phase_shift, axis=-1)
 
 
-@njit(cache=True, fastmath=True)
+@njit(["f4[:,::1](f4[:,::1],f4[:,::1],f8,f8)"], cache=True, fastmath=True)
 def shift_add(
     data_tail: np.ndarray,
     data_head: np.ndarray,
     phase_shift_tail: float,
     phase_shift_head: float,
 ) -> np.ndarray:
-    n_comps, n_cols = data_tail.shape
-    res = np.empty((n_comps, n_cols), dtype=data_tail.dtype)
+    n_comps, nbins = data_tail.shape
+    res = np.empty((n_comps, nbins), dtype=data_tail.dtype)
     phase_shift_tail_float = np.float32(phase_shift_tail)
     phase_shift_head_float = np.float32(phase_shift_head)
-    shift_tail = round(phase_shift_tail_float) % n_cols
-    shift_head = round(phase_shift_head_float) % n_cols
-    for j in range(n_cols):
-        idx1 = (j - shift_tail) % n_cols
-        idx2 = (j - shift_head) % n_cols
+    shift_tail = round(phase_shift_tail_float) % nbins
+    shift_head = round(phase_shift_head_float) % nbins
+    for j in range(nbins):
+        idx1 = (j - shift_tail) % nbins
+        idx2 = (j - shift_head) % nbins
         res[0, j] = data_tail[0, idx1] + data_head[0, idx2]
         res[1, j] = data_tail[1, idx1] + data_head[1, idx2]
     return res
 
 
 @njit(cache=True, fastmath=True)
+def shift_add_complex_direct(
+    data_tail: np.ndarray,
+    data_head: np.ndarray,
+    phase_shift_tail: float,
+    phase_shift_head: float,
+) -> np.ndarray:
+    n_comps, nbins_f = data_tail.shape
+    nbins = (nbins_f - 1) * 2
+    phase_shift_tail_float = np.float32(phase_shift_tail)
+    phase_shift_head_float = np.float32(phase_shift_head)
+    k = np.arange(nbins_f)
+    phase1 = np.exp(-2j * np.pi * k * phase_shift_tail_float / nbins)
+    phase2 = np.exp(-2j * np.pi * k * phase_shift_head_float / nbins)
+    return (data_tail * phase1) + (data_head * phase2)
+
+
+@njit(["c8[:,::1](c8[:,::1], c8[:,::1], f8, f8)"], cache=True, fastmath=True)
+def shift_add_complex(
+    data_tail: np.ndarray,
+    data_head: np.ndarray,
+    phase_shift_tail: float,
+    phase_shift_head: float,
+) -> np.ndarray:
+    n_comps, nbins_f = data_tail.shape
+    res = np.empty((n_comps, nbins_f), dtype=data_tail.dtype)
+    nbins = (nbins_f - 1) * 2
+
+    # Precompute the angular steps
+    phase_shift_tail_float = np.float32(phase_shift_tail)
+    phase_shift_head_float = np.float32(phase_shift_head)
+    step_tail = np.float32(-2.0 * np.pi * phase_shift_tail_float / nbins)
+    step_head = np.float32(-2.0 * np.pi * phase_shift_head_float / nbins)
+
+    # Compute the complex delta (rotation factors)
+    delta_tail = np.complex64(np.cos(step_tail) + 1j * np.sin(step_tail))
+    delta_head = np.complex64(np.cos(step_head) + 1j * np.sin(step_head))
+    phase_tail = np.complex64(1.0 + 0.0j)
+    phase_head = np.complex64(1.0 + 0.0j)
+
+    for k in range(nbins_f):
+        res[0, k] = data_tail[0, k] * phase_tail + data_head[0, k] * phase_head
+        res[1, k] = data_tail[1, k] * phase_tail + data_head[1, k] * phase_head
+        phase_tail *= delta_tail
+        phase_head *= delta_head
+    return res
+
+
+@njit(
+    ["f4[:,:,::1](f4[:,:,::1],f8[::1],f4[:,:,::1], i8[::1])"],
+    cache=True,
+    fastmath=True,
+)
 def shift_add_batch(
     segment_batch: np.ndarray,
     shift_batch: np.ndarray,
     folds: np.ndarray,
     isuggest_batch: np.ndarray,
 ) -> np.ndarray:
-    n_batch, n_comps, n_cols = segment_batch.shape
-    res = np.empty((n_batch, n_comps, n_cols), dtype=segment_batch.dtype)
+    n_batch, n_comps, nbins = segment_batch.shape
+    res = np.empty((n_batch, n_comps, nbins), dtype=segment_batch.dtype)
     for irow in range(n_batch):
-        shift = shift_batch[irow] % n_cols
+        shift_float = np.float32(shift_batch[irow])
+        shift = round(shift_float) % nbins
         fold_row = folds[isuggest_batch[irow]]
-        src_idx = (-shift) % n_cols
-        for j in range(n_cols):
+        src_idx = (-shift) % nbins
+        for j in range(nbins):
             res[irow, 0, j] = fold_row[0, j] + segment_batch[irow, 0, src_idx]
             res[irow, 1, j] = fold_row[1, j] + segment_batch[irow, 1, src_idx]
             src_idx += 1
-            if src_idx == n_cols:
+            if src_idx == nbins:
                 src_idx = 0
+    return res
+
+
+@njit(
+    ["c8[:,:,::1](c8[:,:,::1],f8[::1],c8[:,:,::1], i8[::1])"],
+    cache=True,
+    fastmath=True,
+)
+def shift_add_complex_batch(
+    segment_batch: np.ndarray,
+    shift_batch: np.ndarray,
+    folds: np.ndarray,
+    isuggest_batch: np.ndarray,
+) -> np.ndarray:
+    n_batch, n_comps, nbins_f = segment_batch.shape
+    res = np.empty((n_batch, n_comps, nbins_f), dtype=segment_batch.dtype)
+    nbins = (nbins_f - 1) * 2
+    for irow in range(n_batch):
+        shift_float = np.float32(shift_batch[irow])
+        # Precompute phase step and delta
+        angle = np.float32(-2.0 * np.float32(np.pi) * shift_float / nbins)
+        delta = np.complex64(np.cos(angle) + 1j * np.sin(angle))
+        phase = np.complex64(1.0 + 0.0j)
+        fold = folds[isuggest_batch[irow]]
+        for k in range(nbins_f):
+            res[irow, 0, k] = segment_batch[irow, 0, k] * phase + fold[0, k]
+            res[irow, 1, k] = segment_batch[irow, 1, k] * phase + fold[1, k]
+            phase *= delta
+
     return res
 
 

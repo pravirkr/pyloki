@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Self
 
-import numpy as np
 from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
@@ -13,6 +12,8 @@ from pyloki.core import common, taylor
 from pyloki.detection import scoring
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from pyloki.config import PulsarSearchConfig
     from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
@@ -307,19 +308,6 @@ def load_func(self: PruneTaylorDPFuncts, fold: np.ndarray, seg_idx: int) -> np.n
 
 
 @njit(cache=True, fastmath=True)
-def round_phase_func(phase_batch: np.ndarray, nbins: int) -> np.ndarray:
-    n_batch = len(phase_batch)
-    res = np.empty(n_batch, dtype=np.int32)
-    for irow in range(n_batch):
-        iphase = int(phase_batch[irow] + 0.5)
-        if iphase == nbins:
-            res[irow] = 0
-        else:
-            res[irow] = iphase
-    return res
-
-
-@njit(cache=True, fastmath=True)
 def resolve_func(
     self: PruneTaylorDPFuncts,
     leaf_batch: np.ndarray,
@@ -327,24 +315,20 @@ def resolve_func(
     coord_init: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     if self.poly_order == 4:
-        param_idx_batch, relative_phase_batch = taylor.poly_taylor_resolve_snap_batch(
+        return taylor.poly_taylor_resolve_snap_batch(
             leaf_batch,
             coord_add,
             coord_init,
             self.param_arr,
             self.nbins,
         )
-        relative_phase_batch_int = round_phase_func(relative_phase_batch, self.nbins)
-        return param_idx_batch, relative_phase_batch_int
-    param_idx_batch, relative_phase_batch = taylor.poly_taylor_resolve_batch(
+    return taylor.poly_taylor_resolve_batch(
         leaf_batch,
         coord_add,
         coord_init,
         self.param_arr,
         self.nbins,
     )
-    relative_phase_batch_int = round_phase_func(relative_phase_batch, self.nbins)
-    return param_idx_batch, relative_phase_batch_int
 
 
 @njit(cache=True, fastmath=True)
@@ -460,17 +444,12 @@ def shift_add_complex_func(
     folds: np.ndarray,
     isuggest_batch: np.ndarray,
 ) -> np.ndarray:
-    n_batch, n_comps, n_cols = segment_batch.shape
-    res = np.empty((n_batch, n_comps, n_cols), dtype=segment_batch.dtype)
-    k = np.arange(n_cols)
-    fold_bins = self.nbins
-    for irow in range(n_batch):
-        shift = shift_batch[irow]
-        fold_row = folds[isuggest_batch[irow]]
-        phase = np.exp(-2j * np.pi * k * shift / fold_bins)
-        res[irow, 0] = (segment_batch[irow, 0] * phase) + fold_row[0]
-        res[irow, 1] = (segment_batch[irow, 1] * phase) + fold_row[1]
-    return res
+    return common.shift_add_complex_batch(
+        segment_batch,
+        shift_batch,
+        folds,
+        isuggest_batch,
+    )
 
 
 @njit(cache=True, fastmath=True)

@@ -13,7 +13,12 @@ from pyloki.core import (
 )
 from pyloki.core.taylor import ffa_taylor_resolve
 from pyloki.utils import np_utils
-from pyloki.utils.misc import PicklableStructRefWrapper, get_logger, track_progress
+from pyloki.utils.misc import (
+    PicklableStructRefWrapper,
+    get_logger,
+    quiet_logger,
+    track_progress,
+)
 from pyloki.utils.timing import Timer
 
 if TYPE_CHECKING:
@@ -403,7 +408,7 @@ class DynamicProgramming:
 
 def compute_ffa(
     tseries: TimeSeries,
-    cfg: PulsarSearchConfig,
+    search_cfg: PulsarSearchConfig,
     *,
     quiet: bool = False,
     show_progress: bool = False,
@@ -414,7 +419,7 @@ def compute_ffa(
     ----------
     tseries : TimeSeries
         Input time series data.
-    cfg : PulsarSearchConfig
+    search_cfg : PulsarSearchConfig
         A configuration object for the FFA search.
     quiet : bool, optional
         If True, suppresses logging output, by default False.
@@ -426,9 +431,8 @@ def compute_ffa(
     DynamicProgramming
         The dynamic programming object with the FFA results.
     """
-    if quiet:
-        logger.setLevel("ERROR")
-    dyp = DynamicProgramming(tseries, cfg)
-    dyp.initialize()
-    dyp.execute(show_progress=show_progress)
+    with quiet_logger(quiet=quiet):
+        dyp = DynamicProgramming(tseries, search_cfg)
+        dyp.initialize()
+        dyp.execute(show_progress=show_progress)
     return dyp.fold
