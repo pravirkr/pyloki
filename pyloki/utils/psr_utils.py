@@ -83,7 +83,8 @@ def poly_taylor_step_f(
     dphi = tol_bins / fold_bins
     k = np.arange(nparams)
     dparams_f = dphi * maths.fact(k + 1) / (tobs - t_ref) ** (k + 1)
-    return dparams_f[::-1]
+    dparams_f_opt = 2**k * dparams_f
+    return dparams_f_opt[::-1]
 
 
 @njit(cache=True, fastmath=True)
@@ -148,8 +149,9 @@ def poly_taylor_shift_d(
     nparams = len(dparam_old)
     k = np.arange(nparams - 1, -1, -1)
     factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
-    factors[:-1] *= f_cur / C_VAL
-    return np.abs(dparam_old - dparam_new) * factors
+    factors_opt = factors / 2**k
+    factors_opt[:-1] *= f_cur / C_VAL
+    return np.abs(dparam_old - dparam_new) * factors_opt
 
 
 @njit(cache=True, fastmath=True)
@@ -165,9 +167,10 @@ def poly_taylor_shift_d_vec(
     nbatch, nparams = dparam_old.shape
     k = np.arange(nparams - 1, -1, -1)
     factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
+    factors_opt = factors / 2**k
     factors_broadcast = np.empty((nbatch, nparams), dtype=dparam_old.dtype)
     for i in range(nbatch):
-        factors_broadcast[i, :] = factors
+        factors_broadcast[i, :] = factors_opt
     # For all but last param, scale by f_cur / C_VAL
     scale = (f_cur / C_VAL)[:, np.newaxis]
     factors_broadcast[:, :-1] *= scale

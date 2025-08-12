@@ -21,39 +21,37 @@ def poly_circular_resolve_batch(
     delta_t = coord_add[0] - coord_init[0]
 
     # Extract parameters leaf_batch[:, :-2]
-    omega_batch = leaf_batch[:, 0, 0]
-    x_cos_phi_batch = leaf_batch[:, 1, 0]
-    x_sin_phi_batch = leaf_batch[:, 2, 0]
-    freq_old_batch = leaf_batch[:, 3, 0]
+    omega_orb_batch = leaf_batch[:, 0, 0]
+    x_cos_nu_batch = leaf_batch[:, 1, 0]
+    x_sin_nu_batch = leaf_batch[:, 2, 0]
+    f_cur_batch = leaf_batch[:, 3, 0]
 
     # x is already in light seconds (no division by C_VAL)
-    new_x_cos_om_t_plus_phi_batch = x_cos_phi_batch * np.cos(
-        omega_batch * delta_t,
-    ) - x_sin_phi_batch * np.sin(omega_batch * delta_t)
-    new_x_sin_om_t_plus_phi_batch = x_sin_phi_batch * np.cos(
-        omega_batch * delta_t,
-    ) + x_cos_phi_batch * np.sin(omega_batch * delta_t)
-    delay_batch = new_x_cos_om_t_plus_phi_batch - x_cos_phi_batch
-    new_v_over_c_batch = -new_x_sin_om_t_plus_phi_batch * omega_batch
-    new_freq_batch = freq_old_batch * (1 - new_v_over_c_batch)
-    new_a_batch = (
-        -(omega_batch**2) * (new_x_cos_om_t_plus_phi_batch - x_cos_phi_batch) * C_VAL
-    )
+    # Evolve the phase to the new time t_j = t_i + delta_t
+    omega_dt = omega_orb_batch * delta_t
+    cos_odt = np.cos(omega_dt)
+    sin_odt = np.sin(omega_dt)
+    x_cos_nu_new_batch = x_cos_nu_batch * cos_odt - x_sin_nu_batch * sin_odt
+    x_sin_nu_new_batch = x_sin_nu_batch * cos_odt + x_cos_nu_batch * sin_odt
+    a_new_batch = -C_VAL * omega_orb_batch**2 * x_sin_nu_new_batch
+    v_new_batch = omega_orb_batch * x_cos_nu_new_batch  # C_VAL division included
+    delay_batch = x_sin_nu_new_batch - x_sin_nu_batch  # C_VAL division included
+    f_new_batch = f_cur_batch * (1 + v_new_batch)
 
     relative_phase_batch = psr_utils.get_phase_idx(
         delta_t,
-        freq_old_batch,
+        f_cur_batch,
         fold_bins,
         delay_batch,
     )
     param_idx_batch = np.zeros((n_leaves, nparams), dtype=np.int64)
     param_idx_batch[:, -1] = np_utils.find_nearest_sorted_idx_vect(
         param_arr[-1],
-        new_freq_batch,
+        f_new_batch,
     )
     param_idx_batch[:, -2] = np_utils.find_nearest_sorted_idx_vect(
         param_arr[-2],
-        new_a_batch,
+        a_new_batch,
     )
     return param_idx_batch, relative_phase_batch
 
@@ -70,20 +68,20 @@ def poly_circular_branch_batch(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Branch a batch of parameter sets to leaves."""
     n_batch = len(param_set_batch)
-    # Only two parameters to branch: omega and frequency; x_cos_phi, x_sin_phi params
+    # Only two parameters to branch: omega and frequency; x_cos_nu, x_sin_nu params
     # never get refined (their accuracy does not increase with time).
     nparams = 2
     _, scale_cur = coord_cur
     param_cur_batch = param_set_batch[:, :nparams, 0]
     dparam_cur_batch = param_set_batch[:, :nparams, 1]
-    x_cos_phi_cur_batch = param_set_batch[:, 2, 0]
-    dx_cos_phi_cur_batch = param_set_batch[:, 2, 1]
-    x_sin_phi_cur_batch = param_set_batch[:, 3, 0]
-    dx_sin_phi_cur_batch = param_set_batch[:, 3, 1]
+    x_cos_nu_cur_batch = param_set_batch[:, 2, 0]
+    dx_cos_nu_cur_batch = param_set_batch[:, 2, 1]
+    x_sin_nu_cur_batch = param_set_batch[:, 3, 0]
+    dx_sin_nu_cur_batch = param_set_batch[:, 3, 1]
     f0_batch = param_set_batch[:, -2, 0]
     t0_batch = param_set_batch[:, -1, 0]
     scale_batch = param_set_batch[:, -1, 1]
-    x_cur_batch = np.sqrt(x_cos_phi_cur_batch**2 + x_sin_phi_cur_batch**2)
+    x_cur_batch = np.sqrt(x_cos_nu_cur_batch**2 + x_sin_nu_cur_batch**2)
 
     tseg_cur = 2 * scale_cur
     dparam_opt_batch = np.empty((n_batch, nparams), dtype=np.float64)
@@ -153,10 +151,10 @@ def poly_circular_branch_batch(
     batch_leaves = np.zeros((total_leaves, poly_order + 2, 2), dtype=np.float64)
     batch_leaves[:, :-2, 0] = batch_leaves_circular
     batch_leaves[:, :-2, 1] = pad_branched_dparams[batch_origins]
-    batch_leaves[:, 2, 0] = x_cos_phi_cur_batch[batch_origins]
-    batch_leaves[:, 2, 1] = dx_cos_phi_cur_batch[batch_origins]
-    batch_leaves[:, 3, 0] = x_sin_phi_cur_batch[batch_origins]
-    batch_leaves[:, 3, 1] = dx_sin_phi_cur_batch[batch_origins]
+    batch_leaves[:, 2, 0] = x_cos_nu_cur_batch[batch_origins]
+    batch_leaves[:, 2, 1] = dx_cos_nu_cur_batch[batch_origins]
+    batch_leaves[:, 3, 0] = x_sin_nu_cur_batch[batch_origins]
+    batch_leaves[:, 3, 1] = dx_sin_nu_cur_batch[batch_origins]
     batch_leaves[:, -2, 0] = f0_batch[batch_origins]
     batch_leaves[:, -1, 0] = t0_batch[batch_origins]
     batch_leaves[:, -1, 1] = scale_batch[batch_origins]

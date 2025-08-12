@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING
 
 import h5py
 import numpy as np
+import seaborn as sns
 from matplotlib import pyplot as plt
+from matplotlib.lines import Line2D
 from rich.progress import track
 from sigpyproc.viz.styles import set_seaborn
 
@@ -29,28 +31,80 @@ nparam_to_str = {1: "freq", 2: "acc", 3: "jerk", 4: "snap"}
 
 def plot_sensitivity(filename: str | Path) -> plt.Figure:
     with h5py.File(filename, "r") as f:
+        nsamps = f.attrs["nsamps"]
+        tsamp = f.attrs["dt"]
+        snr_inj = f.attrs["snr"]
+        freq = 1 / f.attrs["period"]
+        ds = f.attrs["ds"]
+        fold_bins_ideal = f.attrs["fold_bins_ideal"]
         ducy_arr = f["ducy_arr"][:]
         tol_bins_arr = f["tol_bins_arr"][:]
-        losses = f["losses"][:]
+        ds_arr = f["ds_arr"][:]
+        losses_real = f["losses_real"][:]
+        losses_complex = f["losses_complex"][:]
+        losses_ds = f["losses_ds"][:]
     set_seaborn(use_latex=True, font_size=16)
-    fig, axs = plt.subplots(2, 2, figsize=(16, 10), layout="constrained")
-    titles = ["Folding loss", "Shifting loss", "Dynamic FFA loss", "Empirical FFA loss"]
-    for iax, ax in enumerate(axs.flat):
+    fig, (axs) = plt.subplots(2, 2, figsize=(16, 10), layout="constrained")
+    for ids in range(len(ds_arr)):
+        fold_bins = int(fold_bins_ideal / ds_arr[ids])
+        axs[0, 0].plot(
+            ducy_arr,
+            losses_ds[ids],
+            "o-",
+            lw=2,
+            markersize=8,
+            label=f"ds = {ds_arr[ids]:.2f}, " + r"$N_{b}$ = " + f"{fold_bins}",
+        )
+        axs[0, 0].set_xlabel("Duty Cycle")
+        axs[0, 0].set_ylabel("Recovered significance")
+        axs[0, 0].set_title("Folding loss")
+        axs[0, 0].legend()
+
+    palette = sns.color_palette("colorblind", n_colors=len(tol_bins_arr))
+    titles = ["Shifting loss", "Dynamic FFA loss", "Empirical FFA loss"]
+    for iax, ax in enumerate(axs.flat[1:]):
         for itol_bin in range(len(tol_bins_arr)):
+            color = palette[itol_bin]
             ax.plot(
                 ducy_arr,
-                losses[iax, itol_bin],
+                losses_real[iax, itol_bin],
                 "o-",
                 lw=2,
                 markersize=8,
-                label=f"tol = {tol_bins_arr[itol_bin]}",
+                color=color,
+                label=r"$\eta$ = " + f"{tol_bins_arr[itol_bin]:.1f}",
             )
+            if iax != 0:
+                ax.plot(
+                    ducy_arr,
+                    losses_complex[iax, itol_bin],
+                    "o--",
+                    lw=2,
+                    markersize=8,
+                    color=color,
+                )
         ax.set_xlabel("Duty Cycle")
         ax.set_ylabel("Recovered significance")
         ax.set_title(titles[iax])
-        ax.legend()
-        if iax == 0:
-            ax.set_ylim(0.2, 1.2)
+
+        h1, l1 = ax.get_legend_handles_labels()
+        style_handles = [
+            Line2D([0], [0], color="black", lw=2, linestyle="-", label="Real"),
+            Line2D([0], [0], color="black", lw=2, linestyle="--", label="Complex"),
+        ]
+        handles = h1 + style_handles
+        labels = l1 + [h.get_label() for h in style_handles]
+        ax.legend(
+            handles,
+            labels,
+            loc="lower right",
+            ncol=2,
+            frameon=True,
+        )
+    fig.suptitle(
+        f"Sensitivity to: nsamps (lb) = {np.log2(nsamps):.0f}, freq = {freq:.3f}, "
+        f"ds = {ds:.2f}, snr_inj = {snr_inj:.2f}, dt = {tsamp:.3f}",
+    )
     return fig
 
 
@@ -58,8 +112,10 @@ def test_sensitivity_ffa(
     tim_data: TimeSeries,
     signal_cfg: PulseSignalConfig,
     search_cfg: PulsarSearchConfig,
+    *,
+    quiet: bool,
 ) -> tuple[float, float, float]:
-    dyp, pgram = ffa_search(tim_data, search_cfg, show_progress=False)
+    dyp, pgram = ffa_search(tim_data, search_cfg, quiet=quiet, show_progress=False)
     snr_shifted = get_shifted_snr(dyp.dparams, tim_data, signal_cfg, search_cfg)
 
     nparams = len(search_cfg.param_limits)
@@ -74,7 +130,10 @@ def test_sensitivity_ffa(
         true_params_idx.insert(0, idx)
     snr_dynamic = float(pgram.data[tuple(true_params_idx)].max())
     snr_empirical = pgram.find_best_params()["snr"]
-    logger.info(f"snr_dynamic: {snr_dynamic:.2f}, snr_empirical: {snr_empirical:.2f}")
+    if not quiet:
+        logger.info(
+            f"snr_dynamic: {snr_dynamic:.2f}, snr_empirical: {snr_empirical:.2f}",
+        )
     return snr_shifted, snr_dynamic, snr_empirical
 
 
@@ -102,16 +161,12 @@ def get_shifted_snr(
                 for deriv in range(2, nparams + 1)
             },
         )
-        shift_snr.append(get_best_snr(fold, search_cfg))
+        shift_snr.append(get_best_snr(fold, signal_cfg.ducy, search_cfg.wtsp))
     return np.max(shift_snr)
 
 
-def get_best_snr(fold: np.ndarray, search_cfg: PulsarSearchConfig) -> float:
-    widths = scoring.generate_box_width_trials(
-        len(fold),
-        ducy_max=search_cfg.ducy_max,
-        wtsp=search_cfg.wtsp,
-    )
+def get_best_snr(fold: np.ndarray, ducy_max: float, wtsp: float) -> float:
+    widths = scoring.generate_box_width_trials(len(fold), ducy_max=ducy_max, wtsp=wtsp)
     return scoring.boxcar_snr_1d(fold, widths, 1.0).max()
 
 
@@ -122,24 +177,33 @@ class TestFFASensitivity:
         param_limits: types.ListType[types.Tuple[float, float]],
         ducy_arr: np.ndarray | None = None,
         tol_bins_arr: np.ndarray | None = None,
+        ds_arr: np.ndarray | None = None,
         ducy_max: float = 0.5,
         wtsp: float = 1,
+        *,
+        quiet: bool = False,
     ) -> None:
         self.cfg = cfg
         self.param_limits = param_limits
         if ducy_arr is None:
             ducy_arr = np.linspace(0.01, 0.3, 15)
-        self.ducy_arr = ducy_arr
         if tol_bins_arr is None:
             tol_bins_arr = np.array([1, 2, 4, 8])
+        if ds_arr is None:
+            ds_arr = np.array([1, 1.25, 1.5, 1.75, 2])
+        self.ducy_arr = ducy_arr
         self.tol_bins_arr = tol_bins_arr
+        self.ds_arr = ds_arr
         self.ducy_max = ducy_max
         self.wtsp = wtsp
+        self.quiet = quiet
         self.rng = np.random.default_rng()
-        self.losses = np.zeros((4, self.ntols, self.nducy), dtype=float)
+        self.losses_real = np.zeros((3, self.ntols, self.nducy), dtype=float)
+        self.losses_complex = np.zeros((3, self.ntols, self.nducy), dtype=float)
+        self.losses_ds = np.zeros((self.nds, self.nducy), dtype=float)
 
     @property
-    def nprams(self) -> int:
+    def nparams(self) -> int:
         return len(self.param_limits)
 
     @property
@@ -151,10 +215,14 @@ class TestFFASensitivity:
         return len(self.ducy_arr)
 
     @property
+    def nds(self) -> int:
+        return len(self.ds_arr)
+
+    @property
     def file_id(self) -> str:
         return (
-            f"{nparam_to_str[self.nprams]}_nsamps_{int(np.log2(self.cfg.nsamps)):02d}_"
-            f"period_{self.cfg.period:.3f}_os_{self.cfg.os:.1f}"
+            f"{nparam_to_str[self.nparams]}_nsamps_{int(np.log2(self.cfg.nsamps)):02d}_"
+            f"period_{self.cfg.period:.3f}_ds_{self.cfg.ds:.1f}"
         )
 
     def run(self, outdir: str | Path) -> str:
@@ -169,10 +237,16 @@ class TestFFASensitivity:
             transient=True,
         ):
             cfg_update = self.cfg.get_updated({"ducy": self.ducy_arr[idu]})
-            self.losses[:, :, idu] = self._execute(cfg_update)
+            losses_total = self._execute(cfg_update)
+            self.losses_ds[:, idu] = losses_total[0]
+            self.losses_real[:, :, idu] = losses_total[1]
+            self.losses_complex[:, :, idu] = losses_total[2]
         return self._save(outpath)
 
-    def _execute(self, cfg: PulseSignalConfig) -> np.ndarray:
+    def _execute(
+        self,
+        cfg: PulseSignalConfig,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         phi0 = 0.5 + self.rng.uniform(-cfg.dt, cfg.dt)
         tim_data = cfg.generate(phi0=phi0)
         fold_perfect = tim_data.fold_ephem(
@@ -180,14 +254,21 @@ class TestFFASensitivity:
             cfg.fold_bins_ideal,
             mod_kwargs=cfg.mod_kwargs,
         )
-        fold_os = tim_data.fold_ephem(
-            cfg.freq,
-            cfg.fold_bins,
-            mod_kwargs=cfg.mod_kwargs,
-        )
-        losses = np.zeros((4, self.ntols), dtype=float)
+        losses_real = np.zeros((3, self.ntols), dtype=float)
+        losses_complex = np.zeros((3, self.ntols), dtype=float)
+        losses_ds = np.zeros((self.nds), dtype=float)
+        # Compute signal strength over different oversampling factors
+        for ids in range(self.nds):
+            fold_bins = int(cfg.fold_bins_ideal / self.ds_arr[ids])
+            fold_ds = tim_data.fold_ephem(
+                cfg.freq,
+                fold_bins,
+                mod_kwargs=cfg.mod_kwargs,
+            )
+            losses_ds[ids] = get_best_snr(fold_ds, self.ducy_max, self.wtsp)
+        # Compute signal strength over different tol_bins
         for itol in range(self.ntols):
-            search_cfg = PulsarSearchConfig(
+            search_cfg_real = PulsarSearchConfig(
                 nsamps=cfg.nsamps,
                 tsamp=cfg.dt,
                 nbins=cfg.fold_bins,
@@ -195,26 +276,50 @@ class TestFFASensitivity:
                 param_limits=self.param_limits,
                 ducy_max=self.ducy_max,
                 wtsp=self.wtsp,
+                bseg_brute=cfg.nsamps // 16384,
+                use_fft_shifts=False,
             )
-            losses[1:, itol] = test_sensitivity_ffa(
+            losses_real[:, itol] = test_sensitivity_ffa(
                 tim_data,
                 cfg,
-                search_cfg,
+                search_cfg_real,
+                quiet=self.quiet,
             )
-        snr_os = get_best_snr(fold_os, search_cfg)
-        snr_desired = get_best_snr(fold_perfect, search_cfg)
-        losses[0] = snr_os
-        return (losses**2) / (snr_desired**2)
+            search_cfg_complex = PulsarSearchConfig(
+                nsamps=cfg.nsamps,
+                tsamp=cfg.dt,
+                nbins=cfg.fold_bins,
+                tol_bins=self.tol_bins_arr[itol],
+                param_limits=self.param_limits,
+                ducy_max=self.ducy_max,
+                wtsp=self.wtsp,
+                bseg_brute=cfg.nsamps // 16384,
+                use_fft_shifts=True,
+            )
+            losses_complex[:, itol] = test_sensitivity_ffa(
+                tim_data,
+                cfg,
+                search_cfg_complex,
+                quiet=self.quiet,
+            )
+        snr_desired = get_best_snr(fold_perfect, self.ducy_max, self.wtsp)
+        losses_real_signi = (losses_real**2) / (snr_desired**2)
+        losses_complex_signi = (losses_complex**2) / (snr_desired**2)
+        losses_ds_signi = (losses_ds**2) / (snr_desired**2)
+        return losses_ds_signi, losses_real_signi, losses_complex_signi
 
     def _save(self, outpath: Path) -> str:
-        outfile = outpath / f"ffa_sensitivity_{self.file_id}.h5"
+        outfile = outpath / f"pyloki_ffa_sensitivity_{self.file_id}.h5"
         with h5py.File(outfile, "w") as f:
-            for attr in ["period", "os", "nsamps"]:
+            for attr in ["period", "ds", "nsamps", "fold_bins_ideal", "dt", "snr"]:
                 f.attrs[attr] = getattr(self.cfg, attr)
             for arr in [
                 "ducy_arr",
                 "tol_bins_arr",
-                "losses",
+                "ds_arr",
+                "losses_real",
+                "losses_complex",
+                "losses_ds",
             ]:
                 f.create_dataset(
                     arr,

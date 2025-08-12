@@ -27,8 +27,8 @@ class PulseSignalConfig:
     ducy : float, optional
         Duty cycle of the pulse (FWTM) in fractional phase, by default 0.1
         For slow pulsars, ducy ~ 0.03, for millisecond pulsars, ducy ~ 0.1 - 0.3
-    os : int, optional
-        Over sampling factor for the folded phase bins, by default 1
+    ds : int, optional
+        Down sampling factor for the folded phase bins, by default 1
     mod_type : str, optional
         Type of modulation, by default "derivative"
     mod_kwargs : dict, optional
@@ -40,7 +40,7 @@ class PulseSignalConfig:
     nsamps: int = 2**21
     snr: float = 100
     ducy: float = 0.1
-    os: float = 1.0
+    ds: float = 1.0
     mod_type: str = "derivative"
     mod_kwargs: dict[str, float] = attrs.Factory(dict)
     _mod_func: modulate.DerivativeModulating = attrs.field(init=False, repr=False)
@@ -67,7 +67,7 @@ class PulseSignalConfig:
     @property
     def fold_bins(self) -> int:
         """Number of phase bins in the folded profile."""
-        return int(self.period / self.dt / self.os)
+        return int(self.period / self.dt / self.ds)
 
     @property
     def fold_bins_ideal(self) -> int:

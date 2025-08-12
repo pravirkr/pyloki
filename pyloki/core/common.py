@@ -221,7 +221,6 @@ def brutefold_bucketed(
     if nsamps % segment_len != 0:
         msg = "The number of samples must be a multiple of the segment length."
         raise ValueError(msg)
-    proper_time = np.arange(segment_len) * tsamp - t_ref
 
     total_buckets = nfreqs * nbins
     phase_map = np.empty(nfreqs * segment_len, dtype=np.uint32)

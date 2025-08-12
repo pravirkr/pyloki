@@ -213,11 +213,11 @@ def poly_taylor_resolve_batch(
     nparams = len(param_arr)
     delta_t = coord_add[0] - coord_init[0]
     param_vec_batch = leaf_batch[:, :-2]  # Take last dimension as it is
-    freq_old_batch = leaf_batch[:, -3, 0]
+    f_cur_batch = leaf_batch[:, -3, 0]
     kvec_new_batch, delay_batch = psr_utils.shift_params_batch(param_vec_batch, delta_t)
     relative_phase_batch = psr_utils.get_phase_idx(
         delta_t,
-        freq_old_batch,
+        f_cur_batch,
         fold_bins,
         delay_batch,
     )
