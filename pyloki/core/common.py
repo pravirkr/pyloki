@@ -789,5 +789,7 @@ def get_trans_matrix(
 
 
 @njit(cache=True, fastmath=True)
-def get_validation_params() -> tuple[np.ndarray, np.ndarray, float]:
+def get_validation_params(
+    coord_add: tuple[float, float],  # noqa: ARG001
+) -> tuple[np.ndarray, np.ndarray, float]:
     return np.array([1, 2, 3]), np.array([4, 5, 6]), 0.1

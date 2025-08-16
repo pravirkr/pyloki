@@ -167,7 +167,7 @@ def poly_taylor_shift_d_vec(
     nbatch, nparams = dparam_old.shape
     k = np.arange(nparams - 1, -1, -1)
     factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
-    factors_opt = factors / 2**k
+    factors_opt = factors  # / 2**k
     factors_broadcast = np.empty((nbatch, nparams), dtype=dparam_old.dtype)
     for i in range(nbatch):
         factors_broadcast[i, :] = factors_opt
@@ -303,42 +303,40 @@ def shift_params_circular_batch(
         Array of transformed search parameters vector at the new reference time t_j
         and the phase delay d.
     """
-    size, nparams, _ = param_vec_batch.shape
+    _, nparams, _ = param_vec_batch.shape
     if nparams != 4:
         msg = "4 parameters are needed for circular orbit resolve."
         raise ValueError(msg)
-    minus_omega_sq = param_vec_batch[:, 0, 0] / param_vec_batch[:, 2, 0]
-    omega_batch = np.sqrt(-minus_omega_sq)
-    required_order = min(int(max(omega_batch) * abs(delta_t) * np.e + 10), 100)
-
-    dvec_cur = np.zeros((size, required_order + 1), dtype=param_vec_batch.dtype)
-    # Copy till acceleration
-    dvec_cur[:, -5:-2] = param_vec_batch[:, :-1, 0]
-    # Now fill all the higher order derivatives
-    powers = np.arange(5, required_order + 1)
-    even_mask = powers % 2 == 0
-    odd_mask = ~even_mask
-    if np.any(even_mask):
-        even_powers = powers[even_mask]
-        even_exponents = (even_powers - 2) // 2
-        even_coefs = (
-            minus_omega_sq[:, None] ** even_exponents[None, :]
-        ) * param_vec_batch[:, 2, 0][:, None]
-        dvec_cur[:, -even_powers - 1] = even_coefs
-
-    if np.any(odd_mask):
-        odd_powers = powers[odd_mask]
-        odd_exponents = (odd_powers - 3) // 2
-        odd_coefs = (
-            minus_omega_sq[:, None] ** odd_exponents[None, :]
-        ) * param_vec_batch[:, 1, 0][:, None]
-        dvec_cur[:, -odd_powers - 1] = odd_coefs
-
-    dvec_new = shift_params_d(dvec_cur, delta_t, n_out=nparams + 1)
+    snap_old = param_vec_batch[:, 0, 0]
+    jerk_old = param_vec_batch[:, 1, 0]
+    accel_old = param_vec_batch[:, 2, 0]
+    freq_old = param_vec_batch[:, 3, 0]
+    minus_omega_sq = snap_old / accel_old
+    omega_orb = np.sqrt(-minus_omega_sq)
+    omega_orb_sq = -minus_omega_sq
+    omega_orb_cubed = omega_orb * omega_orb_sq
+    # Evolve the phase to the new time t_j = t_i + delta_t
+    omega_dt = omega_orb * delta_t
+    cos_odt = np.cos(omega_dt)
+    sin_odt = np.sin(omega_dt)
+    a_new = accel_old * cos_odt + (jerk_old / omega_orb) * sin_odt
+    j_new = jerk_old * cos_odt - (accel_old * omega_orb) * sin_odt
+    s_new = -omega_orb_sq * a_new
+    delta_v = (accel_old / omega_orb) * sin_odt - (jerk_old / omega_orb_sq) * (
+        cos_odt - 1.0
+    )
+    delta_d = (
+        -(accel_old / omega_orb_sq) * (cos_odt - 1.0)
+        - (jerk_old / omega_orb_cubed) * sin_odt
+        + (jerk_old * delta_t / omega_orb_sq)
+    )
+    delay_rel = delta_d / C_VAL
+    f_new = freq_old * (1 + delta_v / C_VAL)
     param_vec_new = param_vec_batch.copy()
-    param_vec_new[:, :-1, 0] = dvec_new[:, :-2]
-    param_vec_new[:, -1, 0] = param_vec_batch[:, -1, 0] * (1 + dvec_new[:, -2] / C_VAL)
-    delay_rel = dvec_new[:, -1] / C_VAL
+    param_vec_new[:, 0, 0] = s_new
+    param_vec_new[:, 1, 0] = j_new
+    param_vec_new[:, 2, 0] = a_new
+    param_vec_new[:, 3, 0] = f_new
     return param_vec_new, delay_rel
 
 

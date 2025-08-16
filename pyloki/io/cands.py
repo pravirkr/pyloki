@@ -59,11 +59,15 @@ class PruneStats:
 
     @property
     def lb_leaves(self) -> float:
+        return np.round(np.log2(self.n_leaves), 2)
+
+    @property
+    def lb_leaves_phys(self) -> float:
         return np.round(np.log2(self.n_leaves_phy), 2)
 
     @property
     def branch_frac(self) -> float:
-        return np.round(self.n_leaves / self.n_branches, 2)
+        return np.round(self.n_leaves_phy / self.n_branches, 2)
 
     @property
     def phys_frac(self) -> float:
@@ -81,7 +85,8 @@ class PruneStats:
         summary = []
         summary.append(
             f"Prune level: {self.level:3d}, seg_idx: {self.seg_idx:3d}, "
-            f"lb_leaves: {self.lb_leaves:5.2f}, branch_frac: {self.branch_frac:5.2f},",
+            f"leaves: {self.lb_leaves:5.2f}, leaves_phys: {self.lb_leaves_phys:5.2f}, "
+            f"branch_frac: {self.branch_frac:5.2f},",
         )
         summary.append(
             f"score thresh: {self.threshold:5.2f}, max: {self.score_max:5.2f}, "

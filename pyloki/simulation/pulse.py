@@ -7,7 +7,7 @@ from scipy import stats
 from pyloki.core import common
 from pyloki.detection.scoring import boxcar_snr_1d
 from pyloki.io.timeseries import TimeSeries
-from pyloki.simulation import modulate
+from pyloki.simulation.modulate import Modulating, type_to_mods
 
 
 @attrs.define(auto_attribs=True, kw_only=True)
@@ -43,10 +43,10 @@ class PulseSignalConfig:
     ds: float = 1.0
     mod_type: str = "derivative"
     mod_kwargs: dict[str, float] = attrs.Factory(dict)
-    _mod_func: modulate.DerivativeModulating = attrs.field(init=False, repr=False)
+    _mod_func: Modulating = attrs.field(init=False, repr=False)
 
     def __attrs_post_init__(self) -> None:
-        self._mod_func = modulate.type_to_mods[self.mod_type](**self.mod_kwargs)
+        self._mod_func = type_to_mods[self.mod_type](**self.mod_kwargs)
         self._check()
 
     @property
@@ -75,7 +75,7 @@ class PulseSignalConfig:
         return int(self.period / self.dt)
 
     @property
-    def mod_func(self) -> modulate.DerivativeModulating:
+    def mod_func(self) -> Modulating:
         """Modulation function."""
         return self._mod_func
 

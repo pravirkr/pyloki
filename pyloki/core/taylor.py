@@ -191,8 +191,8 @@ def poly_taylor_resolve(
     # distance between the current segment reference time and the global reference time
     delta_t = coord_add[0] - coord_init[0]
     kvec_new, delay = psr_utils.shift_params(leaf[:-2, 0], delta_t)
-    freq_old = leaf[-3, 0]
-    relative_phase = psr_utils.get_phase_idx(delta_t, freq_old, fold_bins, delay)
+    freq_cur = leaf[-3, 0]
+    relative_phase = psr_utils.get_phase_idx(delta_t, freq_cur, fold_bins, delay)
 
     param_idx = np.zeros(nparams, dtype=np.int64)
     param_idx[-1] = np_utils.find_nearest_sorted_idx(param_arr[-1], kvec_new[-1])
@@ -213,11 +213,11 @@ def poly_taylor_resolve_batch(
     nparams = len(param_arr)
     delta_t = coord_add[0] - coord_init[0]
     param_vec_batch = leaf_batch[:, :-2]  # Take last dimension as it is
-    f_cur_batch = leaf_batch[:, -3, 0]
+    freq_cur_batch = leaf_batch[:, -3, 0]
     kvec_new_batch, delay_batch = psr_utils.shift_params_batch(param_vec_batch, delta_t)
     relative_phase_batch = psr_utils.get_phase_idx(
         delta_t,
-        f_cur_batch,
+        freq_cur_batch,
         fold_bins,
         delay_batch,
     )
@@ -247,15 +247,15 @@ def poly_taylor_resolve_snap_batch(
     nparams = len(param_arr)
     delta_t = coord_add[0] - coord_init[0]
     param_vec_batch = leaf_batch[:, :-2]  # Take last dimension as it is
-    freq_old_batch = leaf_batch[:, -3, 0]
-    snap_old_batch = leaf_batch[:, 0, 0]
-    dsnap_old_batch = leaf_batch[:, 0, 1]
-    accel_old_batch = leaf_batch[:, 2, 0]
+    freq_cur_batch = leaf_batch[:, -3, 0]
+    snap_cur_batch = leaf_batch[:, 0, 0]
+    dsnap_cur_batch = leaf_batch[:, 0, 1]
+    accel_cur_batch = leaf_batch[:, 2, 0]
     mask = (
-        (accel_old_batch != 0)
-        & (snap_old_batch != 0)
-        & ((-snap_old_batch / accel_old_batch) > 0)
-        & (np.abs(snap_old_batch / dsnap_old_batch) > 5)
+        (accel_cur_batch != 0)
+        & (snap_cur_batch != 0)
+        & ((-snap_cur_batch / accel_cur_batch) > 0)
+        & (np.abs(snap_cur_batch / dsnap_cur_batch) > 5)
     )
     idx_circular = np.where(mask)[0]
     idx_normal = np.where(~mask)[0]
@@ -266,28 +266,20 @@ def poly_taylor_resolve_snap_batch(
             param_vec_batch[idx_circular],
             delta_t,
         )
-        if kvec_new_circ.shape == kvec_new_batch[idx_circular].shape:
-            kvec_new_batch[idx_circular] = kvec_new_circ
-            delay_batch[idx_circular] = delay_circ
-        else:
-            msg = "kvec_new_circ.shape != kvec_new_batch[idx_circular].shape"
-            raise ValueError(msg)
+        kvec_new_batch[idx_circular] = kvec_new_circ
+        delay_batch[idx_circular] = delay_circ
 
     if idx_normal.size > 0:
         kvec_new_norm, delay_norm = psr_utils.shift_params_batch(
             param_vec_batch[idx_normal],
             delta_t,
         )
-        if kvec_new_norm.shape == kvec_new_batch[idx_normal].shape:
-            kvec_new_batch[idx_normal] = kvec_new_norm
-            delay_batch[idx_normal] = delay_norm
-        else:
-            msg = "kvec_new_norm.shape != kvec_new_batch[idx_normal].shape"
-            raise ValueError(msg)
+        kvec_new_batch[idx_normal] = kvec_new_norm
+        delay_batch[idx_normal] = delay_norm
 
     relative_phase_batch = psr_utils.get_phase_idx(
         delta_t,
-        freq_old_batch,
+        freq_cur_batch,
         fold_bins,
         delay_batch,
     )
@@ -307,11 +299,11 @@ def poly_taylor_resolve_snap_batch(
 def poly_taylor_validate_batch(
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """Validate a batch of leaf params.
 
     Filters out unphysical orbits. Currently removes cases with imaginary orbital
-    frequency (i.e., -snap/accel <= 0) and nonpositive intrinsic frequency.
+    frequency (i.e., -snap/accel <= 0).
 
     Parameters
     ----------
@@ -322,15 +314,19 @@ def poly_taylor_validate_batch(
 
     Returns
     -------
-    np.ndarray
-            Filtered leaf parameter sets (only physically plausible).
+    tuple[np.ndarray, np.ndarray]
+        Filtered leaf parameter sets (only physically plausible) and their origins.
     """
     snap = leaves_batch[:, 0, 0]
     accel = leaves_batch[:, 2, 0]
-    # Real omega_orb: -snap/accel > 0 ⇒ snap and accel must be opposite sign
-    sign_mask = (np.sign(snap) * np.sign(accel)) < 0.0
-
-    mask = sign_mask
+    # omega_orb = -snap/accel > 0:
+    # 1) snap=0 → omega_orb=0 (valid)
+    # 2) snap≠0 & accel=0 → omega_orb=±∞ (allowed)
+    # 3) snap≠0 & accel≠0 & -snap/accel>0 (valid)
+    eps = 1e-15
+    zero_case = (np.abs(snap) < eps) | (np.abs(accel) < eps)
+    real_omega = (-snap / accel) >= 0
+    mask = zero_case | real_omega
     idx = np.where(mask)[0]
     return leaves_batch[idx], leaves_origins[idx]
 
@@ -516,7 +512,7 @@ def poly_taylor_branch_batch(
 
     # --- Vectorized Selection ---
     # Select based on mask: shape (n_batch, nparams, 1)
-    mask_2d = shift_bins_batch > tol_bins  # Shape (n_batch, nparams)
+    mask_2d = shift_bins_batch >= tol_bins  # Shape (n_batch, nparams)
     for i in range(n_batch):
         for j in range(nparams):
             if not mask_2d[i, j]:
@@ -664,7 +660,7 @@ def poly_taylor_suggest_complex(
 
 
 @njit(cache=True, fastmath=True)
-def generate_branching_pattern(
+def generate_branching_pattern_approx(
     param_arr: types.ListType,
     dparams: np.ndarray,
     param_limits: types.ListType[types.Tuple[float, float]],
@@ -676,12 +672,13 @@ def generate_branching_pattern(
 ) -> np.ndarray:
     """Generate the branching pattern for the pruning Taylor search.
 
+    This is a simplified version of the branching pattern that only tracks the
+    worst-case branching factor.
+
     Returns
     -------
     np.ndarray
         Branching pattern for the pruning Taylor search.
-        1D array containing the initial number of trees and the subsequent branching
-        pattern for each level.
     """
     poly_order = len(dparams)
     leaf = poly_taylor_leaves(param_arr, dparams, poly_order, (0, tchunk_ffa))[isuggest]
@@ -703,7 +700,7 @@ def generate_branching_pattern(
 
 
 @njit(cache=True, fastmath=True)
-def generate_branching_pattern_opt(
+def generate_branching_pattern(
     param_arr: types.ListType,
     dparams: np.ndarray,
     param_limits: types.ListType[types.Tuple[float, float]],
@@ -712,6 +709,33 @@ def generate_branching_pattern_opt(
     fold_bins: int,
     tol_bins: float,
 ) -> np.ndarray:
+    """Generate the branching pattern for the pruning Taylor search.
+
+    This tracks the exact number of branches per node to compute the average
+    branching factor.
+
+    Parameters
+    ----------
+    param_arr : types.ListType
+        Parameter array for each dimension.
+    dparams : np.ndarray
+        Parameter step (grid) sizes for each dimension in a 1D array.
+    param_limits : types.ListType[types.Tuple[float, float]]
+        Parameter limits for each dimension.
+    tchunk_ffa : float
+        The duration of the starting segment.
+    nstages : int
+        The number of stages to generate the branching pattern for.
+    fold_bins : int
+        The number of bins in the frequency array.
+    tol_bins : float
+        The tolerance for the branching pattern.
+
+    Returns
+    -------
+    np.ndarray
+        The branching pattern for the pruning Taylor search.
+    """
     poly_order = len(dparams)
     freq_arr = param_arr[-1]
     n0 = len(freq_arr)
@@ -721,6 +745,7 @@ def generate_branching_pattern_opt(
 
     weights = np.ones(n0, dtype=np.int64)
     branching_pattern = np.empty(nstages, dtype=np.float64)
+    param_ranges = np.array([(p_max - p_min) / 2 for p_min, p_max in param_limits])
 
     for prune_level in range(1, nstages + 1):
         tseg_cur = tchunk_ffa * (prune_level + 1)
@@ -743,45 +768,41 @@ def generate_branching_pattern_opt(
 
         nfreq = len(freq_arr)
         dparam_next_tmp = np.empty((nfreq, poly_order), dtype=np.float64)
-        n_branch_freq = np.ones(nfreq, dtype=np.int64)  # FIX: initialize to 1
-        n_branch_nonfreq = np.ones(nfreq, dtype=np.int64)  # FIX: initialize to 1
-        weighted_counts_sum = 0.0
+        n_branch_freq = np.ones(nfreq, dtype=np.int64)
+        n_branch_nonfreq = np.ones(nfreq, dtype=np.int64)
+
+        # Pre-compute masks and ratios
+        needs_branching = shift_bins_batch >= tol_bins
+        too_large_step = dparam_opt_batch > param_ranges[np.newaxis, :]
+
+        # Vectorized branching decision
+        needs_branching = shift_bins_batch >= tol_bins
+        too_large_step = dparam_opt_batch > param_ranges[np.newaxis, :]
+
+        weighted_sum = 0.0
         total_weight = 0
         total_freq_branches = 0
 
         for i in range(nfreq):
             for j in range(poly_order):
-                dparam_cur = dparam_cur_batch[i, j]
-                dparam_opt = dparam_opt_batch[i, j]
-                shift_bins = shift_bins_batch[i, j]
-
-                if shift_bins < tol_bins:
-                    dparam_next_tmp[i, j] = dparam_cur
+                if not needs_branching[i, j] or too_large_step[i, j]:
+                    dparam_next_tmp[i, j] = dparam_cur_batch[i, j]
                     continue
-
-                p_min, p_max = param_limits[j]
-                if dparam_opt > (p_max - p_min) / 2:
-                    dparam_next_tmp[i, j] = dparam_cur
-                    continue
-
-                num_points = int(np.ceil(dparam_cur / dparam_opt))
-                if num_points <= 0:
-                    num_points = 1
-
-                dparam_next_tmp[i, j] = dparam_cur / num_points
+                num_points = max(
+                    1,
+                    int(np.ceil(dparam_cur_batch[i, j] / dparam_opt_batch[i, j])),
+                )
                 if j == poly_order - 1:
                     n_branch_freq[i] = num_points
                 else:
                     n_branch_nonfreq[i] *= num_points
+                dparam_next_tmp[i, j] = dparam_cur_batch[i, j] / num_points
 
             total_weight += weights[i]
-            weighted_counts_sum += weights[i] * (n_branch_nonfreq[i] * n_branch_freq[i])
+            weighted_sum += weights[i] * (n_branch_nonfreq[i] * n_branch_freq[i])
             total_freq_branches += n_branch_freq[i]
 
-        branching_pattern[prune_level - 1] = (
-            1.0 if total_weight == 0 else weighted_counts_sum / total_weight
-        )
-
+        branching_pattern[prune_level - 1] = weighted_sum / total_weight
         freq_arr_next = np.empty(total_freq_branches, dtype=np.float64)
         weights_next = np.empty(total_freq_branches, dtype=np.int64)
         dparam_cur_next = np.empty((total_freq_branches, poly_order), dtype=np.float64)
@@ -789,9 +810,10 @@ def generate_branching_pattern_opt(
         pos = 0
         for i in range(nfreq):
             cfreq = n_branch_freq[i]
+            weight = weights[i] * n_branch_nonfreq[i]
             if cfreq == 1:
                 freq_arr_next[pos] = freq_arr[i]
-                weights_next[pos] = weights[i] * n_branch_nonfreq[i]
+                weights_next[pos] = weight
                 dparam_cur_next[pos] = dparam_next_tmp[i]
                 pos += 1
             elif cfreq == 2:
@@ -799,11 +821,11 @@ def generate_branching_pattern_opt(
                 delta = 0.25 * dparam_cur_freq
                 f = freq_arr[i]
                 freq_arr_next[pos] = f - delta
-                weights_next[pos] = weights[i] * n_branch_nonfreq[i]
+                weights_next[pos] = weight
                 dparam_cur_next[pos] = dparam_next_tmp[i]
                 pos += 1
                 freq_arr_next[pos] = f + delta
-                weights_next[pos] = weights[i] * n_branch_nonfreq[i]
+                weights_next[pos] = weight
                 dparam_cur_next[pos] = dparam_next_tmp[i]
                 pos += 1
             else:
@@ -828,6 +850,10 @@ def generate_branching_pattern_circular(
     tol_bins: float,
 ) -> np.ndarray:
     poly_order = len(dparams)
+    if poly_order != 4:
+        msg = "Circular branching pattern requires exactly 4 parameters."
+        raise ValueError(msg)
+
     freq_arr = param_arr[-1]
     n0 = len(freq_arr)
 
@@ -836,41 +862,7 @@ def generate_branching_pattern_circular(
     for i in range(n0):
         dparam_cur_batch[i] = dparams
 
-    # Expected acceptance for snap–accel opposite-sign filter in the base grid
-    # Count signs in snap and accel arrays
-    snap_arr = param_arr[0]
-    accel_arr = param_arr[2]
-    ns_pos = 0
-    ns_neg = 0
-    ns_zero = 0
-    for ii in range(len(snap_arr)):
-        v = snap_arr[ii]
-        if v > 0:
-            ns_pos += 1
-        elif v < 0:
-            ns_neg += 1
-        else:
-            ns_zero += 1
-
-    na_pos = 0
-    na_neg = 0
-    na_zero = 0
-    for ii in range(len(accel_arr)):
-        v = accel_arr[ii]
-        if v > 0:
-            na_pos += 1
-        elif v < 0:
-            na_neg += 1
-        else:
-            na_zero += 1
-
-    denom_pairs = (ns_pos + ns_neg + ns_zero) * (na_pos + na_neg + na_zero)
-    if denom_pairs > 0:
-        opp_sign_frac = (ns_pos * na_neg + ns_neg * na_pos) / denom_pairs
-    else:
-        opp_sign_frac = 1.0  # fallback (shouldn't happen)
-
-    # Use float weights (expected multiplicities) since validation is fractional in expectation
+    param_ranges = np.array([(p_max - p_min) / 2 for p_min, p_max in param_limits])
     weights = np.ones(n0, dtype=np.float64)
     branching_pattern = np.empty(nstages, dtype=np.float64)
 
@@ -897,62 +889,54 @@ def generate_branching_pattern_circular(
         nfreq = len(freq_arr)
         dparam_next_tmp = np.empty((nfreq, poly_order), dtype=np.float64)
         n_branch_freq = np.ones(nfreq, dtype=np.int64)
-        # For validation-aware non-frequency multiplicity
-        n_snap = np.ones(nfreq, dtype=np.int64)
-        n_accel = np.ones(nfreq, dtype=np.int64)
-        n_other_nonfreq = np.ones(nfreq, dtype=np.int64)
+        n_branch_accel = np.ones(nfreq, dtype=np.int64)
+        n_branch_jerk = np.ones(nfreq, dtype=np.int64)
+        n_branch_snap = np.ones(nfreq, dtype=np.int64)
 
-        weighted_counts_sum = 0.0
+        needs_branching = shift_bins_batch >= tol_bins
+        too_large_step = dparam_opt_batch > param_ranges[np.newaxis, :]
+
+        weighted_sum = 0.0
         total_weight = 0.0
         total_freq_branches = 0
 
         # First pass: determine branching counts, update dparams, compute stats
         for i in range(nfreq):
             for j in range(poly_order):
-                dparam_cur = dparam_cur_batch[i, j]
-                dparam_opt = dparam_opt_batch[i, j]
-                shift_bins = shift_bins_batch[i, j]
-
-                if shift_bins < tol_bins:
-                    dparam_next_tmp[i, j] = dparam_cur
+                if not needs_branching[i, j] or too_large_step[i, j]:
+                    dparam_next_tmp[i, j] = dparam_cur_batch[i, j]
                     continue
+                num_points = max(
+                    1,
+                    int(np.ceil(dparam_cur_batch[i, j] / dparam_opt_batch[i, j])),
+                )
+                dparam_next_tmp[i, j] = dparam_cur_batch[i, j] / num_points
 
-                p_min, p_max = param_limits[j]
-                if dparam_opt > (p_max - p_min) / 2:
-                    dparam_next_tmp[i, j] = dparam_cur
-                    continue
-
-                num_points = int(np.ceil(dparam_cur / dparam_opt))
-                if num_points <= 0:
-                    num_points = 1
-                dparam_next_tmp[i, j] = dparam_cur / num_points
-
-                if j == poly_order - 1:
-                    n_branch_freq[i] = num_points
-                elif j == 0:
-                    n_snap[i] = num_points
+                if j == 0:
+                    n_branch_snap[i] = num_points
+                elif j == 1:
+                    n_branch_jerk[i] = num_points
                 elif j == 2:
-                    n_accel[i] = num_points
+                    n_branch_accel[i] = num_points
                 else:
-                    n_other_nonfreq[i] *= num_points
+                    n_branch_freq[i] = num_points
 
             # Expected validated non-frequency combinations
-            valid_nonfreq = (
-                opp_sign_frac
-                * (float(n_snap[i]) * float(n_accel[i]))
-                * float(n_other_nonfreq[i])
+            raw_nonfreq_combinations = (
+                float(n_branch_snap[i])
+                * float(n_branch_jerk[i])
+                * float(n_branch_accel[i])
             )
+            # if snap is branching, assume symmetric branching around current value, if
+            # snap is not branching, assume all combinations valid
+            validation_fraction = 1.0 if n_branch_snap[i] == 1 else 0.5
 
+            valid_combinations = validation_fraction * raw_nonfreq_combinations
             total_weight += weights[i]
-            weighted_counts_sum += weights[i] * (
-                valid_nonfreq * float(n_branch_freq[i])
-            )
+            weighted_sum += weights[i] * (valid_combinations * float(n_branch_freq[i]))
             total_freq_branches += n_branch_freq[i]
 
-        # Average branching factor = total new leaves / total current leaves (post-validation)
-        branching_pattern[prune_level - 1] = weighted_counts_sum / total_weight
-
-        # Second pass: build next arrays of freqs, weights, and dparams
+        branching_pattern[prune_level - 1] = weighted_sum / total_weight
         freq_arr_next = np.empty(total_freq_branches, dtype=np.float64)
         weights_next = np.empty(total_freq_branches, dtype=np.float64)
         dparam_cur_next = np.empty((total_freq_branches, poly_order), dtype=np.float64)
@@ -960,37 +944,36 @@ def generate_branching_pattern_circular(
         pos = 0
         for i in range(nfreq):
             cfreq = n_branch_freq[i]
-            # expected validated non-frequency multiplicity for carrying forward
-            valid_nonfreq = (
-                opp_sign_frac
-                * (float(n_snap[i]) * float(n_accel[i]))
-                * float(n_other_nonfreq[i])
+            validation_fraction = 1.0 if n_branch_snap[i] == 1 else 0.5
+            raw_nonfreq = (
+                float(n_branch_snap[i])
+                * float(n_branch_jerk[i])
+                * float(n_branch_accel[i])
             )
+            valid_weight = weights[i] * validation_fraction * raw_nonfreq
 
             if cfreq == 1:
                 freq_arr_next[pos] = freq_arr[i]
-                weights_next[pos] = weights[i] * valid_nonfreq
+                weights_next[pos] = valid_weight
                 dparam_cur_next[pos] = dparam_next_tmp[i]
                 pos += 1
-            else:
-                # cfreq branched frequencies as in branch_param_padded
-                num_points = cfreq
+            elif cfreq == 2:
                 dparam_cur_freq = dparam_cur_batch[i, poly_order - 1]
-
-                confidence_const = 0.5 * (1.0 + 1.0 / num_points)
+                confidence_const = 0.5 * (1.0 + 1.0 / float(cfreq))
                 half_range = confidence_const * dparam_cur_freq
-                start = freq_arr[i] - half_range
-                stop = freq_arr[i] + half_range
-                num_intervals = (2 + num_points) - 1
-                step = (stop - start) / num_intervals
-                current_val = start + step
+                f_center = freq_arr[i]
 
-                for k in range(cfreq):
-                    freq_arr_next[pos + k] = current_val
-                    weights_next[pos + k] = weights[i] * valid_nonfreq
-                    dparam_cur_next[pos + k] = dparam_next_tmp[i]
-                    current_val += step
-                pos += cfreq
+                freq_arr_next[pos] = f_center - half_range * 0.5
+                freq_arr_next[pos + 1] = f_center + half_range * 0.5
+
+                weights_next[pos] = valid_weight
+                weights_next[pos + 1] = valid_weight
+                dparam_cur_next[pos] = dparam_next_tmp[i]
+                dparam_cur_next[pos + 1] = dparam_next_tmp[i]
+                pos += 2
+            else:
+                msg = f"cfreq == {cfreq} is not supported"
+                raise ValueError(msg)
 
         # Advance to next stage
         freq_arr = freq_arr_next

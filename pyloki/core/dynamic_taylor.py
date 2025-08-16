@@ -113,11 +113,18 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
 
     def validate(
         self,
-        leaves: np.ndarray,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
         coord_valid: tuple[float, float],
         validation_params: tuple[np.ndarray, np.ndarray, float],
-    ) -> np.ndarray:
-        return validate_func(self, leaves, coord_valid, validation_params)
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(
+            self,
+            leaves_batch,
+            leaves_origins,
+            coord_valid,
+            validation_params,
+        )
 
     def get_validation_params(
         self,
@@ -211,11 +218,18 @@ class PruneTaylorComplexDPFuncts(structref.StructRefProxy):
 
     def validate(
         self,
-        leaves: np.ndarray,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
         coord_valid: tuple[float, float],
         validation_params: tuple[np.ndarray, np.ndarray, float],
-    ) -> np.ndarray:
-        return validate_func(self, leaves, coord_valid, validation_params)
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(
+            self,
+            leaves_batch,
+            leaves_origins,
+            coord_valid,
+            validation_params,
+        )
 
     def get_validation_params(
         self,
@@ -474,11 +488,14 @@ def get_transform_matrix_func(
 @njit(cache=True, fastmath=True)
 def validate_func(
     self: PruneTaylorDPFuncts,
-    leaves: np.ndarray,
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
     coord_valid: tuple[float, float],
     validation_params: tuple[np.ndarray, np.ndarray, float],
-) -> np.ndarray:
-    return leaves
+) -> tuple[np.ndarray, np.ndarray]:
+    if self.poly_order == 4:
+        return taylor.poly_taylor_validate_batch(leaves_batch, leaves_origins)
+    return leaves_batch, leaves_origins
 
 
 @njit(cache=True, fastmath=True)
@@ -630,17 +647,25 @@ def ol_get_transform_matrix_func(
 @overload_method(PruneTaylorDPFunctsTemplate, "validate")
 def ol_validate_func(
     self: PruneTaylorDPFuncts,
-    leaves: np.ndarray,
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
     coord_valid: tuple[float, float],
     validation_params: tuple[np.ndarray, np.ndarray, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneTaylorDPFuncts,
-        leaves: np.ndarray,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
         coord_valid: tuple[float, float],
         validation_params: tuple[np.ndarray, np.ndarray, float],
-    ) -> np.ndarray:
-        return validate_func(self, leaves, coord_valid, validation_params)
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(
+            self,
+            leaves_batch,
+            leaves_origins,
+            coord_valid,
+            validation_params,
+        )
 
     return impl
 
@@ -813,17 +838,25 @@ def ol_get_transform_matrix_complex_func(
 @overload_method(PruneTaylorComplexDPFunctsTemplate, "validate")
 def ol_validate_complex_func(
     self: PruneTaylorComplexDPFuncts,
-    leaves: np.ndarray,
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
     coord_valid: tuple[float, float],
     validation_params: tuple[np.ndarray, np.ndarray, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneTaylorComplexDPFuncts,
-        leaves: np.ndarray,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
         coord_valid: tuple[float, float],
         validation_params: tuple[np.ndarray, np.ndarray, float],
-    ) -> np.ndarray:
-        return validate_func(self, leaves, coord_valid, validation_params)
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(
+            self,
+            leaves_batch,
+            leaves_origins,
+            coord_valid,
+            validation_params,
+        )
 
     return impl
 

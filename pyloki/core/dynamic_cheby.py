@@ -202,10 +202,11 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
 
     def validate(
         self,
-        leaves: np.ndarray,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
         coord_valid: tuple[float, float],
         validation_params: tuple[np.ndarray, np.ndarray, float],
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Validate which of the leaves are physical.
 
         Parameters
@@ -229,7 +230,13 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         - pruning scans only functions that are physical at position (t/2).
         But same bounds apply everywhere.
         """
-        return validate_func(self, leaves, coord_valid, validation_params)
+        return validate_func(
+            self,
+            leaves_batch,
+            leaves_origins,
+            coord_valid,
+            validation_params,
+        )
 
     def get_validation_params(
         self,
@@ -420,14 +427,15 @@ def get_transform_matrix_func(
 @njit(cache=True, fastmath=True)
 def validate_func(
     self: PruneChebyshevDPFuncts,
-    leaves: np.ndarray,
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
     coord_valid: tuple[float, float],
     validation_params: tuple[np.ndarray, np.ndarray, float],
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     t_ref_add = coord_valid[1]
     t_ref_init = coord_valid[0]
     return cheby.poly_chebyshev_validate(
-        leaves,
+        leaves_batch,
         t_ref_add,
         t_ref_init,
         validation_params,
@@ -436,7 +444,7 @@ def validate_func(
         self.n_valid,
         self.cheb_table,
         self.period_bounds,
-    )
+    ), leaves_origins
 
 
 @njit(cache=True, fastmath=True)
@@ -609,17 +617,25 @@ def ol_get_transform_matrix_func(
 @overload_method(PruneChebyshevDPFunctsTemplate, "validate")
 def ol_validate_func(
     self: PruneChebyshevDPFuncts,
-    leaves: np.ndarray,
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
     coord_valid: tuple[float, float],
     validation_params: tuple[np.ndarray, np.ndarray, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneChebyshevDPFuncts,
-        leaves: np.ndarray,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
         coord_valid: tuple[float, float],
         validation_params: tuple[np.ndarray, np.ndarray, float],
-    ) -> np.ndarray:
-        return validate_func(self, leaves, coord_valid, validation_params)
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(
+            self,
+            leaves_batch,
+            leaves_origins,
+            coord_valid,
+            validation_params,
+        )
 
     return impl
 

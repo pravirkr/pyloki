@@ -208,9 +208,7 @@ def pruning_iteration_batched(
     current_threshold = threshold
 
     trans_matrix = prune_funcs.get_transform_matrix(coord_cur, coord_prev)
-    validation_check = False
-    if validation_check:
-        validation_params = prune_funcs.get_validation_params(coord_valid)
+    validation_params = prune_funcs.get_validation_params(coord_valid)
 
     n_branches = sugg.valid_size
     batch_size = max(1, min(batch_size, n_branches))
@@ -234,12 +232,12 @@ def pruning_iteration_batched(
 
         # Validation
         t_start = nb_time_now()
-        if validation_check:
-            batch_leaves = prune_funcs.validate(
-                batch_leaves,
-                coord_valid,
-                validation_params,
-            )
+        batch_leaves, batch_leaf_origins = prune_funcs.validate(
+            batch_leaves,
+            batch_leaf_origins,
+            coord_valid,
+            validation_params,
+        )
         n_leaves_batch = len(batch_leaves)
         n_leaves_phy += n_leaves_batch
         timers[1] += nb_time_now() - t_start
