@@ -42,7 +42,7 @@ class DerivativeModulating(Modulating):
             + self.vel * dt
             + self.shift
         )
-        return t_arr + delay / C_VAL
+        return t_arr - delay / C_VAL
 
     def to_circular(self) -> dict[str, float]:
         eps = 1e-30
@@ -82,7 +82,7 @@ class DerivativeSeriesModulating(Modulating):
         norm_coeffs = self.coeffs / maths.fact(k)
         powers = (t_arr - t_ref)[None, :] ** k[:, None]
         delay = np.sum(norm_coeffs[:, None] * powers, axis=0)
-        return t_arr + delay / C_VAL
+        return t_arr - delay / C_VAL
 
     def to_circular(self) -> dict[str, float]:
         if self.order < 4:
@@ -133,7 +133,7 @@ class CircularModulating(Modulating):
     def generate(self, t_arr: np.ndarray, t_ref: float = 0) -> np.ndarray:
         omega = 2 * np.pi / self.p_orb
         delay = self.x_orb * np.sin(omega * (t_arr - t_ref) + self.psi)
-        return t_arr + delay
+        return t_arr - delay
 
     def to_derivatives(self) -> dict[str, float]:
         omega = 2.0 * np.pi / self.p_orb
@@ -189,7 +189,7 @@ class CircularT0Modulating:
         omega = 2 * np.pi / self.p_orb
         phi = 2 * np.pi * ((t_ref - self.t0) % self.p_orb) / self.p_orb
         delay = self.a * np.sin(omega * (t_arr - t_ref) + phi)
-        return t_arr + delay / C_VAL
+        return t_arr - delay / C_VAL
 
 
 @attrs.frozen(auto_attribs=True, kw_only=True)
@@ -213,7 +213,7 @@ class KeplerianModulating:
             self.om,
             self.inc,
         )
-        return t + delay / C_VAL
+        return t - delay / C_VAL
 
 
 type_to_mods = {

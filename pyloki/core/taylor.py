@@ -856,13 +856,16 @@ def generate_branching_pattern_circular(
 
     freq_arr = param_arr[-1]
     n0 = len(freq_arr)
+    param_ranges = np.array([(p_max - p_min) / 2 for p_min, p_max in param_limits])
+
+    # Track when first snap branching occurs for each frequency
+    snap_first_branched = np.zeros(n0, dtype=np.bool_)
 
     # Broadcast current dparams to each freq row
     dparam_cur_batch = np.empty((n0, poly_order), dtype=np.float64)
     for i in range(n0):
         dparam_cur_batch[i] = dparams
 
-    param_ranges = np.array([(p_max - p_min) / 2 for p_min, p_max in param_limits])
     weights = np.ones(n0, dtype=np.float64)
     branching_pattern = np.empty(nstages, dtype=np.float64)
 
@@ -895,6 +898,7 @@ def generate_branching_pattern_circular(
 
         needs_branching = shift_bins_batch >= tol_bins
         too_large_step = dparam_opt_batch > param_ranges[np.newaxis, :]
+        validation_fractions = np.ones(nfreq, dtype=np.float64)
 
         weighted_sum = 0.0
         total_weight = 0.0
@@ -921,55 +925,76 @@ def generate_branching_pattern_circular(
                 else:
                     n_branch_freq[i] = num_points
 
-            # Expected validated non-frequency combinations
-            raw_nonfreq_combinations = (
+            # Determine validation fraction
+            snap_branches_now = n_branch_snap[i] > 1
+            accel_branches_now = n_branch_accel[i] > 1
+            if snap_branches_now and not snap_first_branched[i]:
+                # First time snap branches - apply validation filtering
+                # Since we start at snap=0, branching creates symmetric positive
+                # negative values. Validation removes same-sign combinations with accel
+                # If accel is also branching or non-zero, expect ~50% filtering
+                if accel_branches_now or dparam_cur_batch[i, 2] != 0:
+                    validation_fractions[i] = 0.5
+                else:
+                    # If accel is exactly 0, all combinations are valid
+                    validation_fractions[i] = 1.0
+                snap_first_branched[i] = True
+            else:
+                # Either snap doesn't branch this level, or it has branched before
+                # If it branched before, symmetry is broken and no further filtering
+                validation_fractions[i] = 1.0
+
+            # Calculate total combinations for this frequency
+            raw_combinations = (
                 float(n_branch_snap[i])
                 * float(n_branch_jerk[i])
                 * float(n_branch_accel[i])
+                * float(n_branch_freq[i])
             )
-            # if snap is branching, assume symmetric branching around current value, if
-            # snap is not branching, assume all combinations valid
-            validation_fraction = 1.0 if n_branch_snap[i] == 1 else 0.5
-
-            valid_combinations = validation_fraction * raw_nonfreq_combinations
+            valid_combinations = validation_fractions[i] * raw_combinations
             total_weight += weights[i]
-            weighted_sum += weights[i] * (valid_combinations * float(n_branch_freq[i]))
+            weighted_sum += weights[i] * valid_combinations
             total_freq_branches += n_branch_freq[i]
 
         branching_pattern[prune_level - 1] = weighted_sum / total_weight
         freq_arr_next = np.empty(total_freq_branches, dtype=np.float64)
         weights_next = np.empty(total_freq_branches, dtype=np.float64)
         dparam_cur_next = np.empty((total_freq_branches, poly_order), dtype=np.float64)
+        snap_first_branched_next = np.empty(total_freq_branches, dtype=np.bool_)
 
         pos = 0
         for i in range(nfreq):
             cfreq = n_branch_freq[i]
-            validation_fraction = 1.0 if n_branch_snap[i] == 1 else 0.5
-            raw_nonfreq = (
-                float(n_branch_snap[i])
-                * float(n_branch_jerk[i])
-                * float(n_branch_accel[i])
+            # Weight includes validation effects
+            adjusted_weight = (
+                weights[i]
+                * validation_fractions[i]
+                * (
+                    float(n_branch_snap[i])
+                    * float(n_branch_jerk[i])
+                    * float(n_branch_accel[i])
+                )
             )
-            valid_weight = weights[i] * validation_fraction * raw_nonfreq
 
             if cfreq == 1:
                 freq_arr_next[pos] = freq_arr[i]
-                weights_next[pos] = valid_weight
+                weights_next[pos] = adjusted_weight
                 dparam_cur_next[pos] = dparam_next_tmp[i]
+                snap_first_branched_next[pos] = snap_first_branched[i]
                 pos += 1
             elif cfreq == 2:
                 dparam_cur_freq = dparam_cur_batch[i, poly_order - 1]
-                confidence_const = 0.5 * (1.0 + 1.0 / float(cfreq))
-                half_range = confidence_const * dparam_cur_freq
+                delta = 0.25 * dparam_cur_freq
                 f_center = freq_arr[i]
+                freq_arr_next[pos] = f_center - delta
+                freq_arr_next[pos + 1] = f_center + delta
 
-                freq_arr_next[pos] = f_center - half_range * 0.5
-                freq_arr_next[pos + 1] = f_center + half_range * 0.5
-
-                weights_next[pos] = valid_weight
-                weights_next[pos + 1] = valid_weight
+                weights_next[pos] = adjusted_weight
+                weights_next[pos + 1] = adjusted_weight
                 dparam_cur_next[pos] = dparam_next_tmp[i]
                 dparam_cur_next[pos + 1] = dparam_next_tmp[i]
+                snap_first_branched_next[pos] = snap_first_branched[i]
+                snap_first_branched_next[pos + 1] = snap_first_branched[i]
                 pos += 2
             else:
                 msg = f"cfreq == {cfreq} is not supported"
@@ -979,5 +1004,6 @@ def generate_branching_pattern_circular(
         freq_arr = freq_arr_next
         dparam_cur_batch = dparam_cur_next
         weights = weights_next
+        snap_first_branched = snap_first_branched_next
 
     return branching_pattern

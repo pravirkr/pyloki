@@ -280,7 +280,7 @@ def get_next_state(
     threshold: float,
     success_h0: float,
     success_h1: float,
-    nbranches: int,
+    nbranches: float,
 ) -> npt.NDArray:
     nleaves_next = state_cur["complexity"] * nbranches
     nleaves_surv = nleaves_next * success_h0
@@ -308,7 +308,7 @@ def gen_next_using_thresh(
     state_cur: npt.NDArray,
     folds_cur: Folds,
     threshold: float,
-    nbranches: int,
+    nbranches: float,
     bias_snr: float,
     profile: npt.NDArray[np.float32],
     rng: np.random.Generator,
@@ -360,7 +360,7 @@ def gen_next_using_surv_prob(
     state_cur: npt.NDArray,
     folds_cur: Folds,
     surv_prob_h0: float,
-    nbranches: int,
+    nbranches: float,
     bias_snr: float,
     profile: npt.NDArray[np.float32],
     rng: np.random.Generator,

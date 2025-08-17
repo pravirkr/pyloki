@@ -37,7 +37,7 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
     if nbins <= 0:
         msg = "Number of bins must be positive."
         raise ValueError(msg)
-    phase = ((proper_time + delay) * freq) % 1.0
+    phase = ((proper_time - delay) * freq) % 1.0
     iphase = phase * float(nbins)
     # Clamp to ensure iphase ∈ [0, nbins)
     if iphase >= nbins:
@@ -246,7 +246,7 @@ def shift_params(param_vec: np.ndarray, delta_t: float) -> tuple[np.ndarray, flo
     dvec_new = shift_params_d(dvec_cur, delta_t, n_out=nparams + 1)
     param_vec_new = param_vec.copy()
     param_vec_new[:-1] = dvec_new[:-2]
-    param_vec_new[-1] = param_vec[-1] * (1 + dvec_new[-2] / C_VAL)
+    param_vec_new[-1] = param_vec[-1] * (1 - dvec_new[-2] / C_VAL)
     delay_rel = dvec_new[-1] / C_VAL
     return param_vec_new, delay_rel
 
@@ -278,7 +278,7 @@ def shift_params_batch(
     dvec_new = shift_params_d(dvec_cur, delta_t, n_out=nparams + 1)
     param_vec_new = param_vec_batch.copy()
     param_vec_new[:, :-1, 0] = dvec_new[:, :-2]
-    param_vec_new[:, -1, 0] = param_vec_batch[:, -1, 0] * (1 + dvec_new[:, -2] / C_VAL)
+    param_vec_new[:, -1, 0] = param_vec_batch[:, -1, 0] * (1 - dvec_new[:, -2] / C_VAL)
     delay_rel = dvec_new[:, -1] / C_VAL
     return param_vec_new, delay_rel
 
@@ -331,7 +331,7 @@ def shift_params_circular_batch(
         + (jerk_old * delta_t / omega_orb_sq)
     )
     delay_rel = delta_d / C_VAL
-    f_new = freq_old * (1 + delta_v / C_VAL)
+    f_new = freq_old * (1 - delta_v / C_VAL)
     param_vec_new = param_vec_batch.copy()
     param_vec_new[:, 0, 0] = s_new
     param_vec_new[:, 1, 0] = j_new
