@@ -97,7 +97,7 @@ max-complexity = 15
 [tool.ruff.lint.pylint]
 max-args = 20
 max-statements = 100
-max-branches = 15
+max-branches = 20
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"

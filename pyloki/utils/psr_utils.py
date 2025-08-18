@@ -133,7 +133,8 @@ def split_f(
 ) -> bool:
     """Check if a parameter {f_k} should be split."""
     factor = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
-    return abs(df_old - df_new) * factor > tol_bins
+    factor_opt = factor / 2**k
+    return abs(df_old - df_new) * factor_opt > tol_bins
 
 
 @njit(cache=True, fastmath=True)
@@ -167,7 +168,7 @@ def poly_taylor_shift_d_vec(
     nbatch, nparams = dparam_old.shape
     k = np.arange(nparams - 1, -1, -1)
     factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
-    factors_opt = factors  # / 2**k
+    factors_opt = factors / 2**k
     factors_broadcast = np.empty((nbatch, nparams), dtype=dparam_old.dtype)
     for i in range(nbatch):
         factors_broadcast[i, :] = factors_opt
