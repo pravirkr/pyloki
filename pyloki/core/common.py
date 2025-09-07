@@ -782,7 +782,7 @@ def shift_add_complex_batch(
 
 @njit(cache=True, fastmath=True)
 def get_trans_matrix(
-    coord_cur: tuple[float, float],  # noqa: ARG001
+    coord_next: tuple[float, float],  # noqa: ARG001
     coord_prev: tuple[float, float],  # noqa: ARG001
 ) -> np.ndarray:
     return np.eye(2)
@@ -793,3 +793,42 @@ def get_validation_params(
     coord_add: tuple[float, float],  # noqa: ARG001
 ) -> tuple[np.ndarray, np.ndarray, float]:
     return np.array([1, 2, 3]), np.array([4, 5, 6]), 0.1
+
+
+@njit(["f4[:,:,::1](f4[:,:,::1],f8[::1])"], cache=True, fastmath=True)
+def shift_3d_batch(leaves_batch: np.ndarray, shift_batch: np.ndarray) -> np.ndarray:
+    n_batch, n_comps, nbins = leaves_batch.shape
+    res = np.empty((n_batch, n_comps, nbins), dtype=leaves_batch.dtype)
+    for irow in range(n_batch):
+        shift_float = np.float32(shift_batch[irow])
+        shift = round(shift_float) % nbins
+        src_idx = (-shift) % nbins
+        for j in range(nbins):
+            res[irow, 0, j] = leaves_batch[irow, 0, src_idx]
+            res[irow, 1, j] = leaves_batch[irow, 1, src_idx]
+            src_idx += 1
+            if src_idx == nbins:
+                src_idx = 0
+    return res
+
+
+@njit(["c8[:,:,::1](c8[:,:,::1],f8[::1])"], cache=True, fastmath=True)
+def shift_3d_complex_batch(
+    leaves_batch: np.ndarray,
+    shift_batch: np.ndarray,
+) -> np.ndarray:
+    n_batch, n_comps, nbins_f = leaves_batch.shape
+    res = np.empty((n_batch, n_comps, nbins_f), dtype=leaves_batch.dtype)
+    nbins = (nbins_f - 1) * 2
+    for irow in range(n_batch):
+        shift_float = np.float32(shift_batch[irow])
+        # Precompute phase step and delta
+        angle = np.float32(-2.0 * np.float32(np.pi) * shift_float / nbins)
+        delta = np.complex64(np.cos(angle) + 1j * np.sin(angle))
+        phase = np.complex64(1.0 + 0.0j)
+        for k in range(nbins_f):
+            res[irow, 0, k] = leaves_batch[irow, 0, k] * phase
+            res[irow, 1, k] = leaves_batch[irow, 1, k] * phase
+            phase *= delta
+
+    return res

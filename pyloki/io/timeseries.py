@@ -53,6 +53,7 @@ class TimeSeries:
         normalize: bool = True,
         mod_type: str = "derivative",
         mod_kwargs: dict | None = None,
+        mod_tref: float | None = None,
     ) -> np.ndarray:
         cycles = int(self.tobs * freq)
         if cycles < 1:
@@ -65,8 +66,10 @@ class TimeSeries:
             raise ValueError(msg)
         if mod_kwargs is None:
             mod_kwargs = {}
+        if mod_tref is None:
+            mod_tref = self.tobs / 2
         mod_func = type_to_mods[mod_type](**mod_kwargs)
-        proper_time = mod_func.generate(np.arange(0, self.tobs, self.dt), self.tobs / 2)
+        proper_time = mod_func.generate(np.arange(0, self.tobs, self.dt), mod_tref)
         fold = common.brutefold(
             self.ts_e,
             self.ts_v,
@@ -91,6 +94,7 @@ class TimeSeries:
         nsubints: int = 64,
         mod_type: str = "derivative",
         mod_kwargs: dict | None = None,
+        mod_tref: float | None = None,
         figsize: tuple[float, float] = (10, 6.5),
         dpi: int = 100,
         cmap: str = "magma_r",
@@ -101,8 +105,14 @@ class TimeSeries:
             nsubints=1,
             mod_type=mod_type,
             mod_kwargs=mod_kwargs,
+            mod_tref=mod_tref,
         )
-        ephem_fold_subints = self.fold_ephem(freq, fold_bins, nsubints=nsubints)
+        ephem_fold_subints = self.fold_ephem(
+            freq,
+            fold_bins,
+            nsubints=nsubints,
+            mod_tref=mod_tref,
+        )
         sig_boxcar = sig_filters.MatchedFilter(
             ephem_fold,
             loc_method="norm",

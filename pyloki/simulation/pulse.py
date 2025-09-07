@@ -43,11 +43,14 @@ class PulseSignalConfig:
     ds: float = 1.0
     mod_type: str = "derivative"
     mod_kwargs: dict[str, float] = attrs.Factory(dict)
+    mod_tref: float | None = None
     _mod_func: Modulating = attrs.field(init=False, repr=False)
 
     def __attrs_post_init__(self) -> None:
         self._mod_func = type_to_mods[self.mod_type](**self.mod_kwargs)
         self._check()
+        if self.mod_tref is None:
+            self.mod_tref = self.tobs / 2
 
     @property
     def freq(self) -> float:
@@ -82,7 +85,8 @@ class PulseSignalConfig:
     @property
     def proper_time(self) -> np.ndarray:
         """Proper time array."""
-        return self.mod_func.generate(np.arange(0, self.tobs, self.dt), self.tobs / 2)
+        mod_tref = self.mod_tref if self.mod_tref is not None else self.tobs / 2
+        return self.mod_func.generate(np.arange(0, self.tobs, self.dt), mod_tref)
 
     def get_updated(self, update_dict: dict) -> PulseSignalConfig:
         new = attrs.asdict(self, filter=attrs.filters.exclude("_mod_func"))

@@ -267,7 +267,8 @@ def compute_connection_coefficient_s(k: int, m: int) -> float:
         return 0.0
     n = (k - m) // 2
     deltam0 = 1 if m == 0 else 0
-    return 2 ** (1 - k - deltam0) * nbinom(k, n)
+    # float 2.0 is required for numba
+    return 2.0 ** (1 - k - deltam0) * nbinom(k, n)
 
 
 @njit(fastmath=True)
@@ -292,7 +293,7 @@ def compute_connection_coefficient_r(k: int, m: int) -> float:
         return (-1) ** (k // 2)
     n = (k - m) // 2
     r = (k + m) // 2
-    return ((-1) ** n) * (2 ** (m - 1)) * (2 * k / (k + m)) * nbinom(r, n)
+    return ((-1) ** n) * (2.0 ** (m - 1)) * (2.0 * k / (k + m)) * nbinom(r, n)
 
 
 @njit(fastmath=True)
@@ -348,7 +349,7 @@ def compute_connection_matrix_s(k_max: int) -> np.ndarray:
     if k_max < 0:
         msg = "k_max must be a non-negative integer."
         raise ValueError(msg)
-    s_mat = np.zeros((k_max + 1, k_max + 1), dtype=np.float32)
+    s_mat = np.zeros((k_max + 1, k_max + 1), dtype=np.float64)
     for k in range(k_max + 1):
         for m in range(k + 1):
             s_mat[k, m] = compute_connection_coefficient_s(k, m)
@@ -423,6 +424,7 @@ def poly_chebyshev_transform_matrix(
     return c_mat
 
 
+@njit(fastmath=True)
 def taylor_to_cheby(d_vec: np.ndarray, t_s: float) -> np.ndarray:
     r"""Transform Taylor series coefficients to Chebyshev coefficients.
 
@@ -431,6 +433,8 @@ def taylor_to_cheby(d_vec: np.ndarray, t_s: float) -> np.ndarray:
     d_vec : np.ndarray
         Taylor series coefficients [d_0, d_1, ..., d_k_max]
         where d_k is coefficient of (t - t_c)^k/k!.
+        Could also be a 2D array of shape (n_batch, n) where n_batch is the number of
+        batches and n is the number of parameters.
     t_s : float
         Scale factor for the transformation, typically half the time span.
 
@@ -442,12 +446,52 @@ def taylor_to_cheby(d_vec: np.ndarray, t_s: float) -> np.ndarray:
     if t_s <= 0:
         msg = "t_s must be a positive."
         raise ValueError(msg)
-    k_max = len(d_vec) - 1
+    k_max = d_vec.shape[-1] - 1
     s_mat = compute_connection_matrix_s(k_max)
     k_range = np.arange(k_max + 1, dtype=np.int64)
-    k_factorial = np.array([fact(k) for k in k_range], dtype=np.float32)
-    d_scaled = d_vec * t_s**k_range / k_factorial
-    return np.dot(s_mat.T, d_scaled)
+    scale = t_s**k_range / fact(k_range)
+    d_scaled = d_vec * scale
+    return s_mat.T @ d_scaled
+
+
+@njit(fastmath=True)
+def taylor_to_cheby_full(d_vec_batch: np.ndarray, t_s: float) -> np.ndarray:
+    r"""Transform Taylor series coefficients and its errors to Chebyshev basis.
+
+    Parameters
+    ----------
+    d_vec_batch : np.ndarray
+        Taylor series coefficients and its errors, shape is (n_batch, n_params, 2).
+        where d_k is coefficient of (t - t_c)^k/k!.
+    t_s : float
+        Scale factor for the transformation, typically half the time span.
+
+    Returns
+    -------
+    np.ndarray
+        Chebyshev coefficients and its errors, shape is (n_batch, n_params, 2).
+    """
+    if t_s <= 0:
+        msg = "t_s must be a positive."
+        raise ValueError(msg)
+    _, n_params, _ = d_vec_batch.shape
+    k_max = n_params - 1
+    d_vals = d_vec_batch[:, :, 0]
+    d_errs = d_vec_batch[:, :, 1]
+    s_mat = compute_connection_matrix_s(k_max)
+    k_range = np.arange(k_max + 1, dtype=np.int64)
+    scale = t_s**k_range / fact(k_range)
+    d_scaled_vals = d_vals * scale
+    d_scaled_errs = d_errs * scale
+    alpha_vals = (s_mat.T @ d_scaled_vals.T).T
+    # Propagate errors: var_alpha = (S^T)^2 @ var_d_scaled.T
+    var_d_scaled = d_scaled_errs**2
+    var_alpha = (s_mat.T**2 @ var_d_scaled.T).T
+    alpha_errs = np.sqrt(var_alpha)
+    result = np.empty_like(d_vec_batch)
+    result[:, :, 0] = alpha_vals
+    result[:, :, 1] = alpha_errs
+    return result
 
 
 def cheby_to_taylor(alpha_vec: np.ndarray, t_s: float) -> np.ndarray:

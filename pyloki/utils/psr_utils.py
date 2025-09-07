@@ -40,8 +40,9 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
     phase = ((proper_time - delay) * freq) % 1.0
     iphase = phase * float(nbins)
     # Clamp to ensure iphase ∈ [0, nbins)
-    if iphase >= nbins:
-        return 0
+    eps = 1e-12
+    if iphase >= (nbins - eps):
+        return iphase - nbins
     return iphase
 
 
@@ -88,7 +89,7 @@ def poly_taylor_step_f(
 
 
 @njit(cache=True, fastmath=True)
-def poly_taylor_step_d(
+def poly_taylor_step_d_f(
     nparams: int,
     tobs: float,
     fold_bins: int,
@@ -105,6 +106,20 @@ def poly_taylor_step_d(
 
 
 @njit(cache=True, fastmath=True)
+def poly_taylor_step_d(
+    nparams: int,
+    tobs: float,
+    fold_bins: int,
+    tol_bins: float,
+    f_max: float,
+    t_ref: float = 0,
+) -> np.ndarray:
+    """Grid for parameters {d_k,... d_2, d_1} based on the Taylor expansion (scalar)."""
+    dparams_f = poly_taylor_step_f(nparams, tobs, fold_bins, tol_bins, t_ref)
+    return dparams_f * C_VAL / f_max
+
+
+@njit(cache=True, fastmath=True)
 def poly_taylor_step_d_vec(
     nparams: int,
     tobs: float,
@@ -113,12 +128,9 @@ def poly_taylor_step_d_vec(
     f_max: np.ndarray,
     t_ref: float = 0,
 ) -> np.ndarray:
-    """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion (vector)."""
+    """Grid for parameters {d_k,... d_2, d_1} based on the Taylor expansion (vector)."""
     dparams_f = poly_taylor_step_f(nparams, tobs, fold_bins, tol_bins, t_ref)
-    dparams = np.zeros((len(f_max), nparams), dtype=np.float64)
-    dparams[:, :-1] = dparams_f[:-1][np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
-    dparams[:, -1] = dparams_f[-1]
-    return dparams
+    return dparams_f[np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
 
 
 @njit
@@ -134,7 +146,8 @@ def split_f(
     """Check if a parameter {f_k} should be split."""
     factor = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
     factor_opt = factor / 2**k
-    return abs(df_old - df_new) * factor_opt > tol_bins
+    eps = 1e-6
+    return abs(df_old - df_new) * factor_opt > (tol_bins - eps)
 
 
 @njit(cache=True, fastmath=True)
@@ -146,12 +159,12 @@ def poly_taylor_shift_d(
     f_cur: float,
     t_ref: float = 0,
 ) -> np.ndarray:
-    """Compute the bin shift for parameters {d_k,... d_2, f}."""
+    """Compute the bin shift for parameters {d_k,... d_2, d_1} (scalar)."""
     nparams = len(dparam_old)
     k = np.arange(nparams - 1, -1, -1)
     factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
     factors_opt = factors / 2**k
-    factors_opt[:-1] *= f_cur / C_VAL
+    factors_opt *= f_cur / C_VAL
     return np.abs(dparam_old - dparam_new) * factors_opt
 
 
@@ -164,7 +177,7 @@ def poly_taylor_shift_d_vec(
     f_cur: np.ndarray,
     t_ref: float = 0,
 ) -> np.ndarray:
-    """Compute the bin shift for parameters {d_k,... d_2, f} (vector)."""
+    """Compute the bin shift for parameters {d_k,... d_2, d_1} (vector)."""
     nbatch, nparams = dparam_old.shape
     k = np.arange(nparams - 1, -1, -1)
     factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
@@ -172,9 +185,8 @@ def poly_taylor_shift_d_vec(
     factors_broadcast = np.empty((nbatch, nparams), dtype=dparam_old.dtype)
     for i in range(nbatch):
         factors_broadcast[i, :] = factors_opt
-    # For all but last param, scale by f_cur / C_VAL
     scale = (f_cur / C_VAL)[:, np.newaxis]
-    factors_broadcast[:, :-1] *= scale
+    factors_broadcast *= scale
     return np.abs(dparam_old - dparam_new) * factors_broadcast
 
 
@@ -186,10 +198,33 @@ def period_step(tobs: float, nbins: int, p_min: float, tol: float) -> float:
 
 
 @njit(cache=True, fastmath=True)
-def shift_params_d(
+def poly_cheb_step_vec(
+    nparams: int,
+    fold_bins: int,
+    tol_bins: float,
+    f_max: np.ndarray,
+) -> np.ndarray:
+    dphi = tol_bins / fold_bins
+    dparams_f = np.zeros(nparams, np.float64) + dphi
+    return dparams_f[np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
+
+
+@njit(cache=True, fastmath=True)
+def poly_cheb_shift_vec(
+    dparam_old: np.ndarray,
+    dparam_new: np.ndarray,
+    fold_bins: int,
+    f_cur: np.ndarray,
+) -> np.ndarray:
+    scale_factors = fold_bins * (f_cur / C_VAL)[:, np.newaxis]
+    return np.abs(dparam_old - dparam_new) * scale_factors
+
+
+@njit(cache=True, fastmath=True)
+def shift_params_taylor(
     param_vec: np.ndarray,
     delta_t: float,
-    n_out: int = 3,
+    n_out: int = 0,
 ) -> np.ndarray:
     """Shift the kinematic taylor parameters to a new reference time.
 
@@ -202,7 +237,7 @@ def shift_params_d(
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
     n_out : int, optional
-        Number of output parameters from end, by default 3.
+        Number of output parameters from end.
 
     Returns
     -------
@@ -210,19 +245,22 @@ def shift_params_d(
         Parameter vector at the new reference time t_j.
         Shape is (..., n_out).
     """
-    nparams = param_vec.shape[-1]
-    n_out = min(n_out, nparams)
-    powers = np.tril(np.arange(nparams)[:, np.newaxis] - np.arange(nparams))
+    n_params = param_vec.shape[-1]
+    n_out = n_params if n_out < 0 else min(n_out, n_params)
+    powers = np.tril(np.arange(n_params)[:, np.newaxis] - np.arange(n_params))
     # Calculate the transformation matrix (taylor coefficients)
     t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
     t_mat = t_mat[-n_out:]
     # transform each vector in correct shape: np.dot(t_mat, param_vec)
-    return param_vec @ t_mat.T
+    return np.ascontiguousarray(param_vec) @ t_mat.T
 
 
 @njit(cache=True, fastmath=True)
-def shift_params(param_vec: np.ndarray, delta_t: float) -> tuple[np.ndarray, float]:
-    """Shift the search parameters vector to a new reference time.
+def shift_params_taylor_d_f(
+    param_vec: np.ndarray,
+    delta_t: float,
+) -> tuple[np.ndarray, float]:
+    """Shift the kinematic taylor parameters to a new reference time.
 
     Parameters
     ----------
@@ -242,9 +280,8 @@ def shift_params(param_vec: np.ndarray, delta_t: float) -> tuple[np.ndarray, flo
     """
     nparams = param_vec.shape[-1]
     dvec_cur = np.zeros(nparams + 1, dtype=param_vec.dtype)
-    # Copy till acceleration
-    dvec_cur[:-2] = param_vec[:-1]
-    dvec_new = shift_params_d(dvec_cur, delta_t, n_out=nparams + 1)
+    dvec_cur[:-2] = param_vec[:-1]  # till acceleration
+    dvec_new = shift_params_taylor(dvec_cur, delta_t)
     param_vec_new = param_vec.copy()
     param_vec_new[:-1] = dvec_new[:-2]
     param_vec_new[-1] = param_vec[-1] * (1 - dvec_new[-2] / C_VAL)
@@ -253,92 +290,166 @@ def shift_params(param_vec: np.ndarray, delta_t: float) -> tuple[np.ndarray, flo
 
 
 @njit(cache=True, fastmath=True)
-def shift_params_batch(
-    param_vec_batch: np.ndarray,
+def shift_leaves_taylor_batch(
+    leaves_param_batch: np.ndarray,
     delta_t: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Specialized version of shift_params for batch processing.
+    grid_conservative: bool,
+) -> np.ndarray:
+    """Shift the kinematic taylor parameters and errors to a new reference time.
 
     Parameters
     ----------
-    param_vec_batch : np.ndarray
-        Parameter vector of shape (size, nparams, 2) at reference time t_i.
+    leaves_param_batch : np.ndarray
+        Parameter vector of shape (N, nparams, 2) at reference time t_i.
+        Each batch element is a vector of shape (nparams, 2)
+        [..., [a, da], [v, dv], [d, dd]]
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
+    grid_conservative : bool
+        If True, the errors are propagated conservatively, otherwise unchanged.
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray]
-        Array of transformed search parameters vector at the new reference time t_j
-        and the phase delay d.
+    np.ndarray
+        Parameter vector of shape (N, nparams, 2) at reference time t_j.
     """
-    size, nparams, _ = param_vec_batch.shape
-    dvec_cur = np.zeros((size, nparams + 1), dtype=param_vec_batch.dtype)
-    # Copy till acceleration
-    dvec_cur[:, :-2] = param_vec_batch[:, :-1, 0]
-    dvec_new = shift_params_d(dvec_cur, delta_t, n_out=nparams + 1)
-    param_vec_new = param_vec_batch.copy()
-    param_vec_new[:, :-1, 0] = dvec_new[:, :-2]
-    param_vec_new[:, -1, 0] = param_vec_batch[:, -1, 0] * (1 - dvec_new[:, -2] / C_VAL)
-    delay_rel = dvec_new[:, -1] / C_VAL
-    return param_vec_new, delay_rel
+    _, n_params, _ = leaves_param_batch.shape
+    # Construct the transformation matrix
+    powers = np.tril(np.arange(n_params)[:, np.newaxis] - np.arange(n_params))
+    t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
+    # Propagate errors (assuming no covariance)
+    leaves_param_new = np.empty_like(leaves_param_batch)
+    param_values = np.ascontiguousarray(leaves_param_batch[:, :, 0])
+    param_errors = np.ascontiguousarray(leaves_param_batch[:, :, 1])
+    leaves_param_new[:, :, 0] = param_values @ t_mat.T
+    if grid_conservative:
+        leaves_param_new[:, :, 1] = np.sqrt((param_errors**2) @ (t_mat**2).T)
+    else:
+        leaves_param_new[:, :, 1] = param_errors
+    return leaves_param_new
 
 
 @njit(cache=True, fastmath=True)
 def shift_params_circular_batch(
     param_vec_batch: np.ndarray,
     delta_t: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Specialized version of shift_params for circular orbit batch processing.
+) -> np.ndarray:
+    """Specialized version of shift_params_taylor for circular-orbit propagation.
+
+    Works only for 5 parameters and batch processing. Input must be guaranteed to be
+    a physical circular orbit.
 
     Parameters
     ----------
     param_vec_batch : np.ndarray
-        Parameter vector of shape (size, nparams, 2) at reference time t_i.
+        Shape (n_batch, 5), ordered [s, j, a, v, d] at t_i.
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray]
-        Array of transformed search parameters vector at the new reference time t_j
-        and the phase delay d.
+    np.ndarray
+        Shape (n_batch, 5), ordered [s, j, a, v, d] at t_j.
     """
-    _, nparams, _ = param_vec_batch.shape
-    if nparams != 4:
-        msg = "4 parameters are needed for circular orbit resolve."
+    n_batch, n_params = param_vec_batch.shape
+    if n_params != 5:
+        msg = "5 parameters are needed for circular orbit propagation."
         raise ValueError(msg)
-    snap_old = param_vec_batch[:, 0, 0]
-    jerk_old = param_vec_batch[:, 1, 0]
-    accel_old = param_vec_batch[:, 2, 0]
-    freq_old = param_vec_batch[:, 3, 0]
-    minus_omega_sq = snap_old / accel_old
-    omega_orb = np.sqrt(-minus_omega_sq)
-    omega_orb_sq = -minus_omega_sq
-    omega_orb_cubed = omega_orb * omega_orb_sq
+    s_i = param_vec_batch[:, 0]
+    j_i = param_vec_batch[:, 1]
+    a_i = param_vec_batch[:, 2]
+    v_i = param_vec_batch[:, 3]
+    d_i = param_vec_batch[:, 4]
+
+    omega_orb_sq = -s_i / a_i
+    omega_orb = np.sqrt(omega_orb_sq)
     # Evolve the phase to the new time t_j = t_i + delta_t
     omega_dt = omega_orb * delta_t
     cos_odt = np.cos(omega_dt)
     sin_odt = np.sin(omega_dt)
-    a_new = accel_old * cos_odt + (jerk_old / omega_orb) * sin_odt
-    j_new = jerk_old * cos_odt - (accel_old * omega_orb) * sin_odt
-    s_new = -omega_orb_sq * a_new
-    delta_v = (accel_old / omega_orb) * sin_odt - (jerk_old / omega_orb_sq) * (
-        cos_odt - 1.0
-    )
-    delta_d = (
-        -(accel_old / omega_orb_sq) * (cos_odt - 1.0)
-        - (jerk_old / omega_orb_cubed) * sin_odt
-        + (jerk_old * delta_t / omega_orb_sq)
-    )
-    delay_rel = delta_d / C_VAL
-    f_new = freq_old * (1 - delta_v / C_VAL)
-    param_vec_new = param_vec_batch.copy()
-    param_vec_new[:, 0, 0] = s_new
-    param_vec_new[:, 1, 0] = j_new
-    param_vec_new[:, 2, 0] = a_new
-    param_vec_new[:, 3, 0] = f_new
-    return param_vec_new, delay_rel
+    # Pin-down {s, j, a}
+    a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
+    j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
+    s_j = -omega_orb_sq * a_j
+    # Integrate to get {v, d}
+    v_circ_i = -j_i / omega_orb_sq
+    v_circ_j = -j_j / omega_orb_sq
+    v_j = v_circ_j + (v_i - v_circ_i)
+    d_circ_j = -a_j / omega_orb_sq
+    d_circ_i = -a_i / omega_orb_sq
+    d_j = d_circ_j + (d_i - d_circ_i) + (v_i - v_circ_i) * delta_t
+
+    out = np.empty((n_batch, 5), dtype=param_vec_batch.dtype)
+    out[:, 0] = s_j
+    out[:, 1] = j_j
+    out[:, 2] = a_j
+    out[:, 3] = v_j
+    out[:, 4] = d_j
+    return out
+
+@njit(cache=True, fastmath=True)
+def shift_leaves_circular_batch(
+    leaves_param_batch: np.ndarray,
+    delta_t: float,
+    grid_conservative: bool,  # noqa: ARG001
+) -> np.ndarray:
+    """Specialized version of shift_leaves_taylor_batch for circular-orbit propagation.
+
+    Works only for 5 parameters and batch processing. Input must be guaranteed to be
+    a physical circular orbit.
+
+    Parameters
+    ----------
+    leaves_param_batch : np.ndarray
+        Parameter vector of shape (N, nparams, 2) at reference time t_i.
+        Each batch element is a vector of shape (nparams, 2)
+        [[s, ds], [j, dj], [a, da], [v, dv], [d, dd]]
+    delta_t : float
+        The time difference (t_j - t_i) to shift the parameters by.
+    grid_conservative : bool
+        If True, the errors are propagated conservatively, otherwise unchanged.
+
+    Returns
+    -------
+    np.ndarray
+        Parameter vector of shape (N, nparams, 2) at reference time t_j.
+    """
+    n_batch, n_params, _ = leaves_param_batch.shape
+    if n_params != 5:
+        msg = "5 parameters are needed for circular orbit propagation."
+        raise ValueError(msg)
+    s_i = leaves_param_batch[:, 0, 0]
+    j_i = leaves_param_batch[:, 1, 0]
+    a_i = leaves_param_batch[:, 2, 0]
+    v_i = leaves_param_batch[:, 3, 0]
+    d_i = leaves_param_batch[:, 4, 0]
+
+    omega_orb_sq = -s_i / a_i
+    omega_orb = np.sqrt(omega_orb_sq)
+    # Evolve the phase to the new time t_j = t_i + delta_t
+    omega_dt = omega_orb * delta_t
+    cos_odt = np.cos(omega_dt)
+    sin_odt = np.sin(omega_dt)
+    # Pin-down {s, j, a}
+    a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
+    j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
+    s_j = -omega_orb_sq * a_j
+    # Integrate to get {v, d}
+    v_circ_i = -j_i / omega_orb_sq
+    v_circ_j = -j_j / omega_orb_sq
+    v_j = v_circ_j + (v_i - v_circ_i)
+    d_circ_j = -a_j / omega_orb_sq
+    d_circ_i = -a_i / omega_orb_sq
+    d_j = d_circ_j + (d_i - d_circ_i) + (v_i - v_circ_i) * delta_t
+
+    out = leaves_param_batch.copy()
+    # Unchanged errors, for now (no use of grid conservative here)
+    out[:, 0, 0] = s_j
+    out[:, 1, 0] = j_j
+    out[:, 2, 0] = a_j
+    out[:, 3, 0] = v_j
+    out[:, 4, 0] = d_j
+    return out
 
 
 @njit(cache=True, fastmath=True)
@@ -437,9 +548,6 @@ def branch_param(
     if dparam_cur <= 0 or dparam_new <= 0:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
-    if param_cur < param_min or param_cur > param_max:
-        msg = f"param_cur must be within [param_min, param_max], got {param_cur}."
-        raise ValueError(msg)
     if dparam_new > (param_max - param_min) / 2:
         # If the desired new step size is too large, return the current value
         return np.array([param_cur]), dparam_new
@@ -466,13 +574,11 @@ def branch_param_padded(
 ) -> tuple[float, int]:
     count = 0
     dparam_new_actual = dparam_new  # Default if no branching occurs or edge cases
-    if dparam_cur <= 0 or dparam_new <= 0:
+    eps = 1e-12
+    if dparam_cur <= eps or dparam_new <= eps:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
-    if param_cur < param_min or param_cur > param_max:
-        msg = f"param_cur must be within [param_min, param_max], got {param_cur}."
-        raise ValueError(msg)
-    if dparam_new > (param_max - param_min) / 2:
+    if dparam_new > ((param_max - param_min) / 2 + eps):
         # If the desired new step size is too large, return the current value
         out_values[0] = param_cur
         dparam_new_actual = dparam_cur
@@ -525,10 +631,11 @@ def range_param(vmin: float, vmax: float, dv: float) -> np.ndarray:
     np.ndarray
         Array of parameter values uniformly spaced between vmin and vmax.
     """
-    if not (vmin < vmax and dv > 0):
+    eps = 1e-12
+    if not (vmin < (vmax - eps) and dv > eps):
         msg = "Invalid input: ensure vmin < vmax and dv > 0."
         raise ValueError(msg)
-    if dv > (vmax - vmin) / 2:
+    if dv > ((vmax - vmin) / 2 + eps):
         return np.array([(vmax + vmin) / 2])
     npoints = int((vmax - vmin) / dv)
     return np.linspace(vmin, vmax, npoints + 2)[1:-1]
@@ -642,6 +749,20 @@ class SnailScheme:
         ref = (self.get_idx(level) + 0.5) * self.tseg
         scale = 0.5 * self.tseg
         return ref, scale
+
+    def get_adaptive_coord(self, level: int) -> tuple[float, float]:
+        """Get adaptive reference time and maximum distance from reference."""
+        if level < 0 or level >= self.nseg:
+            msg = f"level must be in [0, {self.nseg - 1}], got {level}."
+            raise ValueError(msg)
+
+        if level == 0:
+            return self.get_coord(level)
+
+        # For level > 0: adaptive max_distance = scale + 0.5
+        prev_ref, _ = self.get_coord(level - 1)
+        adaptive_max_distance = self.get_coord(level)[1] + 0.5 * self.tseg
+        return prev_ref, adaptive_max_distance
 
     def get_valid(self, prune_level: int) -> tuple[float, float]:
         scheme_till_now = self.data[:prune_level]

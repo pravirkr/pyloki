@@ -10,6 +10,7 @@ from numba.experimental import structref
 from numba.extending import overload, overload_method
 
 from pyloki.utils import psr_utils
+from pyloki.utils.misc import C_VAL
 
 
 @structref.register
@@ -387,7 +388,7 @@ def suggestion_struct_init(
     self.mode = mode
     self.valid_size = param_sets.shape[0]
     self.size = param_sets.shape[0]
-    self.nparams = param_sets.shape[1] - 2
+    self.nparams = param_sets.shape[1] - 3
     return self
 
 
@@ -407,7 +408,7 @@ def suggestion_struct_complex_init(
     self.mode = mode
     self.valid_size = param_sets.shape[0]
     self.size = param_sets.shape[0]
-    self.nparams = param_sets.shape[1] - 2
+    self.nparams = param_sets.shape[1] - 3
     return self
 
 
@@ -460,22 +461,12 @@ def get_best_func(self: SuggestionStruct) -> tuple[np.ndarray, np.ndarray, float
 
 @njit(cache=True, fastmath=True)
 def get_transformed_func(self: SuggestionStruct, delta_t: float) -> np.ndarray:
-    if self.nparams < 4:
-        # Exclude last two rows
-        trans_params, _ = psr_utils.shift_params_batch(
-            self.param_sets[:, :-2, :],
-            delta_t,
-        )
-    elif self.nparams == 4:
-        # Exclude last two rows
-        trans_params, _ = psr_utils.shift_params_circular_batch(
-            self.param_sets[:, :-2, :],
-            delta_t,
-        )
-    else:
-        msg = "suggestion struct must have less than 4 parameters."
-        raise ValueError(msg)
-    return trans_params
+    param_sets_batch = self.param_sets[:, :-3, :]
+    f0_batch = self.param_sets[:, -2, 0]
+    # Convert velocity to frequency
+    param_sets_batch[:, -1, 0] = f0_batch * (1 - self.param_sets[:, -4, 0] / C_VAL)
+    param_sets_batch[:, -1, 1] = f0_batch * self.param_sets[:, -4, 1] / C_VAL
+    return param_sets_batch
 
 
 @njit(cache=True, fastmath=True)

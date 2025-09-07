@@ -8,6 +8,7 @@ import numpy as np
 from numba import njit, types
 
 from pyloki.core import (
+    PruneChebyshevComplexDPFuncts,
     PruneChebyshevDPFuncts,
     PruneTaylorComplexDPFuncts,
     PruneTaylorDPFuncts,
@@ -157,9 +158,9 @@ def pruning_iteration(
 def pruning_iteration_batched(
     sugg: SuggestionStruct,
     fold_segment: np.ndarray,
+    coord_next: tuple[float, float],
     coord_init: tuple[float, float],
     coord_cur: tuple[float, float],
-    coord_prev: tuple[float, float],
     coord_add: tuple[float, float],
     coord_valid: tuple[float, float],
     prune_funcs: DP_FUNCS_TYPE,
@@ -207,7 +208,6 @@ def pruning_iteration_batched(
     timers = np.zeros(7, dtype=np.float32)
     current_threshold = threshold
 
-    trans_matrix = prune_funcs.get_transform_matrix(coord_cur, coord_prev)
     validation_params = prune_funcs.get_validation_params(coord_valid)
 
     n_branches = sugg.valid_size
@@ -247,6 +247,7 @@ def pruning_iteration_batched(
         batch_param_idx, batch_phase_shift = prune_funcs.resolve(
             batch_leaves,
             coord_add,
+            coord_cur,
             coord_init,
         )
         timers[2] += nb_time_now() - t_start
@@ -291,8 +292,8 @@ def pruning_iteration_batched(
         t_start = nb_time_now()
         filtered_leaves_trans = prune_funcs.transform(
             filtered_leaves,
+            coord_next,
             coord_cur,
-            trans_matrix,
         )
         timers[5] += nb_time_now() - t_start
 
@@ -445,18 +446,18 @@ class Pruning:
         fold_segment = self.prune_funcs.load(self.dyp.fold, self.scheme.ref_idx)
 
         # Initialize the suggestions with the first segment
-        coord = self.scheme.get_coord(self.prune_level)
-        self._suggestion = self.prune_funcs.suggest(fold_segment, coord)
+        coord_init = self.scheme.get_coord(0)
+        self._suggestion = self.prune_funcs.suggest(fold_segment, coord_init)
         # Records to track the numerical stability of the algorithm
         self._backtrack_arr = np.zeros(
-            (self.max_sugg, self.dyp.cfg.prune_poly_order + 2),
+            (self.max_sugg, self.dyp.cfg.prune_poly_order + 3),
             dtype=np.int32,
         )
         self._best_intermediate_arr = np.zeros(
             self.dyp.nsegments - 1,
             dtype=np.dtype(
                 [
-                    ("param_sets", np.float64, (self.dyp.cfg.prune_poly_order + 2, 2)),
+                    ("param_sets", np.float64, (self.dyp.cfg.prune_poly_order + 3, 2)),
                     ("folds", self.dyp.fold.dtype, fold_segment.shape[-2:]),
                     ("scores", np.float32),
                 ],
@@ -549,18 +550,18 @@ class Pruning:
         seg_idx_cur = self.scheme.get_idx(self.prune_level)
         fold_segment = self.prune_funcs.load(self.dyp.fold, seg_idx_cur)
         threshold = self.threshold_scheme[self.prune_level - 1]
-        # Get the useful precomputed values: coord_cur := coord_prev + coord_add
+        # Get the useful precomputed values: coord_next := coord_cur + coord_add
         coord_init = self.scheme.get_coord(0)
-        coord_cur = self.scheme.get_coord(self.prune_level)
-        coord_prev = self.scheme.get_coord(self.prune_level - 1)
+        coord_next = self.scheme.get_coord(self.prune_level)
+        coord_cur = self.scheme.get_adaptive_coord(self.prune_level)
         coord_add = self.scheme.get_seg_coord(self.prune_level)
         coord_valid = self.scheme.get_valid(self.prune_level)
         suggestion, stats_dict, timers = pruning_iteration_batched(
             self.suggestion,
             fold_segment,
+            coord_next,
             coord_init,
             coord_cur,
-            coord_prev,
             coord_add,
             coord_valid,
             self.prune_funcs,
@@ -589,25 +590,6 @@ class Pruning:
         self._backtrack_arr[: suggestion.size] = suggestion.backtracks.copy()
         self._suggestion = suggestion
 
-    def get_branching_pattern(self, nstages: int, isuggest: int = 0) -> np.ndarray:
-        """Get the branching pattern of the pruning algorithm."""
-        branching_pattern = []
-        fold_segment = self.prune_funcs.load(self.dyp.fold, self.scheme.ref_idx)
-        coord = self.scheme.get_coord(0)
-        leaf = self.prune_funcs.suggest(fold_segment, coord).param_sets[isuggest]
-        for prune_level in range(1, nstages + 1):
-            coord_cur = self.scheme.get_coord(prune_level)
-            coord_prev = self.scheme.get_coord(prune_level - 1)
-            trans_matrix = self.prune_funcs.get_transform_matrix(coord_cur, coord_prev)
-            leaves_arr = self.prune_funcs.branch(leaf, coord_cur)
-            branching_pattern.append(len(leaves_arr))
-            leaf = self.prune_funcs.transform(
-                leaves_arr[isuggest],
-                coord_cur,
-                trans_matrix,
-            )
-        return np.array(branching_pattern)
-
     def _setup_pruning(self, kind: str) -> None:
         if self.dyp.fold.ndim > 7:
             msg = "Pruning only supports initial data with up to 4 param dimensions."
@@ -629,7 +611,17 @@ class Pruning:
                 self.dyp.tseg,
                 self.dyp.cfg,
             )
-        elif kind == "chebyshev":
+        elif kind == "chebyshev" and self.dyp.cfg.use_fft_shifts:
+            self._prune_funcs = PicklableStructRefWrapper[
+                PruneChebyshevComplexDPFuncts
+            ](
+                PruneChebyshevComplexDPFuncts,
+                self.dyp.param_arr,
+                self.dyp.dparams_limited,
+                self.dyp.tseg,
+                self.dyp.cfg,
+            )
+        elif kind == "chebyshev" and not self.dyp.cfg.use_fft_shifts:
             self._prune_funcs = PicklableStructRefWrapper[PruneChebyshevDPFuncts](
                 PruneChebyshevDPFuncts,
                 self.dyp.param_arr,

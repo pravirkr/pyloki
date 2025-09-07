@@ -155,6 +155,38 @@ class ParamLimits:
         return cls(bounds)
 
     @classmethod
+    def from_circular_dynamic(
+        cls,
+        freq: float,
+        p_orb_min: float,
+        m_c: float,
+        t_drift: float,
+        m_p: float = 1.4,
+        poly_order: int = 4,
+    ) -> ParamLimits:
+        """Generate dynamic search parameter limits from circular orbit.
+
+        This method first calculates the maximum physical amplitudes for each
+        parameter (s, j, a, v), then projects these worst-case values to the
+        edge of the observation window (t_obs/2) to find the maximum possible
+        drift. This provides the necessary "headroom" for circular orbit searches.
+        """
+        poly_order = max(poly_order, 2)
+        omega_orb_max = 2 * np.pi / p_orb_min
+        # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
+        x_orb = 0.005 * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
+        max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
+        drifted_max_values_d = psr_utils.shift_params_taylor(
+            max_derivs[::-1],
+            t_drift / 2.0,
+        )
+        bounds = [(-d, d) for d in drifted_max_values_d[:-1]]
+        freq_shift = drifted_max_values_d[-1] / C_VAL
+        bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
+
+        return cls(bounds)
+
+    @classmethod
     def from_upper(
         cls,
         true_params: list[float],
@@ -181,11 +213,11 @@ class ParamLimits:
         dvec = np.zeros(nparams + 1, dtype=np.float64)
         dvec[1:-2] = true_params[1:-1]  # till acceleration
         dvec[0] = d_range[0]
-        dvec_min_up = psr_utils.shift_params_d(dvec, t_obs / 2, n_out=nparams + 1)
-        dvec_min_low = psr_utils.shift_params_d(dvec, -t_obs / 2, n_out=nparams + 1)
+        dvec_min_up = psr_utils.shift_params_taylor(dvec, t_obs / 2)
+        dvec_min_low = psr_utils.shift_params_taylor(dvec, -t_obs / 2)
         dvec[0] = d_range[1]
-        dvec_max_up = psr_utils.shift_params_d(dvec, t_obs / 2, n_out=nparams + 1)
-        dvec_max_low = psr_utils.shift_params_d(dvec, -t_obs / 2, n_out=nparams + 1)
+        dvec_max_up = psr_utils.shift_params_taylor(dvec, t_obs / 2)
+        dvec_max_low = psr_utils.shift_params_taylor(dvec, -t_obs / 2)
         dvec_bound_low = np.minimum(dvec_min_low, dvec_max_low)
         dvec_bound_up = np.maximum(dvec_min_up, dvec_max_up)
         bounds_d = [
@@ -307,7 +339,7 @@ class PulsarSearchConfig:
     ducy_max: float = attrs.field(default=0.2, validator=attrs.validators.gt(0))
     wtsp: float = attrs.field(default=1.5, validator=attrs.validators.gt(0))
     prune_poly_order: int = attrs.field(default=3, validator=attrs.validators.gt(0))
-    prune_n_derivs: int = attrs.field(default=3, validator=attrs.validators.gt(0))
+    p_orb_min: float = attrs.field(default=0)
     bseg_brute: int = attrs.field(
         default=0,
         validator=[attrs.validators.instance_of((int, np.integer)), _is_power_of_two],
@@ -318,6 +350,7 @@ class PulsarSearchConfig:
     )
     use_fft_shifts: bool = attrs.field(default=True)
     branch_max: int = attrs.field(default=16, validator=attrs.validators.gt(10))
+    use_conservative_grid: bool = attrs.field(default=False)
 
     @param_limits.validator
     def _param_limits_validator(
@@ -352,6 +385,9 @@ class PulsarSearchConfig:
             raise ValueError(msg)
         if self.bseg_ffa <= self.bseg_brute:
             msg = f"bseg_ffa ({self.bseg_ffa}) must be > bseg_brute ({self.bseg_brute})"
+            raise ValueError(msg)
+        if self.prune_poly_order == 4 and self.p_orb_min == 0:
+            msg = "p_orb_min must be provided for a circular orbit search"
             raise ValueError(msg)
 
     @property
@@ -437,7 +473,7 @@ class PulsarSearchConfig:
         """
         tseg_cur = 2**ffa_level * self.tseg_brute
         t_ref = 0 if self.nparams == 1 else tseg_cur / 2
-        return psr_utils.poly_taylor_step_d(
+        return psr_utils.poly_taylor_step_d_f(
             self.nparams,
             tseg_cur,
             self.nbins,
