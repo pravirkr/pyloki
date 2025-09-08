@@ -10,20 +10,10 @@ class TestMaths:
 
     @pytest.mark.parametrize(
         ("n", "k"),
-        [(5, 2), ([5, 6, 7], [2, 3, 1]), (5, [2, 3, 1])],
+        [(5, 2), (6, 7), (2, 3), (25, 12), (5, 0), (5, 5), (0, 0)],
     )
-    def test_nbinom(self, n: int | np.ndarray, k: int | np.ndarray) -> None:
+    def test_nbinom(self, n: int, k: int) -> None:
         np.testing.assert_almost_equal(maths.nbinom(n, k), special.binom(n, k))
-
-    def test_nbinom_edge_cases(self) -> None:
-        np.testing.assert_almost_equal(
-            maths.nbinom(np.array([5, 0]), np.array([0, 0])),
-            np.array([1.0, 1.0]),
-        )
-        np.testing.assert_almost_equal(
-            maths.nbinom(np.array([5, 1]), np.array([5, 1])),
-            np.array([1.0, 1.0]),
-        )
 
     @pytest.mark.parametrize("n", [0, 1, 5, 20, np.array([0, 1, 5, 20])])
     def test_fact(self, n: int | np.ndarray) -> None:

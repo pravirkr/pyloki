@@ -153,6 +153,403 @@ def ffa_taylor_resolve(
 
 
 @njit(cache=True, fastmath=True)
+def poly_taylor_leaves(
+    param_arr: types.ListType,
+    dparams: np.ndarray,
+    poly_order: int,
+    coord_init: tuple[float, float],
+) -> np.ndarray:
+    """Generate the leaf parameter sets for Taylor polynomial search.
+
+    Parameters
+    ----------
+    param_arr : types.ListType
+        Parameter array for each dimension; only (acceleration, frequency).
+    dparams : np.ndarray
+        Parameter step (grid) sizes for each dimension. Shape is (poly_order,).
+        Order is [..., acc, freq].
+    poly_order : int
+        The order of the Taylor polynomial.
+    coord_init : tuple[float, float]
+        The coordinate of the starting segment (level 0).
+        - coord_init[0] -> t0 (reference time) measured from t=0
+        - coord_init[1] -> scale (half duration of the segment)
+    coord_mid : tuple[float, float]
+        The mid-point coordinate of the entire data.
+        - coord_mid[0] -> t_mid (midpoint time) measured from t=0
+        - coord_mid[1] -> scale (half duration of the entire data)
+
+    Returns
+    -------
+    np.ndarray
+        The leaf parameter sets. Shape is (n_param_sets, poly_order + 3, 2).
+
+    Notes
+    -----
+    Conventions for each leaf parameter set:
+    leaf[:-2, 0] -> Taylor polynomial coefficients, order is [..., d2, d1, d0]
+    leaf[:-2, 1] -> Grid size (error) on each coefficient,
+    leaf[-2, 0]  -> Frequency at t_init (f0), assuming f=f0 at t_init
+    leaf[-1, 0]  -> Reference time from the data start (t_c),
+    leaf[-1, 1]  -> Scaling, half duration of the segment (t_s).
+    """
+    t_init, scale = coord_init
+    leaves_taylor = common.get_leaves(param_arr, dparams)
+    leaves = np.zeros((len(leaves_taylor), poly_order + 3, 2), dtype=np.float64)
+    leaves[:, :-4] = leaves_taylor[:, :-1]
+    f0_batch = leaves_taylor[:, -1, 0]
+    # f = f0(1 - v / C) => dv = -df / f0 * C
+    leaves[:, -4, 0] = 0
+    leaves[:, -4, 1] = leaves_taylor[:, -1, 1] / f0_batch * C_VAL
+    # intialize d0 (measure from t=t_init)
+    leaves[:, -3, 0] = 0  # we never branch on d0
+    leaves[:, -2, 0] = f0_batch
+    leaves[:, -1, 0] = t_init
+    leaves[:, -1, 1] = scale
+    return leaves
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_suggest(
+    fold_segment: np.ndarray,
+    coord_init: tuple[float, float],
+    param_arr: types.ListType,
+    dparams: np.ndarray,
+    poly_order: int,
+    score_widths: np.ndarray,
+) -> SuggestionStruct:
+    """Generate a Taylor suggestion struct from a fold segment.
+
+    Parameters
+    ----------
+    fold_segment : np.ndarray
+        The fold segment to generate suggestions for. The shape of the array is
+        (n_accel, n_freq, 2, n_bins). Parameter dimensions are first two.
+    coord_init : tuple[float, float]
+        The coordinates for the starting segment (level 0).
+    param_arr : types.ListType
+        Parameter values for each dimension (accel, freq).
+    dparams : np.ndarray
+        Parameter step (grid) sizes for each dimension in a 1D array.
+    poly_order : int
+        The order of the Taylor polynomial.
+    score_widths : np.ndarray
+        Boxcar widths for the score computation.
+
+    Returns
+    -------
+    SuggestionStruct
+        Suggestion struct
+        - param_sets: The parameter sets (n_param_sets, poly_order + 2, 2).
+        - data: The folded data for each leaf.
+        - scores: The scores for each leaf.
+        - backtracks: The backtracks for each leaf.
+    """
+    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
+    param_sets = poly_taylor_leaves(param_arr, dparams, poly_order, coord_init)
+    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
+    scores = np.zeros(n_param_sets, dtype=np.float32)
+    for iparam in range(n_param_sets):
+        scores[iparam] = scoring.snr_score_func(data[iparam], score_widths)
+    backtracks = np.zeros((n_param_sets, poly_order + 3), dtype=np.int32)
+    return SuggestionStruct(param_sets, data, scores, backtracks)
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_suggest_complex(
+    fold_segment: np.ndarray,
+    coord_init: tuple[float, float],
+    param_arr: types.ListType,
+    dparams: np.ndarray,
+    poly_order: int,
+    score_widths: np.ndarray,
+) -> SuggestionStructComplex:
+    """Generate a Taylor suggestion struct from a fold segment in Fourier domain.
+
+    Parameters
+    ----------
+    fold_segment : np.ndarray
+        The fold segment to generate suggestions for. The shape of the array is
+        (n_accel, n_freq, 2, n_bins_f). Parameter dimensions are first two.
+    coord_init : tuple[float, float]
+        The coordinates for the starting segment (level 0).
+    param_arr : types.ListType
+        Parameter values for each dimension (accel, freq).
+    dparams : np.ndarray
+        Parameter step (grid) sizes for each dimension in a 1D array.
+    poly_order : int
+        The order of the Taylor polynomial.
+    score_widths : np.ndarray
+        Boxcar widths for the score computation.
+
+    Returns
+    -------
+    SuggestionStructComplex
+        Suggestion struct in Fourier domain.
+    """
+    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
+    param_sets = poly_taylor_leaves(param_arr, dparams, poly_order, coord_init)
+    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
+    scores = np.zeros(n_param_sets, dtype=np.float32)
+    for iparam in range(n_param_sets):
+        scores[iparam] = scoring.snr_score_func_complex(data[iparam], score_widths)
+    backtracks = np.zeros((n_param_sets, poly_order + 3), dtype=np.int32)
+    return SuggestionStructComplex(param_sets, data, scores, backtracks)
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_branch(
+    param_set: np.ndarray,
+    coord_cur: tuple[float, float],
+    fold_bins: int,
+    tol_bins: float,
+    poly_order: int,
+    param_limits: types.ListType[types.Tuple[float, float]],
+) -> np.ndarray:
+    """Branch a parameter set to leaves.
+
+    Parameters
+    ----------
+    param_set : np.ndarray
+        Parameter set to branch. Shape: (nparams + 2, 2).
+    coord_cur : tuple[float, float]
+        The coordinates for the current segment.
+    fold_bins : int
+        Number of bins in the folded profile.
+    tol_bins : float
+        Tolerance for the parameter step size in bins.
+    poly_order : int
+        The order of the Taylor polynomial.
+    param_limits : types.ListType[types.Tuple[float, float]]
+        The limits for each parameter.
+
+    Returns
+    -------
+    np.ndarray
+        Array of leaf parameter sets (shape: (nbranch, nparams + 2, 2)).
+    """
+    _, t_obs_minus_t_ref = coord_cur
+    nparams = poly_order
+    param_cur = param_set[0:-2, 0]
+    dparam_cur = param_set[0:-2, 1]
+    f0 = param_set[-2, 0]
+    t0, scale = param_set[-1]
+
+    param_limits_d = np.empty((nparams, 2), dtype=np.float64)
+    for i in range(nparams):
+        param_limits_d[i, 0] = param_limits[i][0]
+        param_limits_d[i, 1] = param_limits[i][1]
+    param_limits_d[-1, 0] = (1 - param_limits[nparams - 1][1] / f0) * C_VAL
+    param_limits_d[-1, 1] = (1 - param_limits[nparams - 1][0] / f0) * C_VAL
+
+    dparam_new = psr_utils.poly_taylor_step_d(
+        nparams,
+        t_obs_minus_t_ref,
+        fold_bins,
+        tol_bins,
+        f0,
+        t_ref=0,
+    )
+    shift_bins = psr_utils.poly_taylor_shift_d(
+        dparam_cur,
+        dparam_new,
+        t_obs_minus_t_ref,
+        fold_bins,
+        f0,
+        t_ref=0,
+    )
+
+    eps = 1e-6
+    total_size = 1
+    leaf_params = typed.List.empty_list(types.float64[::1])
+    leaf_dparams = np.empty(nparams, dtype=np.float64)
+    shapes = np.empty(nparams, dtype=np.int64)
+    for i in range(nparams):
+        p_min, p_max = param_limits_d[i]
+        if shift_bins[i] >= (tol_bins - eps):
+            leaf_param_arr, dparam_act = psr_utils.branch_param(
+                param_cur[i],
+                dparam_cur[i],
+                dparam_new[i],
+                p_min,
+                p_max,
+            )
+        else:
+            leaf_param_arr = np.array([param_cur[i]], dtype=np.float64)
+            dparam_act = dparam_cur[i]
+        leaf_dparams[i] = dparam_act
+        leaf_params.append(leaf_param_arr)
+        shapes[i] = len(leaf_param_arr)
+        total_size *= shapes[i]
+
+    # Allocate and populate the final array directly
+    leaves_taylor = np.empty((total_size, nparams, 2), dtype=np.float64)
+    leaves_taylor[:, :, 1] = leaf_dparams
+    # Fill column 0 (parameter values) using Cartesian product logic
+    for i in range(total_size):
+        idx = i
+        # last dimension changes fastest
+        for j in range(nparams - 1, -1, -1):
+            arr = leaf_params[j]
+            arr_idx = idx % shapes[j]
+            leaves_taylor[i, j, 0] = arr[arr_idx]
+            idx //= shapes[j]
+
+    leaves = np.zeros((total_size, poly_order + 2, 2), dtype=np.float64)
+    leaves[:, :-2] = leaves_taylor
+    leaves[:, -2, 0] = f0
+    leaves[:, -1, 0] = t0
+    leaves[:, -1, 1] = scale
+    return leaves
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_branch_batch(
+    param_set_batch: np.ndarray,
+    coord_cur: tuple[float, float],
+    fold_bins: int,
+    tol_bins: float,
+    poly_order: int,
+    param_limits: types.ListType[types.Tuple[float, float]],
+    branch_max: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Branch a batch of parameter sets to leaves."""
+    n_batch = len(param_set_batch)
+    nparams = poly_order
+    _, t_obs_minus_t_ref = coord_cur
+    param_cur_batch = param_set_batch[:, :-3, 0]
+    dparam_cur_batch = param_set_batch[:, :-3, 1]
+    d0_batch = param_set_batch[:, -3, 0]
+    f0_batch = param_set_batch[:, -2, 0]
+    t0_batch = param_set_batch[:, -1, 0]
+    scale_batch = param_set_batch[:, -1, 1]
+
+    param_limits_d = np.empty((n_batch, nparams, 2), dtype=np.float64)
+    for i in range(nparams):
+        param_limits_d[:, i, 0] = param_limits[i][0]
+        param_limits_d[:, i, 1] = param_limits[i][1]
+    param_limits_d[:, -1, 0] = (1 - param_limits[nparams - 1][1] / f0_batch) * C_VAL
+    param_limits_d[:, -1, 1] = (1 - param_limits[nparams - 1][0] / f0_batch) * C_VAL
+
+    dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
+        nparams,
+        t_obs_minus_t_ref,
+        fold_bins,
+        tol_bins,
+        f0_batch,
+        t_ref=0,
+    )
+    shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
+        dparam_cur_batch,
+        dparam_new_batch,
+        t_obs_minus_t_ref,
+        fold_bins,
+        f0_batch,
+        t_ref=0,
+    )
+    # --- Vectorized Padded Branching ---
+    pad_branched_params = np.empty((n_batch, nparams, branch_max), dtype=np.float64)
+    pad_branched_dparams = np.empty((n_batch, nparams), dtype=np.float64)
+    branched_counts = np.empty((n_batch, nparams), dtype=np.int64)
+    for i in range(n_batch):
+        for j in range(nparams):
+            p_min, p_max = param_limits_d[i, j]
+            dparam_act, count = psr_utils.branch_param_padded(
+                pad_branched_params[i, j],
+                param_cur_batch[i, j],
+                dparam_cur_batch[i, j],
+                dparam_new_batch[i, j],
+                p_min,
+                p_max,
+            )
+            pad_branched_dparams[i, j] = dparam_act
+            branched_counts[i, j] = count
+
+    # --- Vectorized Selection ---
+    # Select based on mask: shape (n_batch, nparams, 1)
+    eps = 1e-6  # Small tolerance for floating-point comparison
+    mask_2d = shift_bins_batch >= (tol_bins - eps)  # Shape (n_batch, nparams)
+    for i in range(n_batch):
+        for j in range(nparams):
+            if not mask_2d[i, j]:
+                pad_branched_params[i, j, :] = 0
+                pad_branched_params[i, j, 0] = param_cur_batch[i, j]
+                pad_branched_dparams[i, j] = dparam_cur_batch[i, j]
+                branched_counts[i, j] = 1
+    # --- Optimized Padded Cartesian Product ---
+    batch_leaves_taylor, batch_origins = np_utils.cartesian_prod_padded(
+        pad_branched_params,
+        branched_counts,
+        n_batch,
+        nparams,
+    )
+    total_leaves = len(batch_origins)
+    batch_leaves = np.zeros((total_leaves, poly_order + 3, 2), dtype=np.float64)
+    batch_leaves[:, :-3, 0] = batch_leaves_taylor
+    batch_leaves[:, :-3, 1] = pad_branched_dparams[batch_origins]
+    batch_leaves[:, -3, 0] = d0_batch[batch_origins]
+    batch_leaves[:, -2, 0] = f0_batch[batch_origins]
+    batch_leaves[:, -1, 0] = t0_batch[batch_origins]
+    batch_leaves[:, -1, 1] = scale_batch[batch_origins]
+    return batch_leaves, batch_origins
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_validate_batch(
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
+    p_orb_min: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Validate a batch of leaf params.
+
+    Filters out unphysical orbits. Currently removes cases with imaginary orbital
+    frequency (i.e., -snap/accel <= 0) and orbital frequency > omega_orb_max.
+
+    Parameters
+    ----------
+    leaves_batch : np.ndarray
+        The leaf parameter sets to validate. Shape: (N, nparams + 2, 2)
+    leaves_origins : np.ndarray
+        The origins of the leaves. Shape: (N,)
+    p_orb_min : float
+        Minimum allowed orbital period.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Filtered leaf parameter sets (only physically plausible) and their origins.
+    """
+    eps = 1e-12
+    snap = leaves_batch[:, 0, 0]
+    dsnap = leaves_batch[:, 0, 1]
+    accel = leaves_batch[:, 2, 0]
+    omega_orb_max_sq = (2 * np.pi / p_orb_min) ** 2
+    # omega_orb = -snap/accel > 0:
+    # 1) snap=0 → omega_orb=0 (valid)
+    # 2) snap≠0 & accel=0 → omega_orb=±∞ (allowed)
+    # 3) snap≠0 & accel≠0 & -snap/accel>0 (valid)
+
+    omega_sq = -snap / (accel + eps)
+
+    # Physically usable via s/a
+    is_usable = (np.abs(accel) > eps) & (np.abs(snap) > eps) & (omega_sq > 0.0)
+    # Numerically degenerate but not obviously unphysical
+    is_zero = (np.abs(snap) <= eps) | (np.abs(accel) <= eps)
+
+    # Within maximum orbital frequency limit
+    is_within_omega_limit = omega_sq <= omega_orb_max_sq
+
+    # Delays circular validation until snap is well-measured.
+    snap_threshold = 5
+    is_significant = np.abs(snap / (dsnap + eps)) > snap_threshold
+
+    # No filtering for each leaf until its snap is significant
+    mask = ~is_significant | (is_zero | (is_usable & is_within_omega_limit))
+    idx = np.where(mask)[0]
+    return leaves_batch[idx], leaves_origins[idx]
+
+
+@njit(cache=True, fastmath=True)
 def poly_taylor_resolve(
     leaf: np.ndarray,
     coord_add: tuple[float, float],
@@ -362,61 +759,6 @@ def poly_taylor_resolve_circular_batch(
 
 
 @njit(cache=True, fastmath=True)
-def poly_taylor_validate_batch(
-    leaves_batch: np.ndarray,
-    leaves_origins: np.ndarray,
-    p_orb_min: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Validate a batch of leaf params.
-
-    Filters out unphysical orbits. Currently removes cases with imaginary orbital
-    frequency (i.e., -snap/accel <= 0) and orbital frequency > omega_orb_max.
-
-    Parameters
-    ----------
-    leaves_batch : np.ndarray
-        The leaf parameter sets to validate. Shape: (N, nparams + 2, 2)
-    leaves_origins : np.ndarray
-        The origins of the leaves. Shape: (N,)
-    p_orb_min : float
-        Minimum allowed orbital period.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        Filtered leaf parameter sets (only physically plausible) and their origins.
-    """
-    eps = 1e-12
-    snap = leaves_batch[:, 0, 0]
-    dsnap = leaves_batch[:, 0, 1]
-    accel = leaves_batch[:, 2, 0]
-    omega_orb_max_sq = (2 * np.pi / p_orb_min) ** 2
-    # omega_orb = -snap/accel > 0:
-    # 1) snap=0 → omega_orb=0 (valid)
-    # 2) snap≠0 & accel=0 → omega_orb=±∞ (allowed)
-    # 3) snap≠0 & accel≠0 & -snap/accel>0 (valid)
-
-    omega_sq = -snap / (accel + eps)
-
-    # Physically usable via s/a
-    is_usable = (np.abs(accel) > eps) & (np.abs(snap) > eps) & (omega_sq > 0.0)
-    # Numerically degenerate but not obviously unphysical
-    is_zero = (np.abs(snap) <= eps) | (np.abs(accel) <= eps)
-
-    # Within maximum orbital frequency limit
-    is_within_omega_limit = omega_sq <= omega_orb_max_sq
-
-    # Delays circular validation until snap is well-measured.
-    snap_threshold = 5
-    is_significant = np.abs(snap / (dsnap + eps)) > snap_threshold
-
-    # No filtering for each leaf until its snap is significant
-    mask = ~is_significant | (is_zero | (is_usable & is_within_omega_limit))
-    idx = np.where(mask)[0]
-    return leaves_batch[idx], leaves_origins[idx]
-
-
-@njit(cache=True, fastmath=True)
 def poly_taylor_transform_batch(
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
@@ -462,352 +804,6 @@ def poly_taylor_transform_circular_batch(
             grid_conservative,
         )
     return leaves_batch_trans
-
-
-@njit(cache=True, fastmath=True)
-def poly_taylor_branch(
-    param_set: np.ndarray,
-    coord_cur: tuple[float, float],
-    fold_bins: int,
-    tol_bins: float,
-    poly_order: int,
-    param_limits: types.ListType[types.Tuple[float, float]],
-) -> np.ndarray:
-    """Branch a parameter set to leaves.
-
-    Parameters
-    ----------
-    param_set : np.ndarray
-        Parameter set to branch. Shape: (nparams + 2, 2).
-    coord_cur : tuple[float, float]
-        The coordinates for the current segment.
-    fold_bins : int
-        Number of bins in the folded profile.
-    tol_bins : float
-        Tolerance for the parameter step size in bins.
-    poly_order : int
-        The order of the Taylor polynomial.
-    param_limits : types.ListType[types.Tuple[float, float]]
-        The limits for each parameter.
-
-    Returns
-    -------
-    np.ndarray
-        Array of leaf parameter sets (shape: (nbranch, nparams + 2, 2)).
-    """
-    _, t_obs_minus_t_ref = coord_cur
-    nparams = poly_order
-    param_cur = param_set[0:-2, 0]
-    dparam_cur = param_set[0:-2, 1]
-    f0 = param_set[-2, 0]
-    t0, scale = param_set[-1]
-
-    param_limits_d = np.empty((nparams, 2), dtype=np.float64)
-    for i in range(nparams):
-        param_limits_d[i, 0] = param_limits[i][0]
-        param_limits_d[i, 1] = param_limits[i][1]
-    param_limits_d[-1, 0] = (1 - param_limits[nparams - 1][1] / f0) * C_VAL
-    param_limits_d[-1, 1] = (1 - param_limits[nparams - 1][0] / f0) * C_VAL
-
-    dparam_new = psr_utils.poly_taylor_step_d(
-        nparams,
-        t_obs_minus_t_ref,
-        fold_bins,
-        tol_bins,
-        f0,
-        t_ref=0,
-    )
-    shift_bins = psr_utils.poly_taylor_shift_d(
-        dparam_cur,
-        dparam_new,
-        t_obs_minus_t_ref,
-        fold_bins,
-        f0,
-        t_ref=0,
-    )
-
-    eps = 1e-6
-    total_size = 1
-    leaf_params = typed.List.empty_list(types.float64[::1])
-    leaf_dparams = np.empty(nparams, dtype=np.float64)
-    shapes = np.empty(nparams, dtype=np.int64)
-    for i in range(nparams):
-        p_min, p_max = param_limits_d[i]
-        if shift_bins[i] >= (tol_bins - eps):
-            leaf_param_arr, dparam_act = psr_utils.branch_param(
-                param_cur[i],
-                dparam_cur[i],
-                dparam_new[i],
-                p_min,
-                p_max,
-            )
-        else:
-            leaf_param_arr = np.array([param_cur[i]], dtype=np.float64)
-            dparam_act = dparam_cur[i]
-        leaf_dparams[i] = dparam_act
-        leaf_params.append(leaf_param_arr)
-        shapes[i] = len(leaf_param_arr)
-        total_size *= shapes[i]
-
-    # Allocate and populate the final array directly
-    leaves_taylor = np.empty((total_size, nparams, 2), dtype=np.float64)
-    leaves_taylor[:, :, 1] = leaf_dparams
-    # Fill column 0 (parameter values) using Cartesian product logic
-    for i in range(total_size):
-        idx = i
-        # last dimension changes fastest
-        for j in range(nparams - 1, -1, -1):
-            arr = leaf_params[j]
-            arr_idx = idx % shapes[j]
-            leaves_taylor[i, j, 0] = arr[arr_idx]
-            idx //= shapes[j]
-
-    leaves = np.zeros((total_size, poly_order + 2, 2), dtype=np.float64)
-    leaves[:, :-2] = leaves_taylor
-    leaves[:, -2, 0] = f0
-    leaves[:, -1, 0] = t0
-    leaves[:, -1, 1] = scale
-    return leaves
-
-
-@njit(cache=True, fastmath=True)
-def poly_taylor_branch_batch(
-    param_set_batch: np.ndarray,
-    coord_cur: tuple[float, float],
-    fold_bins: int,
-    tol_bins: float,
-    poly_order: int,
-    param_limits: types.ListType[types.Tuple[float, float]],
-    branch_max: int = 16,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Branch a batch of parameter sets to leaves."""
-    n_batch = len(param_set_batch)
-    nparams = poly_order
-    _, t_obs_minus_t_ref = coord_cur
-    param_cur_batch = param_set_batch[:, :-3, 0]
-    dparam_cur_batch = param_set_batch[:, :-3, 1]
-    d0_batch = param_set_batch[:, -3, 0]
-    f0_batch = param_set_batch[:, -2, 0]
-    t0_batch = param_set_batch[:, -1, 0]
-    scale_batch = param_set_batch[:, -1, 1]
-
-    param_limits_d = np.empty((n_batch, nparams, 2), dtype=np.float64)
-    for i in range(nparams):
-        param_limits_d[:, i, 0] = param_limits[i][0]
-        param_limits_d[:, i, 1] = param_limits[i][1]
-    param_limits_d[:, -1, 0] = (1 - param_limits[nparams - 1][1] / f0_batch) * C_VAL
-    param_limits_d[:, -1, 1] = (1 - param_limits[nparams - 1][0] / f0_batch) * C_VAL
-
-    dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
-        nparams,
-        t_obs_minus_t_ref,
-        fold_bins,
-        tol_bins,
-        f0_batch,
-        t_ref=0,
-    )
-    shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
-        dparam_cur_batch,
-        dparam_new_batch,
-        t_obs_minus_t_ref,
-        fold_bins,
-        f0_batch,
-        t_ref=0,
-    )
-    # --- Vectorized Padded Branching ---
-    pad_branched_params = np.empty((n_batch, nparams, branch_max), dtype=np.float64)
-    pad_branched_dparams = np.empty((n_batch, nparams), dtype=np.float64)
-    branched_counts = np.empty((n_batch, nparams), dtype=np.int64)
-    for i in range(n_batch):
-        for j in range(nparams):
-            p_min, p_max = param_limits_d[i, j]
-            dparam_act, count = psr_utils.branch_param_padded(
-                pad_branched_params[i, j],
-                param_cur_batch[i, j],
-                dparam_cur_batch[i, j],
-                dparam_new_batch[i, j],
-                p_min,
-                p_max,
-            )
-            pad_branched_dparams[i, j] = dparam_act
-            branched_counts[i, j] = count
-
-    # --- Vectorized Selection ---
-    # Select based on mask: shape (n_batch, nparams, 1)
-    eps = 1e-6  # Small tolerance for floating-point comparison
-    mask_2d = shift_bins_batch >= (tol_bins - eps)  # Shape (n_batch, nparams)
-    for i in range(n_batch):
-        for j in range(nparams):
-            if not mask_2d[i, j]:
-                pad_branched_params[i, j, :] = 0
-                pad_branched_params[i, j, 0] = param_cur_batch[i, j]
-                pad_branched_dparams[i, j] = dparam_cur_batch[i, j]
-                branched_counts[i, j] = 1
-    # --- Optimized Padded Cartesian Product ---
-    batch_leaves_taylor, batch_origins = np_utils.cartesian_prod_padded(
-        pad_branched_params,
-        branched_counts,
-        n_batch,
-        nparams,
-    )
-    total_leaves = len(batch_origins)
-    batch_leaves = np.zeros((total_leaves, poly_order + 3, 2), dtype=np.float64)
-    batch_leaves[:, :-3, 0] = batch_leaves_taylor
-    batch_leaves[:, :-3, 1] = pad_branched_dparams[batch_origins]
-    batch_leaves[:, -3, 0] = d0_batch[batch_origins]
-    batch_leaves[:, -2, 0] = f0_batch[batch_origins]
-    batch_leaves[:, -1, 0] = t0_batch[batch_origins]
-    batch_leaves[:, -1, 1] = scale_batch[batch_origins]
-    return batch_leaves, batch_origins
-
-
-@njit(cache=True, fastmath=True)
-def poly_taylor_leaves(
-    param_arr: types.ListType,
-    dparams: np.ndarray,
-    poly_order: int,
-    coord_init: tuple[float, float],
-) -> np.ndarray:
-    """Generate the leaf parameter sets for Taylor polynomial search.
-
-    Parameters
-    ----------
-    param_arr : types.ListType
-        Parameter array for each dimension; only (acceleration, frequency).
-    dparams : np.ndarray
-        Parameter step (grid) sizes for each dimension. Shape is (poly_order,).
-        Order is [..., acc, freq].
-    poly_order : int
-        The order of the Taylor polynomial.
-    coord_init : tuple[float, float]
-        The coordinate of the starting segment (level 0).
-        - coord_init[0] -> t0 (reference time) measured from t=0
-        - coord_init[1] -> scale (half duration of the segment)
-    coord_mid : tuple[float, float]
-        The mid-point coordinate of the entire data.
-        - coord_mid[0] -> t_mid (midpoint time) measured from t=0
-        - coord_mid[1] -> scale (half duration of the entire data)
-
-    Returns
-    -------
-    np.ndarray
-        The leaf parameter sets. Shape is (n_param_sets, poly_order + 3, 2).
-
-    Notes
-    -----
-    Conventions for each leaf parameter set:
-    leaf[:-2, 0] -> Taylor polynomial coefficients, order is [..., d2, d1, d0]
-    leaf[:-2, 1] -> Grid size (error) on each coefficient,
-    leaf[-2, 0]  -> Frequency at t_init (f0), assuming f=f0 at t_init
-    leaf[-1, 0]  -> Reference time from the data start (t_c),
-    leaf[-1, 1]  -> Scaling, half duration of the segment (t_s).
-    """
-    t_init, scale = coord_init
-    leaves_taylor = common.get_leaves(param_arr, dparams)
-    leaves = np.zeros((len(leaves_taylor), poly_order + 3, 2), dtype=np.float64)
-    leaves[:, :-4] = leaves_taylor[:, :-1]
-    f0_batch = leaves_taylor[:, -1, 0]
-    # f = f0(1 - v / C) => dv = -df / f0 * C
-    leaves[:, -4, 0] = 0
-    leaves[:, -4, 1] = leaves_taylor[:, -1, 1] / f0_batch * C_VAL
-    # intialize d0 (measure from t=t_init)
-    leaves[:, -3, 0] = 0  # we never branch on d0
-    leaves[:, -2, 0] = f0_batch
-    leaves[:, -1, 0] = t_init
-    leaves[:, -1, 1] = scale
-    return leaves
-
-
-@njit(cache=True, fastmath=True)
-def poly_taylor_suggest(
-    fold_segment: np.ndarray,
-    coord_init: tuple[float, float],
-    param_arr: types.ListType,
-    dparams: np.ndarray,
-    poly_order: int,
-    score_widths: np.ndarray,
-) -> SuggestionStruct:
-    """Generate a Taylor suggestion struct from a fold segment.
-
-    Parameters
-    ----------
-    fold_segment : np.ndarray
-        The fold segment to generate suggestions for. The shape of the array is
-        (n_accel, n_freq, 2, n_bins). Parameter dimensions are first two.
-    coord_init : tuple[float, float]
-        The coordinates for the starting segment (level 0).
-    coord_mid : tuple[float, float]
-        The mid-point coordinate of the entire data.
-    param_arr : types.ListType
-        Parameter values for each dimension (accel, freq).
-    dparams : np.ndarray
-        Parameter step (grid) sizes for each dimension in a 1D array.
-    poly_order : int
-        The order of the Taylor polynomial.
-    score_widths : np.ndarray
-        Boxcar widths for the score computation.
-
-    Returns
-    -------
-    SuggestionStruct
-        Suggestion struct
-        - param_sets: The parameter sets (n_param_sets, poly_order + 2, 2).
-        - data: The folded data for each leaf.
-        - scores: The scores for each leaf.
-        - backtracks: The backtracks for each leaf.
-    """
-    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
-    param_sets = poly_taylor_leaves(param_arr, dparams, poly_order, coord_init)
-    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
-    scores = np.zeros(n_param_sets, dtype=np.float32)
-    for iparam in range(n_param_sets):
-        scores[iparam] = scoring.snr_score_func(data[iparam], score_widths)
-    backtracks = np.zeros((n_param_sets, poly_order + 3), dtype=np.int32)
-    return SuggestionStruct(param_sets, data, scores, backtracks)
-
-
-@njit(cache=True, fastmath=True)
-def poly_taylor_suggest_complex(
-    fold_segment: np.ndarray,
-    coord_init: tuple[float, float],
-    param_arr: types.ListType,
-    dparams: np.ndarray,
-    poly_order: int,
-    score_widths: np.ndarray,
-) -> SuggestionStructComplex:
-    """Generate a Taylor suggestion struct from a fold segment in Fourier domain.
-
-    Parameters
-    ----------
-    fold_segment : np.ndarray
-        The fold segment to generate suggestions for. The shape of the array is
-        (n_accel, n_freq, 2, n_bins_f). Parameter dimensions are first two.
-    coord_init : tuple[float, float]
-        The coordinates for the starting segment (level 0).
-    coord_mid : tuple[float, float]
-        The mid-point coordinate of the entire data.
-    param_arr : types.ListType
-        Parameter values for each dimension (accel, freq).
-    dparams : np.ndarray
-        Parameter step (grid) sizes for each dimension in a 1D array.
-    poly_order : int
-        The order of the Taylor polynomial.
-    score_widths : np.ndarray
-        Boxcar widths for the score computation.
-
-    Returns
-    -------
-    SuggestionStructComplex
-        Suggestion struct in Fourier domain.
-    """
-    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
-    param_sets = poly_taylor_leaves(param_arr, dparams, poly_order, coord_init)
-    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
-    scores = np.zeros(n_param_sets, dtype=np.float32)
-    for iparam in range(n_param_sets):
-        scores[iparam] = scoring.snr_score_func_complex(data[iparam], score_widths)
-    backtracks = np.zeros((n_param_sets, poly_order + 3), dtype=np.int32)
-    return SuggestionStructComplex(param_sets, data, scores, backtracks)
 
 
 @njit(cache=True, fastmath=True)

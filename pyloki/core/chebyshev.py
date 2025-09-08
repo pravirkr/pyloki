@@ -11,6 +11,153 @@ from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
 
 @njit(cache=True, fastmath=True)
+def poly_chebyshev_leaves(
+    param_arr: types.ListType,
+    dparams: np.ndarray,
+    poly_order: int,
+    coord_init: tuple[float, float],
+) -> np.ndarray:
+    """Generate the leaf parameter sets for Chebyshev polynomial search.
+
+    Parameters
+    ----------
+    param_arr : types.ListType
+        Parameter array for each dimension; only (acceleration, frequency).
+    dparams : np.ndarray
+        Parameter step (grid) sizes for each dimension. Shape is (poly_order,).
+        Order is [..., acc, freq].
+    poly_order : int
+        The order of the Taylor polynomial.
+    coord_init : tuple[float, float]
+        The coordinate of the starting segment (level 0).
+        - coord_init[0] -> t0 (reference time)
+        - coord_init[1] -> scale (half duration of the segment)
+    coord_mid : tuple[float, float]
+        The mid-point coordinate of the entire data.
+        - coord_mid[0] -> t_mid (midpoint time) measured from t=0
+        - coord_mid[1] -> scale (half duration of the entire data)
+
+    Returns
+    -------
+    np.ndarray
+        The leaf parameter sets. Shape is (n_param_sets, poly_order + 2, 2).
+
+    Notes
+    -----
+    Conventions for each leaf parameter set:
+    leaf[:-2, 0] -> Chebyshev polynomial coefficients, order is [alpha_1, alpha_2, ...]
+    leaf[:-2, 1] -> Grid size (error) on each coefficient,
+    leaf[-2, 0]  -> Frequency at data mid-point (f0), assuming f=f0 at t_mid
+    leaf[-1, 0]  -> Reference time from the data start (t_c),
+    leaf[-1, 1]  -> Scaling, half duration of the segment (t_s).
+    """
+    t_init, scale = coord_init
+    leaves_taylor = common.get_leaves(param_arr, dparams)
+    f0_batch = leaves_taylor[:, -1, 0]
+    # f = f0(1 - v / C) => dv = -df / f0 * C
+    leaves_taylor[:, -1, 0] = 0
+    leaves_taylor[:, -1, 1] = leaves_taylor[:, -1, 1] / f0_batch * C_VAL
+    leaves_taylor_d = np.zeros((len(leaves_taylor), poly_order + 1, 2))
+    leaves_taylor_d[:, :-1] = leaves_taylor
+    alpha_vec = maths.taylor_to_cheby_full(leaves_taylor_d, scale)
+
+    leaves = np.zeros((len(leaves_taylor), poly_order + 3, 2), dtype=np.float64)
+    leaves[:, :-2] = alpha_vec
+    leaves[:, -2, 0] = f0_batch
+    leaves[:, -1, 0] = t_init
+    leaves[:, -1, 1] = scale
+    return leaves
+
+
+@njit(cache=True, fastmath=True)
+def poly_chebyshev_suggest(
+    fold_segment: np.ndarray,
+    coord_init: tuple[float, float],
+    param_arr: types.ListType,
+    dparams: np.ndarray,
+    poly_order: int,
+    score_widths: np.ndarray,
+) -> SuggestionStruct:
+    """Generate a Chebyshev suggestion struct from a fold segment.
+
+    Parameters
+    ----------
+    fold_segment : np.ndarray
+        The fold segment to generate suggestions for. The shape of the array is
+        (n_accel, n_freq, 2, n_bins). Parameter dimensions are first two.
+    coord_init : tuple[float, float]
+        The coordinate of the starting segment (level 0).
+    param_arr : types.ListType
+        Parameter values for each dimension (accel, freq).
+    dparams : np.ndarray
+        Parameter step (grid) sizes for each dimension in a 1D array.
+    poly_order : int
+        The order of the Chebyshev polynomial.
+    score_widths : np.ndarray
+        Boxcar widths for the score computation.
+
+    Returns
+    -------
+    SuggestionStruct
+        Suggestion struct
+        - param_sets: The parameter sets (n_param_sets, poly_order + 2, 2).
+        - data: The folded data for each leaf.
+        - scores: The scores for each leaf.
+        - backtracks: The backtracks for each leaf.
+    """
+    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
+    param_sets = poly_chebyshev_leaves(param_arr, dparams, poly_order, coord_init)
+    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
+    scores = np.zeros(n_param_sets, dtype=np.float32)
+    for iparam in range(n_param_sets):
+        scores[iparam] = scoring.snr_score_func(data[iparam], score_widths)
+    backtracks = np.zeros((n_param_sets, poly_order + 3), dtype=np.int32)
+    return SuggestionStruct(param_sets, data, scores, backtracks)
+
+
+@njit(cache=True, fastmath=True)
+def poly_chebyshev_suggest_complex(
+    fold_segment: np.ndarray,
+    coord_init: tuple[float, float],
+    param_arr: types.ListType,
+    dparams: np.ndarray,
+    poly_order: int,
+    score_widths: np.ndarray,
+) -> SuggestionStructComplex:
+    """Generate a Chebyshev suggestion struct from a fold segment in Fourier domain.
+
+    Parameters
+    ----------
+    fold_segment : np.ndarray
+        The fold segment to generate suggestions for. The shape of the array is
+        (n_accel, n_freq, 2, n_bins_f). Parameter dimensions are first two.
+    coord_init : tuple[float, float]
+        The coordinate of the starting segment (level 0).
+    param_arr : types.ListType
+        Parameter values for each dimension (accel, freq).
+    dparams : np.ndarray
+        Parameter step (grid) sizes for each dimension in a 1D array.
+    poly_order : int
+        The order of the Chebyshev polynomial.
+    score_widths : np.ndarray
+        Boxcar widths for the score computation.
+
+    Returns
+    -------
+    SuggestionStructComplex
+        Suggestion struct in Fourier domain
+    """
+    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
+    param_sets = poly_chebyshev_leaves(param_arr, dparams, poly_order, coord_init)
+    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
+    scores = np.zeros(n_param_sets, dtype=np.float32)
+    for iparam in range(n_param_sets):
+        scores[iparam] = scoring.snr_score_func_complex(data[iparam], score_widths)
+    backtracks = np.zeros((n_param_sets, poly_order + 3), dtype=np.int32)
+    return SuggestionStructComplex(param_sets, data, scores, backtracks)
+
+
+@njit(cache=True, fastmath=True)
 def split_cheb_params(
     cheb_coeffs_cur: np.ndarray,
     dcheb_cur: np.ndarray,
@@ -47,15 +194,20 @@ def effective_degree(pol_coeffs: np.ndarray, eps: float) -> int:
 @njit(cache=True, fastmath=True)
 def poly_chebyshev_branch_batch(
     param_set_batch: np.ndarray,
+    coord_cur: tuple[float, float],
     fold_bins: int,
     tol_bins: float,
     poly_order: int,
+    param_limits: types.ListType[types.Tuple[float, float]],
+    branch_max: int,
 ) -> np.ndarray:
     """Branch a batch of parameter sets to leaves."""
     n_batch = len(param_set_batch)
     nparams = poly_order
-    cheb_cur_batch = param_set_batch[:, :-2, 0]
-    dcheb_cur_batch = param_set_batch[:, :-2, 1]
+    _, t_obs_minus_t_ref = coord_cur
+    cheb_cur_batch = param_set_batch[:, :-3, 0]
+    dcheb_cur_batch = param_set_batch[:, :-3, 1]
+    d0_batch = param_set_batch[:, -3, 0]
     f0_batch = param_set_batch[:, -2, 0]
     t0_batch = param_set_batch[:, -1, 0]
     scale_batch = param_set_batch[:, -1, 1]
@@ -72,50 +224,78 @@ def poly_chebyshev_branch_batch(
         fold_bins,
         f0_batch,
     )
+    # --- Vectorized Padded Branching ---
+    pad_branched_params = np.empty((n_batch, nparams, branch_max), dtype=np.float64)
+    pad_branched_dparams = np.empty((n_batch, nparams), dtype=np.float64)
+    branched_counts = np.empty((n_batch, nparams), dtype=np.int64)
+    for i in range(n_batch):
+        for j in range(nparams):
+            p_min, p_max = param_limits_d[i, j]
+            dparam_act, count = psr_utils.branch_param_padded(
+                pad_branched_params[i, j],
+                cheb_cur_batch[i, j],
+                dcheb_cur_batch[i, j],
+                dcheb_new_batch[i, j],
+                p_min,
+                p_max,
+            )
+            pad_branched_dparams[i, j] = dparam_act
+            branched_counts[i, j] = count
 
-    leafs_cheb = split_cheb_params(
-        cheb_coeffs_cur,
-        dcheb_cur,
-        dcheb_new_batch,
-        tol_bins,
-        tsamp,
+    # --- Vectorized Selection ---
+    # Select based on mask: shape (n_batch, nparams, 1)
+    eps = 1e-6  # Small tolerance for floating-point comparison
+    mask_2d = shift_bins_batch >= (tol_bins - eps)  # Shape (n_batch, nparams)
+    for i in range(n_batch):
+        for j in range(nparams):
+            if not mask_2d[i, j]:
+                pad_branched_params[i, j, :] = 0
+                pad_branched_params[i, j, 0] = cheb_cur_batch[i, j]
+                pad_branched_dparams[i, j] = dcheb_cur_batch[i, j]
+                branched_counts[i, j] = 1
+    # --- Optimized Padded Cartesian Product ---
+    batch_leaves_cheb, batch_origins = np_utils.cartesian_prod_padded(
+        pad_branched_params,
+        branched_counts,
+        n_batch,
+        nparams,
     )
-    leaves = np.zeros((len(leafs_cheb), poly_order + 3, 2))
-    leaves[:, :-2] = leafs_cheb
-    leaves[:, -2, 0] = f0
-    leaves[:, -1, 0] = t0_cur
-    leaves[:, -1, 1] = scale_cur
-    return leaves
+    total_leaves = len(batch_origins)
+    batch_leaves = np.zeros((total_leaves, poly_order + 3, 2), dtype=np.float64)
+    batch_leaves[:, :-3, 0] = batch_leaves_cheb
+    batch_leaves[:, :-3, 1] = pad_branched_dparams[batch_origins]
+    batch_leaves[:, -3, 0] = d0_batch[batch_origins]
+    batch_leaves[:, -2, 0] = f0_batch[batch_origins]
+    batch_leaves[:, -1, 0] = t0_batch[batch_origins]
+    batch_leaves[:, -1, 1] = scale_batch[batch_origins]
+    return batch_leaves
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebyshev_resolve(
-    leaf: np.ndarray,
-    param_arr: types.ListType,
+def poly_chebyshev_resolve_batch(
+    leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
-    nbins: int,
-    cheb_table: np.ndarray,
-) -> tuple[np.ndarray, int]:
-    """Resolve the leaf parameters to find the closest param index and phase shift.
+    param_arr: types.ListType[types.Array],
+    fold_bins: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve the leaf parameters to find the closest grid index and phase shift.
 
     Parameters
     ----------
-    leaf : np.ndarray
-        The leaf parameter set.
-    param_arr : types.ListType
-        Parameter array containing the parameter values for the current segment.
+    leaves_batch : np.ndarray
+        The leaf parameter set. Shape is (n_batch, poly_order + 3, 2).
     coord_add : tuple[float, float]
         The coordinates of the added segment (level cur).
     coord_cur : tuple[float, float]
         The coordinates of the current segment (level cur).
     coord_init : tuple[float, float]
         The coordinates for the starting segment (level 0).
-    nbins : int
+    param_arr : types.ListType
+        Parameter array containing the parameter values for the incoming segment.
+    fold_bins : int
         Number of bins in the folded profile.
-    cheb_table : np.ndarray
-        Precomputed Chebyshev polynomials coefficients.
 
     Returns
     -------
@@ -124,15 +304,16 @@ def poly_chebyshev_resolve(
 
     Notes
     -----
-    leaf is referenced to t0, so we need to shift it to t_ref_add and t_ref_init
+    leaves_batch is referenced to t0, so we need to shift it to t_ref_add and t_ref_init
     to get the resolved parameters index and phase shift.
 
     """
-    t0, scale = coord_cur
-    t_add = coord_add[0]
-    t_init = coord_init[0]
-    param_vec = leaf[:-2, 0]
-    f0 = leaf[-2, 0]
+    n_batch, _, _ = leaves_batch.shape
+    t0, _ = coord_cur
+    t_init, _ = coord_init
+    t_add, _ = coord_add
+    param_vec = leaves_batch[:, :-2, 0]
+    f0_batch = leaves_batch[:, -2, 0]
 
     eff_deg = effective_degree(param_vec, 1000)
     a_t_add = maths.cheby2taylor(param_vec, t_add, t0, scale, 2, cheb_table, eff_deg)
@@ -225,173 +406,3 @@ def poly_chebyshev_validate(
         )
 
     return mask
-
-
-@njit(cache=True, fastmath=True)
-def poly_chebyshev_leaves(
-    param_arr: types.ListType,
-    dparams: np.ndarray,
-    poly_order: int,
-    coord_init: tuple[float, float],
-    coord_mid: tuple[float, float],
-) -> np.ndarray:
-    """Generate the leaf parameter sets for Chebyshev polynomial search.
-
-    Parameters
-    ----------
-    param_arr : types.ListType
-        Parameter array for each dimension; only (acceleration, frequency).
-    dparams : np.ndarray
-        Parameter step (grid) sizes for each dimension. Shape is (poly_order,).
-        Order is [..., acc, freq].
-    poly_order : int
-        The order of the Taylor polynomial.
-    coord_init : tuple[float, float]
-        The coordinate of the starting segment (level 0).
-        - coord_init[0] -> t0 (reference time)
-        - coord_init[1] -> scale (half duration of the segment)
-    coord_mid : tuple[float, float]
-        The mid-point coordinate of the entire data.
-        - coord_mid[0] -> t_mid (midpoint time) measured from t=0
-        - coord_mid[1] -> scale (half duration of the entire data)
-
-    Returns
-    -------
-    np.ndarray
-        The leaf parameter sets. Shape is (n_param_sets, poly_order + 2, 2).
-
-    Notes
-    -----
-    Conventions for each leaf parameter set:
-    leaf[:-2, 0] -> Chebyshev polynomial coefficients, order is [alpha_1, alpha_2, ...]
-    leaf[:-2, 1] -> Grid size (error) on each coefficient,
-    leaf[-2, 0]  -> Frequency at data mid-point (f0), assuming f=f0 at t_mid
-    leaf[-1, 0]  -> Reference time from the data start (t_c),
-    leaf[-1, 1]  -> Scaling, half duration of the segment (t_s).
-    """
-    t_init, scale = coord_init
-    t_mid, _ = coord_mid
-    leaves_taylor = common.get_leaves(param_arr, dparams)
-    v_init = leaves_taylor[:, -2, 0] * (t_init - t_mid)
-    f0_batch = leaves_taylor[:, -1, 0] / (1.0 - v_init / C_VAL)
-    # Update f-columns with v_init
-    leaves_taylor[:, -1, 0] = v_init
-    # f = f0(1 - v / C) => dv = -df / f0 * C
-    leaves_taylor[:, -1, 1] = leaves_taylor[:, -1, 1] / f0_batch * C_VAL
-    d_vec = np.zeros((len(leaves_taylor), poly_order + 1, 2))
-    # Invert leaves_taylor and insert into d_vec
-    d_vec[:, 1:] = leaves_taylor
-    alpha_vec = maths.taylor_to_cheby_full(d_vec, scale)
-
-    leaves = np.zeros((len(leaves_taylor), poly_order + 2, 2))
-    leaves[:, :-2] = alpha_vec
-    leaves[:, -2, 0] = f0_batch
-    leaves[:, -1, 0] = t_init
-    leaves[:, -1, 1] = scale
-    return leaves
-
-
-@njit(cache=True, fastmath=True)
-def poly_chebyshev_suggest(
-    fold_segment: np.ndarray,
-    coord_init: tuple[float, float],
-    coord_mid: tuple[float, float],
-    param_arr: types.ListType,
-    dparams: np.ndarray,
-    poly_order: int,
-    score_widths: np.ndarray,
-) -> SuggestionStruct:
-    """Generate a Chebyshev suggestion struct from a fold segment.
-
-    Parameters
-    ----------
-    fold_segment : np.ndarray
-        The fold segment to generate suggestions for. The shape of the array is
-        (n_accel, n_freq, 2, n_bins). Parameter dimensions are first two.
-    coord_init : tuple[float, float]
-        The coordinate of the starting segment (level 0).
-    coord_mid : tuple[float, float]
-        The mid-point coordinate of the entire data.
-    param_arr : types.ListType
-        Parameter values for each dimension (accel, freq).
-    dparams : np.ndarray
-        Parameter step (grid) sizes for each dimension in a 1D array.
-    poly_order : int
-        The order of the Chebyshev polynomial.
-    score_widths : np.ndarray
-        Boxcar widths for the score computation.
-
-    Returns
-    -------
-    SuggestionStruct
-        Suggestion struct
-        - param_sets: The parameter sets (n_param_sets, poly_order + 2, 2).
-        - data: The folded data for each leaf.
-        - scores: The scores for each leaf.
-        - backtracks: The backtracks for each leaf.
-    """
-    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
-    param_sets = poly_chebyshev_leaves(
-        param_arr,
-        dparams,
-        poly_order,
-        coord_init,
-        coord_mid,
-    )
-    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
-    scores = np.zeros(n_param_sets, dtype=np.float32)
-    for iparam in range(n_param_sets):
-        scores[iparam] = scoring.snr_score_func(data[iparam], score_widths)
-    backtracks = np.zeros((n_param_sets, 2 + len(param_arr)), dtype=np.int32)
-    return SuggestionStruct(param_sets, data, scores, backtracks)
-
-
-@njit(cache=True, fastmath=True)
-def poly_chebyshev_suggest_complex(
-    fold_segment: np.ndarray,
-    coord_init: tuple[float, float],
-    coord_mid: tuple[float, float],
-    param_arr: types.ListType,
-    dparams: np.ndarray,
-    poly_order: int,
-    score_widths: np.ndarray,
-) -> SuggestionStructComplex:
-    """Generate a Chebyshev suggestion struct from a fold segment in Fourier domain.
-
-    Parameters
-    ----------
-    fold_segment : np.ndarray
-        The fold segment to generate suggestions for. The shape of the array is
-        (n_accel, n_freq, 2, n_bins_f). Parameter dimensions are first two.
-    coord_init : tuple[float, float]
-        The coordinate of the starting segment (level 0).
-    coord_mid : tuple[float, float]
-        The mid-point coordinate of the entire data.
-    param_arr : types.ListType
-        Parameter values for each dimension (accel, freq).
-    dparams : np.ndarray
-        Parameter step (grid) sizes for each dimension in a 1D array.
-    poly_order : int
-        The order of the Chebyshev polynomial.
-    score_widths : np.ndarray
-        Boxcar widths for the score computation.
-
-    Returns
-    -------
-    SuggestionStructComplex
-        Suggestion struct in Fourier domain
-    """
-    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
-    param_sets = poly_chebyshev_leaves(
-        param_arr,
-        dparams,
-        poly_order,
-        coord_init,
-        coord_mid,
-    )
-    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
-    scores = np.zeros(n_param_sets, dtype=np.float32)
-    for iparam in range(n_param_sets):
-        scores[iparam] = scoring.snr_score_func_complex(data[iparam], score_widths)
-    backtracks = np.zeros((n_param_sets, 2 + len(param_arr)), dtype=np.int32)
-    return SuggestionStructComplex(param_sets, data, scores, backtracks)
