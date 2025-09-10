@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Self
 
-import numpy as np
 from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
@@ -12,9 +11,10 @@ from numba.extending import overload_method
 from pyloki.core import chebyshev as cheby
 from pyloki.core import common
 from pyloki.detection import scoring
-from pyloki.utils import maths
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from pyloki.config import PulsarSearchConfig
     from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
@@ -50,6 +50,7 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
+            cfg.snap_threshold,
             cfg.use_conservative_grid,
         )
 
@@ -112,20 +113,25 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         self,
         leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
-    ) -> np.ndarray:
+        coord_prev: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Branch the current parameter set into the finer grid of parameters (leaves).
 
         Parameters
         ----------
         leaves_batch : np.ndarray
             The current parameter set to branch.
+        coord_cur : tuple[float, float]
+            The current coordinate.
+        coord_prev : tuple[float, float]
+            The previous coordinate.
 
         Returns
         -------
         np.ndarray
             The branched parameter set.
         """
-        return branch_func(self, leaves_batch, coord_cur)
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
     def suggest(
         self,
@@ -222,8 +228,7 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         self,
         leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
-        coord_valid: tuple[float, float],
-        validation_params: tuple[np.ndarray, np.ndarray, float],
+        coord_cur: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
         """Validate which of the leaves are physical.
 
@@ -231,10 +236,8 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         ----------
         leaves : np.ndarray
             Set of leaves (parameter sets) to validate.
-        coord_valid : np.ndarray
-            hacky way to pass min and max
-        validation_params : np.ndarray
-            Pre-computed validation parameters for the physical validation.
+        coord_cur : tuple[float, float]
+            The current coordinate.
 
         Returns
         -------
@@ -248,13 +251,7 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         - pruning scans only functions that are physical at position (t/2).
         But same bounds apply everywhere.
         """
-        return validate_func(
-            self,
-            leaves_batch,
-            leaves_origins,
-            coord_valid,
-            validation_params,
-        )
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     def get_validation_params(
         self,
@@ -296,6 +293,7 @@ class PruneChebyshevComplexDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
+            cfg.snap_threshold,
             cfg.use_conservative_grid,
         )
 
@@ -315,8 +313,9 @@ class PruneChebyshevComplexDPFuncts(structref.StructRefProxy):
         self,
         leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
-    ) -> np.ndarray:
-        return branch_func(self, leaves_batch, coord_cur)
+        coord_prev: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
     def suggest(
         self,
@@ -366,16 +365,9 @@ class PruneChebyshevComplexDPFuncts(structref.StructRefProxy):
         self,
         leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
-        coord_valid: tuple[float, float],
-        validation_params: tuple[np.ndarray, np.ndarray, float],
+        coord_cur: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(
-            self,
-            leaves_batch,
-            leaves_origins,
-            coord_valid,
-            validation_params,
-        )
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     def get_validation_params(
         self,
@@ -396,7 +388,8 @@ fields_prune_chebyshev_dp_funcs = [
     ("score_widths", types.i8[::1]),
     ("poly_order", types.i8),
     ("branch_max", types.i8),
-    ("grid_conservative", types.bool_),
+    ("snap_threshold", types.f8),
+    ("conservative_errors", types.bool_),
 ]
 
 structref.define_boxing(PruneChebyshevDPFunctsTemplate, PruneChebyshevDPFuncts)
@@ -426,11 +419,12 @@ def prune_chebyshev_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    grid_conservative: bool,
+    snap_threshold: float,
+    conservative_errors: bool,
 ) -> PruneChebyshevDPFuncts:
     """Initialize the PruneChebyshevDPFuncts struct."""
     self = structref.new(PruneChebyshevDPFunctsType)
-    self.param_arr = param_arr
+    self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
     self.nbins = nbins
@@ -441,7 +435,8 @@ def prune_chebyshev_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.grid_conservative = grid_conservative
+    self.snap_threshold = snap_threshold
+    self.conservative_errors = conservative_errors
     return self
 
 
@@ -458,11 +453,12 @@ def prune_chebyshev_complex_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    grid_conservative: bool,
+    snap_threshold: float,
+    conservative_errors: bool,
 ) -> PruneChebyshevComplexDPFuncts:
     """Initialize the PruneChebyshevComplexDPFuncts struct."""
     self = structref.new(PruneChebyshevComplexDPFunctsType)
-    self.param_arr = param_arr
+    self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
     self.nbins = nbins
@@ -473,7 +469,8 @@ def prune_chebyshev_complex_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.grid_conservative = grid_conservative
+    self.snap_threshold = snap_threshold
+    self.conservative_errors = conservative_errors
     return self
 
 
@@ -493,7 +490,7 @@ def resolve_func(
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
-) -> tuple[np.ndarray, int]:
+) -> tuple[np.ndarray, np.ndarray]:
     if self.poly_order == 4:
         return cheby.poly_chebyshev_resolve_circular_batch(
             leaves_batch,
@@ -516,17 +513,20 @@ def resolve_func(
 @njit(cache=True, fastmath=True)
 def branch_func(
     self: PruneChebyshevDPFuncts,
-    param_set_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
-) -> np.ndarray:
+    coord_prev: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray]:
     return cheby.poly_chebyshev_branch_batch(
-        param_set_batch,
+        leaves_batch,
         coord_cur,
+        coord_prev,
         self.nbins,
         self.tol_bins,
         self.poly_order,
         self.param_limits,
         self.branch_max,
+        self.conservative_errors,
     )
 
 
@@ -536,13 +536,6 @@ def suggest_func(
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
 ) -> SuggestionStruct:
-    dparams = np.array(
-        [self.dparams[-1], self.dparams[-2]]  # df, da
-        + [
-            2 * self.cfg.deriv_bounds[k] / maths.fact(k)
-            for k in range(3, self.poly_order + 1)
-        ],
-    )
     return cheby.poly_chebyshev_suggest(
         fold_segment,
         coord_init,
@@ -559,13 +552,6 @@ def suggest_complex_func(
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
 ) -> SuggestionStructComplex:
-    dparams = np.array(
-        [self.dparams[-1], self.dparams[-2]]  # df, da
-        + [
-            2 * self.cfg.deriv_bounds[k] / maths.fact(k)
-            for k in range(3, self.poly_order + 1)
-        ],
-    )
     return cheby.poly_chebyshev_suggest_complex(
         fold_segment,
         coord_init,
@@ -633,13 +619,13 @@ def transform_func(
             leaves_batch,
             coord_next,
             coord_cur,
-            self.grid_conservative,
+            self.conservative_errors,
         )
     return cheby.poly_chebyshev_transform_batch(
         leaves_batch,
         coord_next,
         coord_cur,
-        self.grid_conservative,
+        self.conservative_errors,
     )
 
 
@@ -649,11 +635,7 @@ def get_transform_matrix_func(
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
 ) -> np.ndarray:
-    return cheby.poly_chebyshev_transform_matrix(
-        coord_cur,
-        coord_prev,
-        self.poly_order,
-    )
+    return common.get_trans_matrix(coord_cur, coord_prev)
 
 
 @njit(cache=True, fastmath=True)
@@ -661,14 +643,15 @@ def validate_func(
     self: PruneChebyshevDPFuncts,
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
-    coord_valid: tuple[float, float],
-    validation_params: tuple[np.ndarray, np.ndarray, float],
+    coord_cur: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     if self.poly_order == 4:
         return cheby.poly_chebyshev_validate_batch(
             leaves_batch,
             leaves_origins,
+            coord_cur,
             self.p_orb_min,
+            self.snap_threshold,
         )
     return leaves_batch, leaves_origins
 
@@ -678,15 +661,7 @@ def get_validation_params_func(
     self: PruneChebyshevDPFuncts,
     coord_add: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    t_ref = coord_add[1] - coord_add[0]
-    return cheby.prepare_epicyclic_validation_params(
-        t_ref,
-        self.tseg_ffa,
-        self.num_validation,
-        self.omega_bounds,
-        self.x_max,
-        self.ecc_max,
-    )
+    return common.get_validation_params(coord_add)
 
 
 @overload_method(PruneChebyshevDPFunctsTemplate, "load")
@@ -719,7 +694,7 @@ def ol_resolve_func(
         coord_add: tuple[float, float],
         coord_cur: tuple[float, float],
         coord_init: tuple[float, float],
-    ) -> tuple[np.ndarray, int]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
     return impl
@@ -730,13 +705,15 @@ def ol_branch_func(
     self: PruneChebyshevDPFuncts,
     leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneChebyshevDPFuncts,
         leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
-    ) -> np.ndarray:
-        return branch_func(self, leaves_batch, coord_cur)
+        coord_prev: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
     return impl
 
@@ -835,23 +812,15 @@ def ol_validate_func(
     self: PruneChebyshevDPFuncts,
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
-    coord_valid: tuple[float, float],
-    validation_params: tuple[np.ndarray, np.ndarray, float],
+    coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneChebyshevDPFuncts,
         leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
-        coord_valid: tuple[float, float],
-        validation_params: tuple[np.ndarray, np.ndarray, float],
+        coord_cur: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(
-            self,
-            leaves_batch,
-            leaves_origins,
-            coord_valid,
-            validation_params,
-        )
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     return impl
 
@@ -868,7 +837,6 @@ def ol_get_validation_params_func(
         return get_validation_params_func(self, coord_add)
 
     return impl
-
 
 
 @overload_method(PruneChebyshevComplexDPFunctsTemplate, "load")
@@ -912,13 +880,15 @@ def ol_branch_complex_func(
     self: PruneChebyshevComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
+    coord_prev: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneChebyshevComplexDPFuncts,
         leaves_batch: np.ndarray,
         coord_next: tuple[float, float],
+        coord_prev: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_next)
+        return branch_func(self, leaves_batch, coord_next, coord_prev)
 
     return impl
 
@@ -1029,23 +999,15 @@ def ol_validate_complex_func(
     self: PruneChebyshevComplexDPFuncts,
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
-    coord_valid: tuple[float, float],
-    validation_params: tuple[np.ndarray, np.ndarray, float],
+    coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneChebyshevComplexDPFuncts,
         leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
-        coord_valid: tuple[float, float],
-        validation_params: tuple[np.ndarray, np.ndarray, float],
+        coord_cur: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(
-            self,
-            leaves_batch,
-            leaves_origins,
-            coord_valid,
-            validation_params,
-        )
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     return impl
 

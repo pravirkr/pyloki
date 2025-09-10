@@ -158,11 +158,11 @@ def pruning_iteration(
 def pruning_iteration_batched(
     sugg: SuggestionStruct,
     fold_segment: np.ndarray,
+    coord_prev: tuple[float, float],
     coord_next: tuple[float, float],
     coord_init: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_add: tuple[float, float],
-    coord_valid: tuple[float, float],
     prune_funcs: DP_FUNCS_TYPE,
     threshold: float,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
@@ -208,8 +208,6 @@ def pruning_iteration_batched(
     timers = np.zeros(7, dtype=np.float32)
     current_threshold = threshold
 
-    validation_params = prune_funcs.get_validation_params(coord_valid)
-
     n_branches = sugg.valid_size
     batch_size = max(1, min(batch_size, n_branches))
 
@@ -223,6 +221,7 @@ def pruning_iteration_batched(
         batch_leaves, batch_leaf_origins = prune_funcs.branch(
             sugg.param_sets[i_batch_start:i_batch_end],
             coord_cur,
+            coord_prev,
         )
         n_leaves_batch = len(batch_leaves)
         n_leaves += n_leaves_batch
@@ -235,8 +234,7 @@ def pruning_iteration_batched(
         batch_leaves, batch_leaf_origins = prune_funcs.validate(
             batch_leaves,
             batch_leaf_origins,
-            coord_valid,
-            validation_params,
+            coord_cur,
         )
         n_leaves_batch = len(batch_leaves)
         n_leaves_phy += n_leaves_batch
@@ -450,14 +448,14 @@ class Pruning:
         self._suggestion = self.prune_funcs.suggest(fold_segment, coord_init)
         # Records to track the numerical stability of the algorithm
         self._backtrack_arr = np.zeros(
-            (self.max_sugg, self.dyp.cfg.prune_poly_order + 3),
+            (self.max_sugg, self.dyp.cfg.prune_poly_order + 2),
             dtype=np.int32,
         )
         self._best_intermediate_arr = np.zeros(
             self.dyp.nsegments - 1,
             dtype=np.dtype(
                 [
-                    ("param_sets", np.float64, (self.dyp.cfg.prune_poly_order + 3, 2)),
+                    ("param_sets", np.float64, (self.dyp.cfg.prune_poly_order + 2, 2)),
                     ("folds", self.dyp.fold.dtype, fold_segment.shape[-2:]),
                     ("scores", np.float32),
                 ],
@@ -526,13 +524,13 @@ class Pruning:
             get_leaves=lambda: self.suggestion.size_lb,
         ):
             self.execute_iter(log_file)
-        # Transform the suggestion oarams to middle of the data
-        delta_t = self.scheme.get_delta(self.prune_level)
+        # Transform the suggestion params to middle of the data
+        coord_mid = self.scheme.get_coord(self.prune_level)
         with PruneResultWriter(result_file, mode="a") as writer:
             writer.write_run_results(
                 run_name,
                 self.scheme.data,
-                self.suggestion.get_transformed(delta_t),
+                self.suggestion.get_transformed(coord_mid),
                 self.suggestion.scores,
                 self.pstats,
             )
@@ -552,18 +550,18 @@ class Pruning:
         threshold = self.threshold_scheme[self.prune_level - 1]
         # Get the useful precomputed values: coord_next := coord_cur + coord_add
         coord_init = self.scheme.get_coord(0)
+        coord_prev = self.scheme.get_coord(self.prune_level - 1)
         coord_next = self.scheme.get_coord(self.prune_level)
-        coord_cur = self.scheme.get_adaptive_coord(self.prune_level)
+        coord_cur = self.scheme.get_current_coord(self.prune_level)
         coord_add = self.scheme.get_seg_coord(self.prune_level)
-        coord_valid = self.scheme.get_valid(self.prune_level)
         suggestion, stats_dict, timers = pruning_iteration_batched(
             self.suggestion,
             fold_segment,
+            coord_prev,
             coord_next,
             coord_init,
             coord_cur,
             coord_add,
-            coord_valid,
             self.prune_funcs,
             threshold,
             self.load_func,

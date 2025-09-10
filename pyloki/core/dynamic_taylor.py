@@ -49,6 +49,7 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
+            cfg.snap_threshold,
             cfg.use_conservative_grid,
         )
 
@@ -68,8 +69,9 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
         self,
         leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_cur)
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
     def suggest(
         self,
@@ -118,16 +120,9 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
         self,
         leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
-        coord_valid: tuple[float, float],
-        validation_params: tuple[np.ndarray, np.ndarray, float],
+        coord_cur: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(
-            self,
-            leaves_batch,
-            leaves_origins,
-            coord_valid,
-            validation_params,
-        )
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     def get_validation_params(
         self,
@@ -157,6 +152,7 @@ class PruneTaylorComplexDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
+            cfg.snap_threshold,
             cfg.use_conservative_grid,
         )
 
@@ -176,8 +172,9 @@ class PruneTaylorComplexDPFuncts(structref.StructRefProxy):
         self,
         leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_cur)
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
     def suggest(
         self,
@@ -226,16 +223,9 @@ class PruneTaylorComplexDPFuncts(structref.StructRefProxy):
         self,
         leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
-        coord_valid: tuple[float, float],
-        validation_params: tuple[np.ndarray, np.ndarray, float],
+        coord_cur: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(
-            self,
-            leaves_batch,
-            leaves_origins,
-            coord_valid,
-            validation_params,
-        )
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     def get_validation_params(
         self,
@@ -256,6 +246,7 @@ fields_prune_taylor_dp_funcs = [
     ("score_widths", types.i8[::1]),
     ("poly_order", types.i8),
     ("branch_max", types.i8),
+    ("snap_threshold", types.f8),
     ("grid_conservative", types.bool_),
 ]
 
@@ -281,6 +272,7 @@ def prune_taylor_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
+    snap_threshold: float,
     grid_conservative: bool,
 ) -> PruneTaylorDPFuncts:
     """Initialize the PruneTaylorDPFuncts object."""
@@ -296,6 +288,7 @@ def prune_taylor_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
+    self.snap_threshold = snap_threshold
     self.grid_conservative = grid_conservative
     return self
 
@@ -313,6 +306,7 @@ def prune_taylor_complex_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
+    snap_threshold: float,
     grid_conservative: bool,
 ) -> PruneTaylorComplexDPFuncts:
     """Initialize the PruneTaylorComplexDPFuncts object."""
@@ -328,6 +322,7 @@ def prune_taylor_complex_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
+    self.snap_threshold = snap_threshold
     self.grid_conservative = grid_conservative
     return self
 
@@ -369,6 +364,7 @@ def branch_func(
     self: PruneTaylorDPFuncts,
     leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     return taylor.poly_taylor_branch_batch(
         leaves_batch,
@@ -494,14 +490,14 @@ def validate_func(
     self: PruneTaylorDPFuncts,
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
-    coord_valid: tuple[float, float],
-    validation_params: tuple[np.ndarray, np.ndarray, float],
+    coord_cur: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     if self.poly_order == 4:
         return taylor.poly_taylor_validate_batch(
             leaves_batch,
             leaves_origins,
             self.p_orb_min,
+            self.snap_threshold,
         )
     return leaves_batch, leaves_origins
 
@@ -551,13 +547,15 @@ def ol_branch_func(
     self: PruneTaylorDPFuncts,
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
+    coord_prev: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneTaylorDPFuncts,
         leaves_batch: np.ndarray,
         coord_next: tuple[float, float],
+        coord_prev: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_next)
+        return branch_func(self, leaves_batch, coord_next, coord_prev)
 
     return impl
 
@@ -659,23 +657,15 @@ def ol_validate_func(
     self: PruneTaylorDPFuncts,
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
-    coord_valid: tuple[float, float],
-    validation_params: tuple[np.ndarray, np.ndarray, float],
+    coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneTaylorDPFuncts,
         leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
-        coord_valid: tuple[float, float],
-        validation_params: tuple[np.ndarray, np.ndarray, float],
+        coord_cur: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(
-            self,
-            leaves_batch,
-            leaves_origins,
-            coord_valid,
-            validation_params,
-        )
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     return impl
 
@@ -735,13 +725,15 @@ def ol_branch_complex_func(
     self: PruneTaylorComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
+    coord_prev: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneTaylorComplexDPFuncts,
         leaves_batch: np.ndarray,
         coord_next: tuple[float, float],
+        coord_prev: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_next)
+        return branch_func(self, leaves_batch, coord_next, coord_prev)
 
     return impl
 
@@ -852,23 +844,15 @@ def ol_validate_complex_func(
     self: PruneTaylorComplexDPFuncts,
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
-    coord_valid: tuple[float, float],
-    validation_params: tuple[np.ndarray, np.ndarray, float],
+    coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneTaylorComplexDPFuncts,
         leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
-        coord_valid: tuple[float, float],
-        validation_params: tuple[np.ndarray, np.ndarray, float],
+        coord_cur: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(
-            self,
-            leaves_batch,
-            leaves_origins,
-            coord_valid,
-            validation_params,
-        )
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     return impl
 

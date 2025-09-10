@@ -7,7 +7,7 @@ from sigpyproc.core import filters as sig_filters
 from sigpyproc.timeseries import TimeSeries as sigTimeSeries
 from sigpyproc.viz.styles import PlotTable
 
-from pyloki.core import common
+from pyloki.core import brutefold
 from pyloki.detection.scoring import boxcar_snr_1d
 from pyloki.simulation.modulate import type_to_mods
 from pyloki.utils import np_utils
@@ -70,7 +70,7 @@ class TimeSeries:
             mod_tref = self.tobs / 2
         mod_func = type_to_mods[mod_type](**mod_kwargs)
         proper_time = mod_func.generate(np.arange(0, self.tobs, self.dt), mod_tref)
-        fold = common.brutefold(
+        fold = brutefold(
             self.ts_e,
             self.ts_v,
             proper_time,

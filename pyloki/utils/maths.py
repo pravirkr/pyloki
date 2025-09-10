@@ -379,7 +379,7 @@ def compute_connection_matrix_r(k_max: int) -> np.ndarray:
         Shape is (k_max + 1, k_max + 1).
         Lower triangular matrix since R_{k,m} = 0 for m > k.
     """
-    r_mat = np.zeros((k_max + 1, k_max + 1), dtype=np.float32)
+    r_mat = np.zeros((k_max + 1, k_max + 1), dtype=np.float64)
     for k in range(k_max + 1):
         for m in range(k + 1):
             r_mat[k, m] = compute_connection_coefficient_r(k, m)
@@ -424,164 +424,11 @@ def poly_chebyshev_transform_matrix(
         raise ValueError(msg)
     p = ts2 / ts1
     q = (tc2 - tc1) / ts1
-    c_mat = np.zeros((k_max + 1, k_max + 1), dtype=np.float32)
+    c_mat = np.zeros((k_max + 1, k_max + 1), dtype=np.float64)
     for n in range(k_max + 1):
         for k in range(k_max + 1):
             c_mat[n, k] = compute_transformation_coefficient_c(n, k, p, q)
     return c_mat
-
-
-@njit(cache=True, fastmath=True)
-def taylor_to_cheby(d_vec: np.ndarray, t_s: float) -> np.ndarray:
-    r"""Transform Taylor series coefficients to Chebyshev coefficients.
-
-    Parameters
-    ----------
-    d_vec : np.ndarray
-        Taylor series coefficients [d_k_max, ..., d_1, d_0]
-        where d_k is coefficient of (t - t_c)^k/k!.
-        Could also be a 2D array of shape (N, n) where N is the number of
-        batches and n is the number of parameters.
-    t_s : float
-        Scale factor for the transformation, typically half the time span.
-
-    Returns
-    -------
-    np.ndarray
-        Chebyshev coefficients [\alpha_k_max, ..., \alpha_1, \alpha_0].
-    """
-    if t_s <= 0:
-        msg = "t_s must be a positive."
-        raise ValueError(msg)
-    d_vec_standard = d_vec[..., ::-1]
-    k_max = d_vec_standard.shape[-1] - 1
-    s_mat = compute_connection_matrix_s(k_max)
-    k_range = np.arange(k_max + 1, dtype=np.int64)
-    scale = t_s**k_range / fact(k_range)
-    d_scaled = np.ascontiguousarray(d_vec_standard) * scale
-    alpha_standard = (s_mat.T @ d_scaled.T).T
-    return alpha_standard[..., ::-1]
-
-
-@njit(cache=True, fastmath=True)
-def taylor_to_cheby_full(d_vec_batch: np.ndarray, t_s: float) -> np.ndarray:
-    r"""Transform Taylor series coefficients and its errors to Chebyshev basis.
-
-    Parameters
-    ----------
-    d_vec_batch : np.ndarray
-        Taylor series coefficients and its errors, shape is (n_batch, n_params, 2).
-        where d_k is coefficient of (t - t_c)^k/k!.
-        Order is [d_k_max, ..., d_1, d_0] along the n_params dimension.
-    t_s : float
-        Scale factor for the transformation, typically half the time span.
-
-    Returns
-    -------
-    np.ndarray
-        Chebyshev coefficients and its errors, shape is (n_batch, n_params, 2).
-        Order is [alpha_k_max, ..., alpha_1, alpha_0] along the n_params dimension.
-    """
-    if t_s <= 0:
-        msg = "t_s must be a positive."
-        raise ValueError(msg)
-    _, n_params, _ = d_vec_batch.shape
-    k_max = n_params - 1
-    d_vals = d_vec_batch[:, ::-1, 0]
-    d_errs = d_vec_batch[:, ::-1, 1]
-    s_mat = compute_connection_matrix_s(k_max)
-    k_range = np.arange(k_max + 1, dtype=np.int64)
-    scale = t_s**k_range / fact(k_range)
-    d_scaled_vals = d_vals * scale
-    d_scaled_errs = d_errs * scale
-    alpha_vals = (s_mat.T @ d_scaled_vals.T).T
-    # Propagate errors: var_alpha = (S^T)^2 @ var_d_scaled.T
-    var_d_scaled = d_scaled_errs**2
-    var_alpha = (s_mat.T**2 @ var_d_scaled.T).T
-    alpha_errs = np.sqrt(var_alpha)
-    result = np.empty_like(d_vec_batch)
-    result[:, :, 0] = alpha_vals[..., ::-1]
-    result[:, :, 1] = alpha_errs[..., ::-1]
-    return result
-
-
-@njit(cache=True, fastmath=True)
-def cheby_to_taylor(alpha_vec: np.ndarray, t_s: float) -> np.ndarray:
-    r"""Transform Chebyshev coefficients to Taylor series coefficients.
-
-    Parameters
-    ----------
-    alpha_vec : np.ndarray
-        Chebyshev coefficients [\alpha_k_max, ..., \alpha_1, \alpha_0].
-        Could also be a 2D array of shape (N, n) where N is the number of
-        batches and n is the number of parameters.
-    t_s : float
-        Scale factor for the transformation, typically half the time span.
-
-    Returns
-    -------
-    np.ndarray
-        Taylor series coefficients [d_k_max, ..., d_1, d_0]
-        where d_k is coefficient of (t - t_c)^k/k!.
-    """
-    if t_s <= 0:
-        msg = "t_s must be a positive."
-        raise ValueError(msg)
-    alpha_standard = alpha_vec[..., ::-1]
-    k_max = alpha_standard.shape[-1] - 1
-    r_mat = compute_connection_matrix_r(k_max)
-    k_range = np.arange(k_max + 1, dtype=np.int64)
-    scaled_param = np.ascontiguousarray(alpha_standard) * fact(k_range) / t_s**k_range
-    d_standard = (r_mat.T @ scaled_param.T).T
-    return d_standard[..., ::-1]
-
-
-@njit(cache=True, fastmath=True)
-def cheby2taylor(
-    param_vec: np.ndarray,
-    t_eval: float,
-    t0: float,
-    scale: float,
-    deriv_index: int,
-    cheb_table: np.ndarray,
-    eff_deg: int = -3,
-) -> np.ndarray:
-    r"""Get Taylor series coefficients from Chebyshev coefficients.
-
-    Parameters
-    ----------
-    param_vec : np.ndarray
-        Chebyshev coefficients [\alpha_0, \alpha_1, ..., \alpha_k_max].
-    t_eval : float
-        Time at which to evaluate the polynomial.
-    t0 : float
-        Reference time of the polynomial (t_c).
-    scale : float
-        Scale of the polynomial (t_s).
-    deriv_index : int
-        Index of the derivative to evaluate (k-th derivative).
-    cheb_table : np.ndarray
-        Precomputed Chebyshev polynomials and their derivatives.
-    eff_deg : int, optional
-        Effective degree of the polynomial, by default -3.
-
-    Returns
-    -------
-    np.ndarray
-        The value of the polynomial at the given time.
-
-    Notes
-    -----
-    The effective degree is -3 by default as this value reproduces (after +1) the -2
-    (which is the last coefficient by convention).
-    """
-    table = cheb_table[deriv_index]
-    x = (t_eval - t0) / scale
-    coeffs = param_vec[: eff_deg + 1]
-    eff_deg = len(coeffs) - 1 if eff_deg < 0 else eff_deg
-    pol = np.sum(coeffs[:, np.newaxis] * table[:, : eff_deg + 1], axis=0)
-    polyval = np.polynomial.polynomial.polyval(x, pol)
-    return polyval / scale**deriv_index
 
 
 @njit(cache=True, fastmath=True)

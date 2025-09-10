@@ -4,7 +4,7 @@ import attrs
 import numpy as np
 from scipy import stats
 
-from pyloki.core import common
+from pyloki.core import brutefold, brutefold_single
 from pyloki.detection.scoring import boxcar_snr_1d
 from pyloki.io.timeseries import TimeSeries
 from pyloki.simulation.modulate import Modulating, type_to_mods
@@ -174,7 +174,7 @@ class PulseSignalConfig:
         on_pulse_indices = on_pulse_indices % nbins
         off_pulse_mask = np.ones(nbins, dtype=bool)
         off_pulse_mask[on_pulse_indices] = False
-        noise_folded_unit = common.brutefold_single(
+        noise_folded_unit = brutefold_single(
             noise_ts_unit,
             self.proper_time,
             1 / self.period,
@@ -207,7 +207,7 @@ class PulseSignalConfig:
         sig_template: np.ndarray,
         sig_variance: np.ndarray,
     ) -> float:
-        folds = common.brutefold(
+        folds = brutefold(
             sig_template,
             sig_variance,
             self.proper_time,

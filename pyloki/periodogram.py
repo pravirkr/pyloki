@@ -270,6 +270,46 @@ class ScatteredPeriodogram:
             )
         return "\n".join(summary)
 
+    def get_best_in_each_run(self) -> str:
+        """Return the best candidate from each run.
+
+        Returns
+        -------
+        str
+            Summary of best candidates from each run.
+        """
+        # Group by run_id and find the row with maximum score in each group
+        best_per_run = self.data.loc[self.data.groupby("run_id")["score"].idxmax()]
+
+        summary: list[str] = []
+        summary.append("Best candidate in each run:")
+
+        # Get parameter formatters (same as in get_summary_cands)
+        param_formatters = {}
+        for p in self.param_names:
+            d = self.data[f"d{p}"][0]  # Use first value as reference for precision
+            decimals = get_precision(d)
+            param_formatters[p] = f"{{:.{decimals}f}}"
+
+        # Show dparams once at the top
+        dparams_str = ", ".join(
+            f"d{p}: {self.data[f'd{p}'][0]:.10g}" for p in self.param_names
+        )
+        summary.append(f"dparams: {dparams_str}")
+
+        # Sort by score descending for consistent ordering
+        best_per_run = best_per_run.sort_values("run_id", ascending=True)
+
+        for row in best_per_run.itertuples(index=False):
+            params_str = ", ".join(
+                f"{p}: {param_formatters[p].format(getattr(row, p))}"
+                for p in self.param_names
+            )
+            summary.append(
+                f"Run: {row.run_id}, S/N: {row.score:.2f}, {params_str}",
+            )
+        return "\n".join(summary)
+
     def plot_correlation(
         self,
         param_x: str,

@@ -10,7 +10,6 @@ from numba.experimental import structref
 from numba.extending import overload, overload_method
 
 from pyloki.utils import psr_utils
-from pyloki.utils.misc import C_VAL
 
 
 @structref.register
@@ -44,9 +43,8 @@ class SuggestionStruct(structref.StructRefProxy):
 
     Notes
     -----
-    The last two rows of the param_sets are reserved.
-    - row (-2) : f0, _
-    - row (-1) : t0, scale
+    The last row rows of the param_sets is reserved.
+    - row (-1) : f0, _
     """
 
     def __new__(
@@ -127,20 +125,20 @@ class SuggestionStruct(structref.StructRefProxy):
     def get_best(self) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
 
-    def get_transformed(self, delta_t: float) -> np.ndarray:
+    def get_transformed(self, coord_mid: tuple[float, float]) -> np.ndarray:
         """Transform the search parameters to some given t_ref.
 
         Parameters
         ----------
-        delta_t : float
-            Time shift to apply to the search parameters.
+        coord_mid : tuple[float, float]
+            Final representation coordinate.
 
         Returns
         -------
         np.ndarray
             Array of transformed search parameters (nsuggestions, nparams, 2)
         """
-        return get_transformed_func(self, delta_t)
+        return get_transformed_func(self, coord_mid)
 
     def convert_to_circular(self) -> SuggestionStruct:
         return convert_to_circular_func(self)
@@ -288,8 +286,8 @@ class SuggestionStructComplex(structref.StructRefProxy):
     def get_best(self) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
 
-    def get_transformed(self, delta_t: float) -> np.ndarray:
-        return get_transformed_func(self, delta_t)
+    def get_transformed(self, coord_mid: tuple[float, float]) -> np.ndarray:
+        return get_transformed_func(self, coord_mid)
 
     def convert_to_circular(self) -> SuggestionStruct:
         return convert_to_circular_func_complex(self)
@@ -388,7 +386,7 @@ def suggestion_struct_init(
     self.mode = mode
     self.valid_size = param_sets.shape[0]
     self.size = param_sets.shape[0]
-    self.nparams = param_sets.shape[1] - 3
+    self.nparams = param_sets.shape[1] - 2
     return self
 
 
@@ -408,7 +406,7 @@ def suggestion_struct_complex_init(
     self.mode = mode
     self.valid_size = param_sets.shape[0]
     self.size = param_sets.shape[0]
-    self.nparams = param_sets.shape[1] - 3
+    self.nparams = param_sets.shape[1] - 2
     return self
 
 
@@ -424,7 +422,7 @@ def get_new_func(self: SuggestionStruct, max_sugg: int) -> SuggestionStruct:
         (max_sugg, self.backtracks.shape[1]),
         dtype=self.backtracks.dtype,
     )
-    sugg_new = SuggestionStruct(param_sets, folds, scores, backtracks)
+    sugg_new = SuggestionStruct(param_sets, folds, scores, backtracks, self.mode)
     sugg_new.valid_size = 0
     return sugg_new
 
@@ -444,7 +442,7 @@ def get_new_func_complex(
         (max_sugg, self.backtracks.shape[1]),
         dtype=self.backtracks.dtype,
     )
-    sugg_new = SuggestionStructComplex(param_sets, folds, scores, backtracks)
+    sugg_new = SuggestionStructComplex(param_sets, folds, scores, backtracks, self.mode)
     sugg_new.valid_size = 0
     return sugg_new
 
@@ -460,13 +458,16 @@ def get_best_func(self: SuggestionStruct) -> tuple[np.ndarray, np.ndarray, float
 
 
 @njit(cache=True, fastmath=True)
-def get_transformed_func(self: SuggestionStruct, delta_t: float) -> np.ndarray:
-    param_sets_batch = self.param_sets[:, :-3, :]
-    f0_batch = self.param_sets[:, -2, 0]
-    # Convert velocity to frequency
-    param_sets_batch[:, -1, 0] = f0_batch * (1 - self.param_sets[:, -4, 0] / C_VAL)
-    param_sets_batch[:, -1, 1] = f0_batch * self.param_sets[:, -4, 1] / C_VAL
-    return param_sets_batch
+def get_transformed_func(
+    self: SuggestionStruct,
+    coord_mid: tuple[float, float],
+) -> np.ndarray:
+    if self.mode == "taylor":
+        return psr_utils.report_leaves_taylor_batch(self.param_sets)
+    if self.mode == "chebyshev":
+        return psr_utils.report_leaves_chebyshev_batch(self.param_sets, coord_mid)
+    msg = "Suggestion struct is not in Taylor or Chebyshev basis."
+    raise ValueError(msg)
 
 
 @njit(cache=True, fastmath=True)
@@ -598,6 +599,7 @@ def trim_empty_func(self: SuggestionStruct) -> SuggestionStruct:
         self.folds[: self.valid_size],
         self.scores[: self.valid_size],
         self.backtracks[: self.valid_size],
+        self.mode,
     )
 
 
@@ -608,6 +610,7 @@ def trim_empty_func_complex(self: SuggestionStructComplex) -> SuggestionStructCo
         self.folds[: self.valid_size],
         self.scores[: self.valid_size],
         self.backtracks[: self.valid_size],
+        self.mode,
     )
 
 
@@ -659,14 +662,16 @@ def overload_sugg_construct(
     folds: np.ndarray,
     scores: np.ndarray,
     backtracks: np.ndarray,
+    mode: str,
 ) -> types.FunctionType:
     def impl(
         param_sets: np.ndarray,
         folds: np.ndarray,
         scores: np.ndarray,
         backtracks: np.ndarray,
+        mode: str,
     ) -> SuggestionStruct:
-        return suggestion_struct_init(param_sets, folds, scores, backtracks)
+        return suggestion_struct_init(param_sets, folds, scores, backtracks, mode)
 
     return impl
 
@@ -690,10 +695,10 @@ def ol_get_best_func(self: SuggestionStruct) -> types.FunctionType:
 @overload_method(SuggestionStructTemplate, "get_transformed")
 def ol_get_transformed_func(
     self: SuggestionStruct,
-    delta_t: float,
+    coord_mid: tuple[float, float],
 ) -> types.FunctionType:
-    def impl(self: SuggestionStruct, delta_t: float) -> np.ndarray:
-        return get_transformed_func(self, delta_t)
+    def impl(self: SuggestionStruct, coord_mid: tuple[float, float]) -> np.ndarray:
+        return get_transformed_func(self, coord_mid)
 
     return impl
 
@@ -793,18 +798,21 @@ def overload_sugg_construct_complex(
     folds: np.ndarray,
     scores: np.ndarray,
     backtracks: np.ndarray,
+    mode: str,
 ) -> types.FunctionType:
     def impl(
         param_sets: np.ndarray,
         folds: np.ndarray,
         scores: np.ndarray,
         backtracks: np.ndarray,
+        mode: str,
     ) -> SuggestionStructComplex:
         return suggestion_struct_complex_init(
             param_sets,
             folds,
             scores,
             backtracks,
+            mode,
         )
 
     return impl
@@ -834,10 +842,13 @@ def ol_get_best_func_complex(
 @overload_method(SuggestionStructComplexTemplate, "get_transformed")
 def ol_get_transformed_func_complex(
     self: SuggestionStructComplex,
-    delta_t: float,
+    coord_mid: tuple[float, float],
 ) -> types.FunctionType:
-    def impl(self: SuggestionStructComplex, delta_t: float) -> np.ndarray:
-        return get_transformed_func(self, delta_t)
+    def impl(
+        self: SuggestionStructComplex,
+        coord_mid: tuple[float, float],
+    ) -> np.ndarray:
+        return get_transformed_func(self, coord_mid)
 
     return impl
 
