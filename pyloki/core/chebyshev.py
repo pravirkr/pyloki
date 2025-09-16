@@ -790,7 +790,7 @@ def generate_bp_chebyshev(
         n_branches = np.ones(n_freqs, dtype=np.int64)
 
         # Vectorized branching decision
-        eps = 1e-6
+        eps = 1e-12
         needs_branching = shift_bins_batch >= (tol_bins - eps)
         too_large_step = dcheb_new_batch > (param_ranges + eps)
 
@@ -800,10 +800,8 @@ def generate_bp_chebyshev(
                 if not needs_branching[i, j] or too_large_step[i, j]:
                     dcheb_cur_next[i, j] = dcheb_cur_batch[i, j]
                     continue
-                num_points = max(
-                    1,
-                    int(np.ceil(dcheb_cur_batch[i, j] / dcheb_new_batch[i, j])),
-                )
+                ratio = (dcheb_cur_batch[i, j] + eps) / dcheb_new_batch[i, j]
+                num_points = max(1, int(np.ceil(ratio - eps)))
                 n_branches[i] *= num_points
                 dcheb_cur_next[i, j] = dcheb_cur_batch[i, j] / num_points
         # Compute average branching factor

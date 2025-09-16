@@ -108,8 +108,9 @@ class PruneStatsCollection:
         "resolve",
         "shift_add",
         "score",
-        "transform",
         "threshold",
+        "transform",
+        "batch_add",
     ]
 
     def __attrs_post_init__(self) -> None:
@@ -162,7 +163,12 @@ class PruneStatsCollection:
         }
         lines = [f"Timing breakdown: {total_time:.2f}s"]
         lines.extend(
-            f"  {name:10s}: {value:6.1f}%" for name, value in timer_percent.items()
+            f"  {name:10s}: {value:6.1f}%"
+            for name, value in sorted(
+                timer_percent.items(),
+                key=lambda x: x[1],
+                reverse=True,
+            )
         )
         return "\n".join(lines)
 

@@ -205,7 +205,7 @@ def pruning_iteration_batched(
     n_leaves_phy = 0
     score_min = np.inf
     score_max = -np.inf
-    timers = np.zeros(7, dtype=np.float32)
+    timers = np.zeros(8, dtype=np.float32)
     current_threshold = threshold
 
     n_branches = sugg.valid_size
@@ -276,7 +276,7 @@ def pruning_iteration_batched(
         passing_mask = batch_scores >= threshold
         num_passing = np.sum(passing_mask)
         if num_passing == 0:
-            timers[6] += nb_time_now() - t_start
+            timers[5] += nb_time_now() - t_start
             continue
 
         # Filter results needed for adding to sugg_new
@@ -284,7 +284,7 @@ def pruning_iteration_batched(
         filtered_leaves = batch_leaves[filtered_indices]
         filtered_scores = batch_scores[filtered_indices]
         filtered_combined_res = batch_combined_res[filtered_indices]
-        timers[6] += nb_time_now() - t_start  # Part of time for Threshold step
+        timers[5] += nb_time_now() - t_start  # Part of time for Threshold step
 
         # Transform & Backtrack
         t_start = nb_time_now()
@@ -293,7 +293,7 @@ def pruning_iteration_batched(
             coord_next,
             coord_cur,
         )
-        timers[5] += nb_time_now() - t_start
+        timers[6] += nb_time_now() - t_start
 
         # Construct Backtrack & Add to sugg_new
         t_start = nb_time_now()
@@ -310,7 +310,7 @@ def pruning_iteration_batched(
             batch_backtrack,
             current_threshold,
         )
-        timers[6] += nb_time_now() - t_start
+        timers[7] += nb_time_now() - t_start
 
     # Finalize
     sugg_new = sugg_new.trim_empty()
@@ -535,8 +535,8 @@ class Pruning:
                 self.pstats,
             )
         with log_file.open("a") as f:
-            f.write(f"Pruning complete for ref segment: {ref_seg}\n\n")
-            f.write(f"Time: {self.pstats.get_timer_summary()}\n")
+            f.write(f"Pruning run complete for ref segment: {ref_seg}\n")
+            f.write(f"Time: {self.pstats.get_timer_summary()}\n\n")
         self.logger.info(f"Pruning run complete for ref segment: {ref_seg}")
         self.logger.info(f"Pruning stats: {self.pstats.get_stats_summary()}")
         self.logger.info(f"Pruning time: {self.pstats.get_concise_timer_summary()}")

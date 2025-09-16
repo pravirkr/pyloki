@@ -279,8 +279,7 @@ def branch_param(
     """Refine a parameter range around a current value with a finer step size.
 
     This function creates a new array of parameter values centered on a specified
-    current value with a desired new step size. The new range is guaranteed to be
-    within the specified minimum and maximum parameter values.
+    current value with a desired new step size.
 
     Parameters
     ----------
@@ -305,21 +304,29 @@ def branch_param(
     ValueError
         If the input parameters are invalid.
     """
-    if dparam_cur <= 0 or dparam_new <= 0:
+    eps = 1e-12
+    if dparam_cur <= eps or dparam_new <= eps:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
-    if dparam_new > (param_max - param_min) / 2:
+    if param_max <= param_min + eps:
+        msg = "param_max must be greater than param_min."
+        raise ValueError(msg)
+    param_range = (param_max - param_min) / 2.0
+    if dparam_new > (param_range + eps):
         # If the desired new step size is too large, return the current value
         return np.array([param_cur]), dparam_new
-    n = 2 + int(np.ceil(dparam_cur / dparam_new))
-    if n < 3:
+    # Compute number of intervals with conservative ceil logic
+    num_points = int(np.ceil(((dparam_cur + eps) / dparam_new) - eps))
+    if num_points <= 0:
         msg = "Invalid input: ensure dparam_cur > dparam_new."
         raise ValueError(msg)
+    # Confidence-based symmetric range shrinkage
     # 0.5 < confidence_const < 1
-    confidence_const = 0.5 * (1 + 1 / (n - 2))
+    confidence_const = 0.5 * (1 + 1 / num_points)
     half_range = confidence_const * dparam_cur
+    n = num_points + 2  # Total number of points including outer ends
     param_arr_new = np.linspace(param_cur - half_range, param_cur + half_range, n)[1:-1]
-    dparam_new_actual = dparam_cur / (n - 2)
+    dparam_new_actual = dparam_cur / num_points
     return param_arr_new, dparam_new_actual
 
 
@@ -338,32 +345,33 @@ def branch_param_padded(
     if dparam_cur <= eps or dparam_new <= eps:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
-    param_range = (param_max - param_min) / 2
+    if param_max <= param_min + eps:
+        msg = "param_max must be greater than param_min."
+        raise ValueError(msg)
+
+    param_range = (param_max - param_min) / 2.0
     if dparam_new > (param_range + eps):
         # If the desired new step size is too large, return the current value
         out_values[0] = param_cur
-        dparam_new_actual = dparam_cur
-        return dparam_new_actual, 1
-    n = 2 + int(np.ceil(dparam_cur / dparam_new))
-    num_points = n - 2  # Actual number of branched points to generate
+        return dparam_new, 1
+    # Compute number of intervals with conservative ceil logic
+    num_points = int(np.ceil(((dparam_cur + eps) / dparam_new) - eps))
     if num_points <= 0:
         msg = "Invalid input: ensure dparam_cur > dparam_new."
         raise ValueError(msg)
-    # Calculate the actual branched values
+    # Confidence-based symmetric range shrinkage
     # 0.5 < confidence_const < 1
     confidence_const = 0.5 * (1 + 1 / num_points)
     half_range = confidence_const * dparam_cur
     start = param_cur - half_range
     stop = param_cur + half_range
-    num_intervals = n - 1
+    num_intervals = num_points + 1
     step = (stop - start) / num_intervals
 
     # Generate points and fill the start of the padded array
-    current_val = start + step
     count = min(num_points, len(out_values))
     for i in range(count):
-        out_values[i] = current_val
-        current_val += step
+        out_values[i] = start + (i + 1) * step
 
     # Calculate actual dparam based on generated points
     dparam_new_actual = dparam_cur / num_points
