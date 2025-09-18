@@ -8,7 +8,7 @@ from numba import njit, prange, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
-from pyloki.core import common, taylor
+from pyloki.core import common, fold
 from pyloki.utils.timing import Timer
 
 if TYPE_CHECKING:
@@ -181,7 +181,7 @@ def init_func(
     ts_v: np.ndarray,
     param_arr: types.ListType[types.Array],
 ) -> np.ndarray:
-    return taylor.ffa_taylor_init(
+    return fold.ffa_taylor_init(
         ts_e,
         ts_v,
         param_arr,
@@ -198,7 +198,7 @@ def init_complex_func(
     ts_v: np.ndarray,
     param_arr: types.ListType[types.Array],
 ) -> np.ndarray:
-    return taylor.ffa_taylor_init_complex(
+    return fold.ffa_taylor_init_complex(
         ts_e,
         ts_v,
         param_arr,
@@ -217,7 +217,7 @@ def resolve_func(
     latter: int,
 ) -> tuple[np.ndarray, float]:
     tseg_brute = self.bseg_brute * self.tsamp
-    return taylor.ffa_taylor_resolve(
+    return fold.ffa_taylor_resolve(
         pset_cur,
         parr_prev,
         ffa_level,

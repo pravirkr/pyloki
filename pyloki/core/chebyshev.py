@@ -658,10 +658,10 @@ def poly_chebyshev_transform_circular_batch(
 @njit(cache=True, fastmath=True)
 def generate_bp_chebyshev_approx(
     param_arr: types.ListType,
-    dparams: np.ndarray,
+    dparams_lim: np.ndarray,
     param_limits: types.ListType[types.Tuple[float, float]],
-    tchunk_ffa: float,
-    nstages: int,
+    tseg_ffa: float,
+    nsegments: int,
     fold_bins: int,
     tol_bins: float,
     ref_seg: int,
@@ -669,23 +669,24 @@ def generate_bp_chebyshev_approx(
     use_conservative_errors: bool = False,  # noqa: FBT002
 ) -> np.ndarray:
     """Generate the approximate branching pattern for the Taylor pruning search."""
-    poly_order = len(dparams)
+    poly_order = len(dparams_lim)
     branch_max = 256
     # Snail Scheme
-    scheme_data = np.argsort(np.abs(np.arange(nstages + 1) - ref_seg), kind="mergesort")
-    coord_init = (ref_seg + 0.5) * tchunk_ffa, tchunk_ffa / 2
-    leaf = poly_chebyshev_leaves(param_arr, dparams, poly_order, coord_init)[isuggest]
-    branching_pattern = []
-    for prune_level in range(1, nstages + 1):
+    scheme_data = np.argsort(np.abs(np.arange(nsegments) - ref_seg), kind="mergesort")
+    coord_init = (ref_seg + 0.5) * tseg_ffa, tseg_ffa / 2
+    leaves_init = poly_chebyshev_leaves(param_arr, dparams_lim, poly_order, coord_init)
+    leaf = leaves_init[isuggest]
+    branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
+    for prune_level in range(1, nsegments):
         # Compute coordinates
         scheme_till_now = scheme_data[: prune_level + 1]
         ref = (np.min(scheme_till_now) + np.max(scheme_till_now) + 1) / 2
         scale = ref - np.min(scheme_till_now)
-        coord_next = ref * tchunk_ffa, scale * tchunk_ffa
+        coord_next = ref * tseg_ffa, scale * tseg_ffa
         scheme_till_now_prev = scheme_data[:prune_level]
         ref_prev = (np.min(scheme_till_now_prev) + np.max(scheme_till_now_prev) + 1) / 2
         scale_prev = ref_prev - np.min(scheme_till_now_prev)
-        coord_prev = ref_prev * tchunk_ffa, scale_prev * tchunk_ffa
+        coord_prev = ref_prev * tseg_ffa, scale_prev * tseg_ffa
         coord_cur = coord_prev[0], coord_next[1]
         leaves_arr = poly_chebyshev_branch_batch(
             leaf[np.newaxis, :],
@@ -697,7 +698,7 @@ def generate_bp_chebyshev_approx(
             branch_max,
             use_conservative_errors,
         )
-        branching_pattern.append(len(leaves_arr))
+        branching_pattern[prune_level - 1] = len(leaves_arr)
         leaves_arr_trans = poly_chebyshev_transform_batch(
             leaves_arr,
             coord_next,
@@ -711,28 +712,28 @@ def generate_bp_chebyshev_approx(
 @njit(cache=True, fastmath=True)
 def generate_bp_chebyshev(
     param_arr: types.ListType,
-    dparams: np.ndarray,
+    dparams_lim: np.ndarray,
     param_limits: types.ListType[types.Tuple[float, float]],
-    tchunk_ffa: float,
-    nstages: int,
+    tseg_ffa: float,
+    nsegments: int,
     fold_bins: int,
     tol_bins: float,
     ref_seg: int,
     use_conservative_errors: bool = False,  # noqa: FBT002
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor pruning search."""
-    poly_order = len(dparams)
+    poly_order = len(dparams_lim)
     f0_batch = param_arr[-1]
     n_freqs = len(f0_batch)
 
     # Snail Scheme
-    scheme_data = np.argsort(np.abs(np.arange(nstages + 1) - ref_seg), kind="mergesort")
-    coord_init = (ref_seg + 0.5) * tchunk_ffa, tchunk_ffa / 2
-    branching_pattern = np.empty(nstages, dtype=np.float64)
+    scheme_data = np.argsort(np.abs(np.arange(nsegments) - ref_seg), kind="mergesort")
+    coord_init = (ref_seg + 0.5) * tseg_ffa, tseg_ffa / 2
+    branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
     # Keep poly_order+1 for d0
     dparam_cur_batch = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
     for i in range(n_freqs):
-        dparam_cur_batch[i, :-1] = dparams
+        dparam_cur_batch[i, :-1] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -2] = dparam_cur_batch[:, -2] * (C_VAL / f0_batch)
     dcheb_cur_batch = transforms.taylor_to_cheby_errors(
@@ -747,16 +748,16 @@ def generate_bp_chebyshev(
     param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
     param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
 
-    for prune_level in range(1, nstages + 1):
+    for prune_level in range(1, nsegments):
         # Compute coordinates
         scheme_till_now = scheme_data[: prune_level + 1]
         ref = (np.min(scheme_till_now) + np.max(scheme_till_now) + 1) / 2
         scale = ref - np.min(scheme_till_now)
-        coord_next = ref * tchunk_ffa, scale * tchunk_ffa
+        coord_next = ref * tseg_ffa, scale * tseg_ffa
         scheme_till_now_prev = scheme_data[:prune_level]
         ref_prev = (np.min(scheme_till_now_prev) + np.max(scheme_till_now_prev) + 1) / 2
         scale_prev = ref_prev - np.min(scheme_till_now_prev)
-        coord_prev = ref_prev * tchunk_ffa, scale_prev * tchunk_ffa
+        coord_prev = ref_prev * tseg_ffa, scale_prev * tseg_ffa
         coord_cur = coord_prev[0], coord_next[1]
 
         # Transform dparams to the current segment

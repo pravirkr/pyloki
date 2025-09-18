@@ -4,153 +4,10 @@ import numpy as np
 from numba import njit, typed, types
 
 from pyloki.core.common import get_leaves
-from pyloki.core.fold import brutefold_start, brutefold_start_complex
 from pyloki.detection.scoring import snr_score_func, snr_score_func_complex
 from pyloki.utils import maths, np_utils, psr_utils, transforms
 from pyloki.utils.misc import C_VAL
 from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
-
-
-@njit(cache=True, fastmath=True)
-def ffa_taylor_init(
-    ts_e: np.ndarray,
-    ts_v: np.ndarray,
-    param_arr: types.ListType[types.Array],
-    bseg_brute: int,
-    fold_bins: int,
-    tsamp: float,
-) -> np.ndarray:
-    """Initialize the fold for the FFA search.
-
-    Parameters
-    ----------
-    ts_e : np.ndarray
-        Time series intensity (signal weighted by E/V).
-    ts_v : np.ndarray
-        Time series variance (E**2/V).
-    param_arr : types.ListType[types.Array]
-        Parameter grid array for each search parameter dimension.
-    bseg_brute : int
-        Brute force segment size in bins.
-    fold_bins : int
-        Number of bins in the folded profile.
-    tsamp : float
-        Sampling time of the data.
-
-    Returns
-    -------
-    np.ndarray
-        Initial fold for the FFA search.
-    """
-    freq_arr = param_arr[-1]
-    nparams = len(param_arr)
-    t_ref = 0 if nparams == 1 else bseg_brute * tsamp / 2
-    return brutefold_start(
-        ts_e,
-        ts_v,
-        freq_arr,
-        bseg_brute,
-        fold_bins,
-        tsamp,
-        t_ref,
-    )
-
-
-@njit(cache=True, fastmath=True)
-def ffa_taylor_init_complex(
-    ts_e: np.ndarray,
-    ts_v: np.ndarray,
-    param_arr: types.ListType[types.Array],
-    bseg_brute: int,
-    fold_bins: int,
-    tsamp: float,
-) -> np.ndarray:
-    """Initialize the fold for the FFA search (complex-domain).
-
-    Parameters
-    ----------
-    ts_e : np.ndarray
-        Time series intensity (signal weighted by E/V).
-    ts_v : np.ndarray
-        Time series variance (E**2/V).
-    param_arr : types.ListType[types.Array]
-        Parameter grid array for each search parameter dimension.
-    bseg_brute : int
-        Brute force segment size in bins.
-    fold_bins : int
-        Number of bins in the folded profile.
-    tsamp : float
-        Sampling time of the data.
-
-    Returns
-    -------
-    np.ndarray
-        Initial fold for the FFA search.
-    """
-    freq_arr = param_arr[-1]
-    nparams = len(param_arr)
-    t_ref = 0 if nparams == 1 else bseg_brute * tsamp / 2
-    return brutefold_start_complex(
-        ts_e,
-        ts_v,
-        freq_arr,
-        bseg_brute,
-        fold_bins,
-        tsamp,
-        t_ref,
-    )
-
-
-@njit(cache=True, fastmath=True)
-def ffa_taylor_resolve(
-    pset_cur: np.ndarray,
-    param_arr: types.ListType[types.Array],
-    ffa_level: int,
-    latter: int,
-    tseg_brute: float,
-    fold_bins: int,
-) -> tuple[np.ndarray, float]:
-    """Resolve the params to find the closest index in grid and absolute phase shift.
-
-    Parameters
-    ----------
-    pset_cur : np.ndarray
-        The current iter parameter set to resolve.
-    param_arr : types.ListType[types.Array]
-        Parameter grid array for the previous iteration (ffa_level - 1).
-    ffa_level : int
-        Current FFA level (same level as pset_cur).
-    latter : int
-        Switch for the two halves of the previous iteration segments (0 or 1).
-    tseg_brute : float
-        Duration of the brute force segment.
-    fold_bins : int
-        Number of bins in the folded profile.
-
-    Returns
-    -------
-    tuple[np.ndarray, float]
-        The resolved parameter index in the ``param_arr`` and the relative phase shift.
-
-    phase_shift is complete phase shift with fractional part.
-
-    Notes
-    -----
-    delta_t is the time difference between the reference time of the current segment
-    (0) and the reference time of the previous segment.
-    """
-    nparams = len(pset_cur)
-    if nparams == 1:
-        delta_t = latter * 2 ** (ffa_level - 1) * tseg_brute
-        pset_new, delay = pset_cur, 0
-    else:
-        delta_t = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
-        pset_new, delay = transforms.shift_taylor_params_d_f(pset_cur, delta_t)
-    relative_phase = psr_utils.get_phase_idx(delta_t, pset_cur[-1], fold_bins, delay)
-    pindex_prev = np.zeros(nparams, dtype=np.int64)
-    for ip in range(nparams):
-        pindex_prev[ip] = np_utils.find_nearest_sorted_idx(param_arr[ip], pset_new[ip])
-    return pindex_prev, relative_phase
 
 
 @njit(cache=True, fastmath=True)
@@ -804,10 +661,10 @@ def poly_taylor_transform_circular_batch(
 @njit(cache=True, fastmath=True)
 def generate_bp_taylor_approx(
     param_arr: types.ListType,
-    dparams: np.ndarray,
+    dparams_lim: np.ndarray,
     param_limits: types.ListType[types.Tuple[float, float]],
-    tchunk_ffa: float,
-    nstages: int,
+    tseg_ffa: float,
+    nsegments: int,
     fold_bins: int,
     tol_bins: float,
     ref_seg: int,
@@ -815,22 +672,22 @@ def generate_bp_taylor_approx(
     use_conservative_errors: bool = False,  # noqa: FBT002
 ) -> np.ndarray:
     """Generate the approximate branching pattern for the Taylor pruning search."""
-    poly_order = len(dparams)
+    poly_order = len(dparams_lim)
     # Snail Scheme
-    scheme_data = np.argsort(np.abs(np.arange(nstages + 1) - ref_seg), kind="mergesort")
-    coord_init = (ref_seg + 0.5) * tchunk_ffa, tchunk_ffa / 2
-    leaf = poly_taylor_leaves(param_arr, dparams, poly_order, coord_init)[isuggest]
-    branching_pattern = []
-    for prune_level in range(1, nstages + 1):
+    scheme_data = np.argsort(np.abs(np.arange(nsegments) - ref_seg), kind="mergesort")
+    coord_init = (ref_seg + 0.5) * tseg_ffa, tseg_ffa / 2
+    leaf = poly_taylor_leaves(param_arr, dparams_lim, poly_order, coord_init)[isuggest]
+    branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
+    for prune_level in range(1, nsegments):
         # Compute coordinates
         scheme_till_now = scheme_data[: prune_level + 1]
         ref = (np.min(scheme_till_now) + np.max(scheme_till_now) + 1) / 2
         scale = ref - np.min(scheme_till_now)
-        coord_next = ref * tchunk_ffa, scale * tchunk_ffa
+        coord_next = ref * tseg_ffa, scale * tseg_ffa
         scheme_till_now_prev = scheme_data[:prune_level]
         ref_prev = (np.min(scheme_till_now_prev) + np.max(scheme_till_now_prev) + 1) / 2
         scale_prev = ref_prev - np.min(scheme_till_now_prev)
-        coord_prev = ref_prev * tchunk_ffa, scale_prev * tchunk_ffa
+        coord_prev = ref_prev * tseg_ffa, scale_prev * tseg_ffa
         coord_cur = coord_prev[0], coord_next[1]
         leaves_arr = poly_taylor_branch(
             leaf,
@@ -840,7 +697,7 @@ def generate_bp_taylor_approx(
             poly_order,
             param_limits,
         )
-        branching_pattern.append(len(leaves_arr))
+        branching_pattern[prune_level - 1] = len(leaves_arr)
         leaves_arr_trans = poly_taylor_transform_batch(
             leaves_arr,
             coord_next,
@@ -854,27 +711,27 @@ def generate_bp_taylor_approx(
 @njit(cache=True, fastmath=True)
 def generate_bp_taylor(
     param_arr: types.ListType,
-    dparams: np.ndarray,
+    dparams_lim: np.ndarray,
     param_limits: types.ListType[types.Tuple[float, float]],
-    tchunk_ffa: float,
-    nstages: int,
+    tseg_ffa: float,
+    nsegments: int,
     fold_bins: int,
     tol_bins: float,
     ref_seg: int,
     use_conservative_errors: bool = False,  # noqa: FBT002
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor pruning search."""
-    poly_order = len(dparams)
+    poly_order = len(dparams_lim)
     f0_batch = param_arr[-1]
     n_freqs = len(f0_batch)
 
     # Snail Scheme
-    scheme_data = np.argsort(np.abs(np.arange(nstages + 1) - ref_seg), kind="mergesort")
-    branching_pattern = np.empty(nstages, dtype=np.float64)
+    scheme_data = np.argsort(np.abs(np.arange(nsegments) - ref_seg), kind="mergesort")
+    branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
     dparam_cur_batch = np.empty((n_freqs, poly_order), dtype=np.float64)
     for i in range(n_freqs):
-        dparam_cur_batch[i] = dparams
+        dparam_cur_batch[i] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -1] = dparam_cur_batch[:, -1] * (C_VAL / f0_batch)
 
@@ -886,16 +743,16 @@ def generate_bp_taylor(
     param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
     param_ranges = (param_limits_d[:, :, 1] - param_limits_d[:, :, 0]) / 2
 
-    for prune_level in range(1, nstages + 1):
+    for prune_level in range(1, nsegments):
         # Compute coordinates
         scheme_till_now = scheme_data[: prune_level + 1]
         ref = (np.min(scheme_till_now) + np.max(scheme_till_now) + 1) / 2
         scale = ref - np.min(scheme_till_now)
-        coord_next = ref * tchunk_ffa, scale * tchunk_ffa
+        coord_next = ref * tseg_ffa, scale * tseg_ffa
         scheme_till_now_prev = scheme_data[:prune_level]
         ref_prev = (np.min(scheme_till_now_prev) + np.max(scheme_till_now_prev) + 1) / 2
         scale_prev = ref_prev - np.min(scheme_till_now_prev)
-        coord_prev = ref_prev * tchunk_ffa, scale_prev * tchunk_ffa
+        coord_prev = ref_prev * tseg_ffa, scale_prev * tseg_ffa
         coord_cur = coord_prev[0], coord_next[1]
         _, t_obs_minus_t_ref = coord_cur
         dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
@@ -955,17 +812,17 @@ def generate_bp_taylor(
 @njit(cache=True, fastmath=True)
 def generate_bp_taylor_circular(
     param_arr: types.ListType,
-    dparams: np.ndarray,
+    dparams_lim: np.ndarray,
     param_limits: types.ListType[types.Tuple[float, float]],
-    tchunk_ffa: float,
-    nstages: int,
+    tseg_ffa: float,
+    nsegments: int,
     fold_bins: int,
     tol_bins: float,
     ref_seg: int,
     use_conservative_errors: bool = False,  # noqa: FBT002
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor circular pruning search."""
-    poly_order = len(dparams)
+    poly_order = len(dparams_lim)
     if poly_order != 4:
         msg = "Circular branching pattern requires exactly 4 parameters."
         raise ValueError(msg)
@@ -974,12 +831,12 @@ def generate_bp_taylor_circular(
     n_freqs = len(f0_batch)
 
     # Snail Scheme
-    scheme_data = np.argsort(np.abs(np.arange(nstages + 1) - ref_seg), kind="mergesort")
-    branching_pattern = np.empty(nstages, dtype=np.float64)
+    scheme_data = np.argsort(np.abs(np.arange(nsegments) - ref_seg), kind="mergesort")
+    branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
     dparam_cur_batch = np.empty((n_freqs, poly_order), dtype=np.float64)
     for i in range(n_freqs):
-        dparam_cur_batch[i] = dparams
+        dparam_cur_batch[i] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -1] = dparam_cur_batch[:, -1] * (C_VAL / f0_batch)
 
@@ -993,16 +850,16 @@ def generate_bp_taylor_circular(
 
     # Track when first snap branching occurs for each frequency
     snap_first_branched = np.zeros(n_freqs, dtype=np.bool_)
-    for prune_level in range(1, nstages + 1):
+    for prune_level in range(1, nsegments):
         # Compute coordinates
         scheme_till_now = scheme_data[: prune_level + 1]
         ref = (np.min(scheme_till_now) + np.max(scheme_till_now) + 1) / 2
         scale = ref - np.min(scheme_till_now)
-        coord_next = ref * tchunk_ffa, scale * tchunk_ffa
+        coord_next = ref * tseg_ffa, scale * tseg_ffa
         scheme_till_now_prev = scheme_data[:prune_level]
         ref_prev = (np.min(scheme_till_now_prev) + np.max(scheme_till_now_prev) + 1) / 2
         scale_prev = ref_prev - np.min(scheme_till_now_prev)
-        coord_prev = ref_prev * tchunk_ffa, scale_prev * tchunk_ffa
+        coord_prev = ref_prev * tseg_ffa, scale_prev * tseg_ffa
         coord_cur = coord_prev[0], coord_next[1]
         _, t_obs_minus_t_ref = coord_cur
         dparam_new_batch = psr_utils.poly_taylor_step_d_vec(

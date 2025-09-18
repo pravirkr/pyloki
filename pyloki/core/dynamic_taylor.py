@@ -70,8 +70,9 @@ class PruneTaylorDPFuncts(structref.StructRefProxy):
         leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
+        coord_cur_fixed: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_cur, coord_prev)
+        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
 
     def suggest(
         self,
@@ -173,8 +174,9 @@ class PruneTaylorComplexDPFuncts(structref.StructRefProxy):
         leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
+        coord_cur_fixed: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_cur, coord_prev)
+        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
 
     def suggest(
         self,
@@ -365,6 +367,7 @@ def branch_func(
     leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
+    coord_cur_fixed: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     return taylor.poly_taylor_branch_batch(
         leaves_batch,
@@ -546,16 +549,18 @@ def ol_resolve_func(
 def ol_branch_func(
     self: PruneTaylorDPFuncts,
     leaves_batch: np.ndarray,
-    coord_next: tuple[float, float],
+    coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
+    coord_cur_fixed: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneTaylorDPFuncts,
         leaves_batch: np.ndarray,
-        coord_next: tuple[float, float],
+        coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
+        coord_cur_fixed: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_next, coord_prev)
+        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
 
     return impl
 
@@ -724,16 +729,18 @@ def ol_resolve_complex_func(
 def ol_branch_complex_func(
     self: PruneTaylorComplexDPFuncts,
     leaves_batch: np.ndarray,
-    coord_next: tuple[float, float],
+    coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
+    coord_cur_fixed: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneTaylorComplexDPFuncts,
         leaves_batch: np.ndarray,
-        coord_next: tuple[float, float],
+        coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
+        coord_cur_fixed: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_next, coord_prev)
+        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
 
     return impl
 

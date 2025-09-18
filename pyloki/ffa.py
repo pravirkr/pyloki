@@ -11,7 +11,7 @@ from pyloki.core import (
     set_ffa_load_func,
     unify_fold,
 )
-from pyloki.core.taylor import ffa_taylor_resolve
+from pyloki.core.fold import ffa_taylor_resolve
 from pyloki.utils import np_utils
 from pyloki.utils.misc import (
     PicklableStructRefWrapper,

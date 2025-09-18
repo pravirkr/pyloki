@@ -113,6 +113,124 @@ def shift_taylor_params_d_f(
 
 
 @njit(cache=True, fastmath=True)
+def shift_taylor_params_d_f_batch(
+    param_vec_batch: np.ndarray,
+    delta_t: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Batch version of shift_taylor_params_d_f."""
+    n_batch, nparams = param_vec_batch.shape
+    taylor_param_vec = np.zeros((n_batch, nparams + 1), dtype=param_vec_batch.dtype)
+    taylor_param_vec[:, :-2] = param_vec_batch[:, :-1]  # till acceleration
+    taylor_param_vec_new = shift_taylor_params(taylor_param_vec, delta_t)
+    param_vec_new = param_vec_batch.copy()
+    param_vec_new[:, :-1] = taylor_param_vec_new[:, :-2]
+    param_vec_new[:, -1] = param_vec_batch[:, -1] * (
+        1 - taylor_param_vec_new[:, -2] / C_VAL
+    )
+    delay_rel = taylor_param_vec_new[:, -1] / C_VAL
+    return param_vec_new, delay_rel
+
+
+@njit(cache=True, fastmath=True)
+def taylor_fixed_report_batch(
+    leaves_batch: np.ndarray,
+    delta_t: float,
+) -> np.ndarray:
+    """Specialized version of shift_taylor_params_d_f_batch for final report."""
+    param_vec_batch = leaves_batch[:, :-2]
+    n_batch, nparams, _ = param_vec_batch.shape
+    taylor_param_vec = np.zeros((n_batch, nparams + 1), dtype=param_vec_batch.dtype)
+    taylor_param_vec[:, :-2] = param_vec_batch[:, :-1, 0]  # till acceleration
+    taylor_param_vec_new = shift_taylor_params(taylor_param_vec, delta_t)
+    s_factor = 1 - taylor_param_vec_new[:, -2] / C_VAL
+    param_vec_new = param_vec_batch.copy()
+    param_vec_new[:, :-1, 0] = taylor_param_vec_new[:, :-2] / s_factor[:, None]
+    param_vec_new[:, -1, 0] = param_vec_batch[:, -1, 0] * s_factor
+    return param_vec_new
+
+
+@njit(cache=True, fastmath=True)
+def shift_taylor_params_circular_d_f_batch(
+    param_vec_batch: np.ndarray,
+    delta_t: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Specialized version of shift_taylor_params_circular_batch for d_f basis."""
+    n_batch, nparams = param_vec_batch.shape
+    if nparams != 4:
+        msg = "4 parameters are needed for circular orbit propagation."
+        raise ValueError(msg)
+    s_i = param_vec_batch[:, 0]
+    j_i = param_vec_batch[:, 1]
+    a_i = param_vec_batch[:, 2]
+    f_i = param_vec_batch[:, 3]
+
+    omega_orb_sq = -s_i / a_i
+    omega_orb = np.sqrt(omega_orb_sq)
+    # Evolve the phase to the new time t_j = t_i + delta_t
+    omega_dt = omega_orb * delta_t
+    cos_odt = np.cos(omega_dt)
+    sin_odt = np.sin(omega_dt)
+    # Pin-down {s, j, a}
+    a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
+    j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
+    s_j = -omega_orb_sq * a_j
+    # Integrate to get {v, d}
+    v_circ_i = -j_i / omega_orb_sq
+    v_circ_j = -j_j / omega_orb_sq
+    delta_v = v_circ_j - v_circ_i
+    d_circ_j = -a_j / omega_orb_sq
+    d_circ_i = -a_i / omega_orb_sq
+    delta_d = d_circ_j - d_circ_i + (0 - v_circ_i) * delta_t
+    delay_rel = delta_d / C_VAL
+    f_j = f_i * (1 - delta_v / C_VAL)
+    out = np.empty((n_batch, 5), dtype=param_vec_batch.dtype)
+    out[:, 0] = s_j
+    out[:, 1] = j_j
+    out[:, 2] = a_j
+    out[:, 3] = f_j
+    return out, delay_rel
+
+
+@njit(cache=True, fastmath=True)
+def taylor_fixed_circular_report_batch(
+    leaves_batch: np.ndarray,
+    delta_t: float,
+) -> np.ndarray:
+    """Specialized version of shift_taylor_params_circular_d_f_batch for report."""
+    param_vec_batch = leaves_batch[:, :-2]
+    _, nparams, _ = param_vec_batch.shape
+    if nparams != 4:
+        msg = "4 parameters are needed for circular orbit propagation."
+        raise ValueError(msg)
+    s_i = param_vec_batch[:, 0, 0]
+    j_i = param_vec_batch[:, 1, 0]
+    a_i = param_vec_batch[:, 2, 0]
+    f_i = param_vec_batch[:, 3, 0]
+
+    omega_orb_sq = -s_i / a_i
+    omega_orb = np.sqrt(omega_orb_sq)
+    # Evolve the phase to the new time t_j = t_i + delta_t
+    omega_dt = omega_orb * delta_t
+    cos_odt = np.cos(omega_dt)
+    sin_odt = np.sin(omega_dt)
+    # Pin-down {s, j, a}
+    a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
+    j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
+    s_j = -omega_orb_sq * a_j
+    # Integrate to get {v, d}
+    v_circ_i = -j_i / omega_orb_sq
+    v_circ_j = -j_j / omega_orb_sq
+    delta_v = v_circ_j - v_circ_i
+    s_factor = 1 - delta_v / C_VAL
+    out = param_vec_batch.copy()
+    out[:, 0, 0] = s_j / s_factor[:, None]
+    out[:, 1, 0] = j_j / s_factor[:, None]
+    out[:, 2, 0] = a_j / s_factor[:, None]
+    out[:, 3, 0] = f_i * s_factor
+    return out
+
+
+@njit(cache=True, fastmath=True)
 def taylor_to_circular_full(param_sets: np.ndarray) -> np.ndarray:
     """Transform the kinematic Taylor coefficients to circular orbit parameters.
 
@@ -737,3 +855,51 @@ def cheby_to_taylor_param_shift(
     alpha_standard_t0 = np.ascontiguousarray(alpha_param_vec[..., ::-1])
     alpha_standard_t_eval = alpha_standard_t0 @ c_mat
     return cheby_to_taylor(alpha_standard_t_eval[..., ::-1], ts)
+
+
+@njit(cache=True, fastmath=True)
+def taylor_report_batch(leaves_batch: np.ndarray) -> np.ndarray:
+    param_sets_batch = leaves_batch[:, :-2, :]
+    v_final = leaves_batch[:, -3, 0]
+    dv_final = leaves_batch[:, -3, 1]
+    f0_batch = leaves_batch[:, -1, 0]
+    s_factor = 1 - v_final / C_VAL
+    # Gauge transform + error propagation
+    param_sets_vals = param_sets_batch[:, :-1, 0]
+    param_sets_sigs = param_sets_batch[:, :-1, 1]
+    param_sets_batch[:, :-1, 0] = param_sets_vals / s_factor[:, None]
+    param_sets_batch[:, :-1, 1] = np.sqrt(
+        (param_sets_sigs / s_factor[:, None]) ** 2
+        + ((param_sets_vals / (C_VAL * s_factor[:, None] ** 2)) ** 2)
+        * (dv_final[:, None] ** 2),
+    )
+    param_sets_batch[:, -1, 0] = f0_batch * s_factor
+    param_sets_batch[:, -1, 1] = f0_batch * dv_final / C_VAL
+    return param_sets_batch
+
+
+@njit(cache=True, fastmath=True)
+def chebyshev_report_batch(
+    leaves_batch: np.ndarray,
+    coord_mid: tuple[float, float],
+) -> np.ndarray:
+    cheby_coeffs_batch = leaves_batch[:, :-1, :]
+    f0_batch = leaves_batch[:, -1, 0]
+    _, scale = coord_mid
+    param_sets_batch_d = cheby_to_taylor_full(cheby_coeffs_batch, scale)
+    param_sets_batch = param_sets_batch_d[:, :-1]
+    v_final = param_sets_batch[:, -1, 0]
+    dv_final = param_sets_batch[:, -1, 1]
+    s_factor = 1 - v_final / C_VAL
+    # Gauge transform + error propagation
+    param_sets_vals = param_sets_batch[:, :-1, 0]
+    param_sets_sigs = param_sets_batch[:, :-1, 1]
+    param_sets_batch[:, :-1, 0] = param_sets_vals / s_factor[:, None]
+    param_sets_batch[:, :-1, 1] = np.sqrt(
+        (param_sets_sigs / s_factor[:, None]) ** 2
+        + ((param_sets_vals / (C_VAL * s_factor[:, None] ** 2)) ** 2)
+        * (dv_final[:, None] ** 2),
+    )
+    param_sets_batch[:, -1, 0] = f0_batch * s_factor
+    param_sets_batch[:, -1, 1] = f0_batch * dv_final / C_VAL
+    return param_sets_batch

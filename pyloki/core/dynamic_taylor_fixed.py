@@ -8,8 +8,7 @@ from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
-from pyloki.core import chebyshev as cheby
-from pyloki.core import common
+from pyloki.core import common, taylor, taylor_fixed
 from pyloki.detection import scoring
 
 if TYPE_CHECKING:
@@ -20,25 +19,25 @@ if TYPE_CHECKING:
 
 
 @structref.register
-class PruneChebyshevDPFunctsTemplate(types.StructRef):
+class PruneTaylorFixedDPFunctsTemplate(types.StructRef):
     pass
 
 
 @structref.register
-class PruneChebyshevComplexDPFunctsTemplate(types.StructRef):
+class PruneTaylorFixedComplexDPFunctsTemplate(types.StructRef):
     pass
 
 
-class PruneChebyshevDPFuncts(structref.StructRefProxy):
+class PruneTaylorFixedDPFuncts(structref.StructRefProxy):
     def __new__(
         cls,
-        param_arr: types.ListType[types.Array],
+        param_arr: list[np.ndarray],
         dparams: np.ndarray,
         tseg_ffa: float,
         cfg: PulsarSearchConfig,
     ) -> Self:
-        """Create a new instance of PruneChebyshevDPFuncts."""
-        return prune_chebyshev_dp_functs_init(
+        """Create a new instance of PruneTaylorFixedDPFuncts."""
+        return prune_taylor_dp_functs_init(
             param_arr,
             dparams,
             tseg_ffa,
@@ -55,31 +54,6 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
-        """Load the data for the given segment index from the folded data structure.
-
-        Parameters
-        ----------
-        fold : np.ndarray
-            The folded data structure to load from.
-        seg_idx : int
-            Segment index to load from the fold.
-
-        Returns
-        -------
-        np.ndarray
-            The data for the given index.
-
-        Notes
-        -----
-        Future implementations may include:
-        - Simply accessing the data from the fold.
-        - Calibration (RFI removal + fold_e, fold_v generation) of the data structure.
-        - Compute the data structure live (using dynamic programming).
-        - Save the calculated data structure to prevent excessive computation.
-        - Remove pulsars with known ephemeris to keep the suggestion counts low.
-        - Implement it as a class, and pass its loading function here.
-
-        """
         return load_func(self, fold, seg_idx)
 
     def resolve(
@@ -89,24 +63,6 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         coord_cur: tuple[float, float],
         coord_init: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Resolve the leaf parameters to find the closest param index and phase shift.
-
-        Parameters
-        ----------
-        leaves_batch : np.ndarray
-            Current leaf parameter set.
-        coord_add : tuple[float, float]
-            Time coordinate of the added segment.
-        coord_cur : tuple[float, float]
-            Time coordinate of the current segment.
-        coord_init : tuple[float, float]
-            Time coordinate of the starting segment.
-
-        Returns
-        -------
-        tuple[np.ndarray, int]
-            The resolved parameter index and the relative phase shift.
-        """
         return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
     def branch(
@@ -116,24 +72,6 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         coord_prev: tuple[float, float],
         coord_cur_fixed: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Branch the current parameter set into the finer grid of parameters (leaves).
-
-        Parameters
-        ----------
-        leaves_batch : np.ndarray
-            The current parameter set to branch.
-        coord_cur : tuple[float, float]
-            The current coordinate.
-        coord_prev : tuple[float, float]
-            The previous coordinate.
-        coord_cur_fixed : tuple[float, float]
-            The current coordinate fixed.
-
-        Returns
-        -------
-        np.ndarray
-            The branched parameter set.
-        """
         return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
 
     def suggest(
@@ -141,40 +79,9 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
     ) -> SuggestionStruct:
-        """Generate an initial suggestion struct for the starting segment.
-
-        Parameters
-        ----------
-        fold_segment : np.ndarray
-            The folded data segment to generate the suggestion for.
-        coord_init : tuple[float, float]
-            The coordinate of the starting segment.
-
-        Returns
-        -------
-        common.SuggestionStruct
-            The initial suggestion struct for the segment.
-        """
         return suggest_func(self, fold_segment, coord_init)
 
     def score(self, combined_res_batch: np.ndarray) -> np.ndarray:
-        """Calculate the statistical detection score of the combined fold.
-
-        Parameters
-        ----------
-        combined_res_batch : np.ndarray
-            The combined fold to calculate the score for (fold_e, fold_v).
-
-        Returns
-        -------
-        float
-            The statistical detection score of the combined fold.
-
-        Notes
-        -----
-        - Score units should be log(P(D|pulsar(theta)) / P(D|noise)).
-        - Maybe use it to keep track of a family of scores (profile width, etc).
-        """
         return score_func(self, combined_res_batch)
 
     def pack(self, data: np.ndarray) -> np.ndarray:
@@ -201,31 +108,14 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         coord_next: tuple[float, float],
         coord_cur: tuple[float, float],
     ) -> np.ndarray:
-        """Transform the leaf parameters to the new coordinate system.
-
-        Parameters
-        ----------
-        leaves_batch : np.ndarray
-            Current leaf parameter set.
-        coord_next : tuple[float, float]
-            The new coordinate to transform the leaf to.
-        coord_cur : tuple[float, float]
-            The current coordinate.
-
-        Returns
-        -------
-        np.ndarray
-            The transformed leaf parameter set.
-        """
         return transform_func(self, leaves_batch, coord_next, coord_cur)
 
     def get_transform_matrix(
         self,
-        coord_cur: tuple[float, float],
+        coord_next: tuple[float, float],
         coord_prev: tuple[float, float],
     ) -> np.ndarray:
-        """Get the transformation matrix between two coordinate systems."""
-        return get_transform_matrix_func(self, coord_cur, coord_prev)
+        return get_transform_matrix_func(self, coord_next, coord_prev)
 
     def validate(
         self,
@@ -233,58 +123,25 @@ class PruneChebyshevDPFuncts(structref.StructRefProxy):
         leaves_origins: np.ndarray,
         coord_cur: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Validate which of the leaves are physical.
-
-        Parameters
-        ----------
-        leaves : np.ndarray
-            Set of leaves (parameter sets) to validate.
-        coord_cur : tuple[float, float]
-            The current coordinate.
-
-        Returns
-        -------
-        np.ndarray
-            Boolean mask indicating which of the leaves are physical.
-
-        Notes
-        -----
-        - The validation_params are pre-computed to reduce computation.
-        - This function should filter out leafs with unphysical derivatives.
-        - pruning scans only functions that are physical at position (t/2).
-        But same bounds apply everywhere.
-        """
         return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     def get_validation_params(
         self,
         coord_add: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray, float]:
-        """Prepare the validation parameters for the epicyclic validation.
-
-        Parameters
-        ----------
-        coord_add : float
-            The Chebyshev time to prepare the validation parameters for.
-
-        Returns
-        -------
-        tuple[np.ndarray, np.ndarray, float]
-            The validation parameters for the epicyclic validation.
-        """
         return get_validation_params_func(self, coord_add)
 
 
-class PruneChebyshevComplexDPFuncts(structref.StructRefProxy):
+class PruneTaylorFixedComplexDPFuncts(structref.StructRefProxy):
     def __new__(
         cls,
-        param_arr: types.ListType[types.Array],
+        param_arr: list[np.ndarray],
         dparams: np.ndarray,
         tseg_ffa: float,
         cfg: PulsarSearchConfig,
     ) -> Self:
-        """Create a new instance of PruneChebyshevComplexDPFuncts."""
-        return prune_chebyshev_complex_dp_functs_init(
+        """Create a new instance of PruneTaylorFixedComplexDPFuncts."""
+        return prune_taylor_complex_dp_functs_init(
             param_arr,
             dparams,
             tseg_ffa,
@@ -328,8 +185,8 @@ class PruneChebyshevComplexDPFuncts(structref.StructRefProxy):
     ) -> SuggestionStructComplex:
         return suggest_complex_func(self, fold_segment, coord_init)
 
-    def score(self, combined_res_batch: np.ndarray) -> np.ndarray:
-        return score_complex_func(self, combined_res_batch)
+    def score(self, batch_combined_res: np.ndarray) -> np.ndarray:
+        return score_complex_func(self, batch_combined_res)
 
     def pack(self, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
@@ -359,11 +216,10 @@ class PruneChebyshevComplexDPFuncts(structref.StructRefProxy):
 
     def get_transform_matrix(
         self,
-        coord_cur: tuple[float, float],
+        coord_next: tuple[float, float],
         coord_prev: tuple[float, float],
     ) -> np.ndarray:
-        """Get the transformation matrix between two coordinate systems."""
-        return get_transform_matrix_func(self, coord_cur, coord_prev)
+        return get_transform_matrix_func(self, coord_next, coord_prev)
 
     def validate(
         self,
@@ -380,7 +236,7 @@ class PruneChebyshevComplexDPFuncts(structref.StructRefProxy):
         return get_validation_params_func(self, coord_add)
 
 
-fields_prune_chebyshev_dp_funcs = [
+fields_prune_taylor_dp_funcs = [
     ("param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
     ("dparams", types.f8[:]),
     ("tseg_ffa", types.f8),
@@ -393,25 +249,25 @@ fields_prune_chebyshev_dp_funcs = [
     ("poly_order", types.i8),
     ("branch_max", types.i8),
     ("snap_threshold", types.f8),
-    ("conservative_errors", types.bool_),
+    ("grid_conservative", types.bool_),
 ]
 
-structref.define_boxing(PruneChebyshevDPFunctsTemplate, PruneChebyshevDPFuncts)
-PruneChebyshevDPFunctsType = PruneChebyshevDPFunctsTemplate(
-    fields_prune_chebyshev_dp_funcs,
+structref.define_boxing(PruneTaylorFixedDPFunctsTemplate, PruneTaylorFixedDPFuncts)
+PruneTaylorFixedDPFunctsType = PruneTaylorFixedDPFunctsTemplate(
+    fields_prune_taylor_dp_funcs,
 )
 
 structref.define_boxing(
-    PruneChebyshevComplexDPFunctsTemplate,
-    PruneChebyshevComplexDPFuncts,
+    PruneTaylorFixedComplexDPFunctsTemplate,
+    PruneTaylorFixedComplexDPFuncts,
 )
-PruneChebyshevComplexDPFunctsType = PruneChebyshevComplexDPFunctsTemplate(
-    fields_prune_chebyshev_dp_funcs,
+PruneTaylorFixedComplexDPFunctsType = PruneTaylorFixedComplexDPFunctsTemplate(
+    fields_prune_taylor_dp_funcs,
 )
 
 
 @njit(cache=True, fastmath=True)
-def prune_chebyshev_dp_functs_init(
+def prune_taylor_dp_functs_init(
     param_arr: list[np.ndarray],
     dparams: np.ndarray,
     tseg_ffa: float,
@@ -424,10 +280,10 @@ def prune_chebyshev_dp_functs_init(
     poly_order: int,
     branch_max: int,
     snap_threshold: float,
-    conservative_errors: bool,
-) -> PruneChebyshevDPFuncts:
-    """Initialize the PruneChebyshevDPFuncts struct."""
-    self = structref.new(PruneChebyshevDPFunctsType)
+    grid_conservative: bool,
+) -> PruneTaylorFixedDPFuncts:
+    """Initialize the PruneTaylorFixedDPFuncts object."""
+    self = structref.new(PruneTaylorFixedDPFunctsType)
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
@@ -440,12 +296,12 @@ def prune_chebyshev_dp_functs_init(
     self.poly_order = poly_order
     self.branch_max = branch_max
     self.snap_threshold = snap_threshold
-    self.conservative_errors = conservative_errors
+    self.grid_conservative = grid_conservative
     return self
 
 
 @njit(cache=True, fastmath=True)
-def prune_chebyshev_complex_dp_functs_init(
+def prune_taylor_complex_dp_functs_init(
     param_arr: list[np.ndarray],
     dparams: np.ndarray,
     tseg_ffa: float,
@@ -458,10 +314,10 @@ def prune_chebyshev_complex_dp_functs_init(
     poly_order: int,
     branch_max: int,
     snap_threshold: float,
-    conservative_errors: bool,
-) -> PruneChebyshevComplexDPFuncts:
-    """Initialize the PruneChebyshevComplexDPFuncts struct."""
-    self = structref.new(PruneChebyshevComplexDPFunctsType)
+    grid_conservative: bool,
+) -> PruneTaylorFixedComplexDPFuncts:
+    """Initialize the PruneTaylorFixedComplexDPFuncts object."""
+    self = structref.new(PruneTaylorFixedComplexDPFunctsType)
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
@@ -474,13 +330,13 @@ def prune_chebyshev_complex_dp_functs_init(
     self.poly_order = poly_order
     self.branch_max = branch_max
     self.snap_threshold = snap_threshold
-    self.conservative_errors = conservative_errors
+    self.grid_conservative = grid_conservative
     return self
 
 
 @njit(cache=True, fastmath=True)
 def load_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     fold: np.ndarray,
     seg_idx: int,
 ) -> np.ndarray:
@@ -489,14 +345,14 @@ def load_func(
 
 @njit(cache=True, fastmath=True)
 def resolve_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     if self.poly_order == 4:
-        return cheby.poly_chebyshev_resolve_circular_batch(
+        return taylor_fixed.poly_taylor_fixed_resolve_circular_batch(
             leaves_batch,
             coord_add,
             coord_cur,
@@ -504,7 +360,7 @@ def resolve_func(
             self.param_arr,
             self.nbins,
         )
-    return cheby.poly_chebyshev_resolve_batch(
+    return taylor_fixed.poly_taylor_fixed_resolve_batch(
         leaves_batch,
         coord_add,
         coord_cur,
@@ -516,32 +372,30 @@ def resolve_func(
 
 @njit(cache=True, fastmath=True)
 def branch_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
     coord_cur_fixed: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    return cheby.poly_chebyshev_branch_batch(
+    return taylor_fixed.poly_taylor_fixed_branch_batch(
         leaves_batch,
-        coord_cur,
-        coord_prev,
+        coord_cur_fixed,
         self.nbins,
         self.tol_bins,
         self.poly_order,
         self.param_limits,
         self.branch_max,
-        self.conservative_errors,
     )
 
 
 @njit(cache=True, fastmath=True)
 def suggest_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
 ) -> SuggestionStruct:
-    return cheby.poly_chebyshev_suggest(
+    return taylor_fixed.poly_taylor_fixed_suggest(
         fold_segment,
         coord_init,
         self.param_arr,
@@ -553,11 +407,11 @@ def suggest_func(
 
 @njit(cache=True, fastmath=True)
 def suggest_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
 ) -> SuggestionStructComplex:
-    return cheby.poly_chebyshev_suggest_complex(
+    return taylor_fixed.poly_taylor_fixed_suggest_complex(
         fold_segment,
         coord_init,
         self.param_arr,
@@ -568,26 +422,29 @@ def suggest_complex_func(
 
 
 @njit(cache=True, fastmath=True)
-def score_func(self: PruneChebyshevDPFuncts, combined_res_batch: np.ndarray) -> float:
+def score_func(
+    self: PruneTaylorFixedDPFuncts,
+    combined_res_batch: np.ndarray,
+) -> np.ndarray:
     return scoring.snr_score_batch_func(combined_res_batch, self.score_widths)
 
 
 @njit(cache=True, fastmath=True)
 def score_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     combined_res_batch: np.ndarray,
-) -> float:
+) -> np.ndarray:
     return scoring.snr_score_batch_func_complex(combined_res_batch, self.score_widths)
 
 
 @njit(cache=True, fastmath=True)
-def pack_func(self: PruneChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
+def pack_func(self: PruneTaylorFixedDPFuncts, data: np.ndarray) -> np.ndarray:
     return common.pack(data)
 
 
 @njit(cache=True, fastmath=True)
 def shift_add_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     segment_batch: np.ndarray,
     shift_batch: np.ndarray,
     folds: np.ndarray,
@@ -598,7 +455,7 @@ def shift_add_func(
 
 @njit(cache=True, fastmath=True)
 def shift_add_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     segment_batch: np.ndarray,
     shift_batch: np.ndarray,
     folds: np.ndarray,
@@ -614,47 +471,34 @@ def shift_add_complex_func(
 
 @njit(cache=True, fastmath=True)
 def transform_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
 ) -> np.ndarray:
-    if self.poly_order == 4:
-        return cheby.poly_chebyshev_transform_circular_batch(
-            leaves_batch,
-            coord_next,
-            coord_cur,
-            self.conservative_errors,
-        )
-    return cheby.poly_chebyshev_transform_batch(
-        leaves_batch,
-        coord_next,
-        coord_cur,
-        self.conservative_errors,
-    )
+    return leaves_batch
 
 
 @njit(cache=True, fastmath=True)
 def get_transform_matrix_func(
-    self: PruneChebyshevDPFuncts,
-    coord_cur: tuple[float, float],
+    self: PruneTaylorFixedDPFuncts,
+    coord_next: tuple[float, float],
     coord_prev: tuple[float, float],
 ) -> np.ndarray:
-    return common.get_trans_matrix(coord_cur, coord_prev)
+    return common.get_trans_matrix(coord_next, coord_prev)
 
 
 @njit(cache=True, fastmath=True)
 def validate_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     if self.poly_order == 4:
-        return cheby.poly_chebyshev_validate_batch(
+        return taylor.poly_taylor_validate_batch(
             leaves_batch,
             leaves_origins,
-            coord_cur,
             self.p_orb_min,
             self.snap_threshold,
         )
@@ -663,20 +507,20 @@ def validate_func(
 
 @njit(cache=True, fastmath=True)
 def get_validation_params_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     coord_add: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray, float]:
     return common.get_validation_params(coord_add)
 
 
-@overload_method(PruneChebyshevDPFunctsTemplate, "load")
+@overload_method(PruneTaylorFixedDPFunctsTemplate, "load")
 def ol_load_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     fold: np.ndarray,
     seg_idx: int,
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevDPFuncts,
+        self: PruneTaylorFixedDPFuncts,
         fold: np.ndarray,
         seg_idx: int,
     ) -> np.ndarray:
@@ -685,16 +529,16 @@ def ol_load_func(
     return impl
 
 
-@overload_method(PruneChebyshevDPFunctsTemplate, "resolve")
+@overload_method(PruneTaylorFixedDPFunctsTemplate, "resolve")
 def ol_resolve_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevDPFuncts,
+        self: PruneTaylorFixedDPFuncts,
         leaves_batch: np.ndarray,
         coord_add: tuple[float, float],
         coord_cur: tuple[float, float],
@@ -705,16 +549,16 @@ def ol_resolve_func(
     return impl
 
 
-@overload_method(PruneChebyshevDPFunctsTemplate, "branch")
+@overload_method(PruneTaylorFixedDPFunctsTemplate, "branch")
 def ol_branch_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
     coord_cur_fixed: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevDPFuncts,
+        self: PruneTaylorFixedDPFuncts,
         leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
@@ -725,14 +569,14 @@ def ol_branch_func(
     return impl
 
 
-@overload_method(PruneChebyshevDPFunctsTemplate, "suggest")
+@overload_method(PruneTaylorFixedDPFunctsTemplate, "suggest")
 def ol_suggest_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevDPFuncts,
+        self: PruneTaylorFixedDPFuncts,
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
     ) -> SuggestionStruct:
@@ -741,35 +585,41 @@ def ol_suggest_func(
     return impl
 
 
-@overload_method(PruneChebyshevDPFunctsTemplate, "score")
+@overload_method(PruneTaylorFixedDPFunctsTemplate, "score")
 def ol_score_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     combined_res_batch: np.ndarray,
 ) -> types.FunctionType:
-    def impl(self: PruneChebyshevDPFuncts, combined_res_batch: np.ndarray) -> float:
+    def impl(
+        self: PruneTaylorFixedDPFuncts,
+        combined_res_batch: np.ndarray,
+    ) -> np.ndarray:
         return score_func(self, combined_res_batch)
 
     return impl
 
 
-@overload_method(PruneChebyshevDPFunctsTemplate, "pack")
-def ol_pack_func(self: PruneChebyshevDPFuncts, data: np.ndarray) -> types.FunctionType:
-    def impl(self: PruneChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
+@overload_method(PruneTaylorFixedDPFunctsTemplate, "pack")
+def ol_pack_func(
+    self: PruneTaylorFixedDPFuncts,
+    data: np.ndarray,
+) -> types.FunctionType:
+    def impl(self: PruneTaylorFixedDPFuncts, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
 
     return impl
 
 
-@overload_method(PruneChebyshevDPFunctsTemplate, "shift_add")
+@overload_method(PruneTaylorFixedDPFunctsTemplate, "shift_add")
 def ol_shift_add_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     segment_batch: np.ndarray,
     shift_batch: np.ndarray,
     folds: np.ndarray,
     isuggest_batch: np.ndarray,
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevDPFuncts,
+        self: PruneTaylorFixedDPFuncts,
         segment_batch: np.ndarray,
         shift_batch: np.ndarray,
         folds: np.ndarray,
@@ -780,15 +630,15 @@ def ol_shift_add_func(
     return impl
 
 
-@overload_method(PruneChebyshevDPFunctsTemplate, "transform")
+@overload_method(PruneTaylorFixedDPFunctsTemplate, "transform")
 def ol_transform_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevDPFuncts,
+        self: PruneTaylorFixedDPFuncts,
         leaves_batch: np.ndarray,
         coord_next: tuple[float, float],
         coord_cur: tuple[float, float],
@@ -798,14 +648,14 @@ def ol_transform_func(
     return impl
 
 
-@overload_method(PruneChebyshevDPFunctsTemplate, "get_transform_matrix")
+@overload_method(PruneTaylorFixedDPFunctsTemplate, "get_transform_matrix")
 def ol_get_transform_matrix_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     coord_next: tuple[float, float],
     coord_prev: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevDPFuncts,
+        self: PruneTaylorFixedDPFuncts,
         coord_next: tuple[float, float],
         coord_prev: tuple[float, float],
     ) -> np.ndarray:
@@ -814,15 +664,15 @@ def ol_get_transform_matrix_func(
     return impl
 
 
-@overload_method(PruneChebyshevDPFunctsTemplate, "validate")
+@overload_method(PruneTaylorFixedDPFunctsTemplate, "validate")
 def ol_validate_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevDPFuncts,
+        self: PruneTaylorFixedDPFuncts,
         leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
         coord_cur: tuple[float, float],
@@ -832,13 +682,13 @@ def ol_validate_func(
     return impl
 
 
-@overload_method(PruneChebyshevDPFunctsTemplate, "get_validation_params")
+@overload_method(PruneTaylorFixedDPFunctsTemplate, "get_validation_params")
 def ol_get_validation_params_func(
-    self: PruneChebyshevDPFuncts,
+    self: PruneTaylorFixedDPFuncts,
     coord_add: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevDPFuncts,
+        self: PruneTaylorFixedDPFuncts,
         coord_add: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray, float]:
         return get_validation_params_func(self, coord_add)
@@ -846,14 +696,14 @@ def ol_get_validation_params_func(
     return impl
 
 
-@overload_method(PruneChebyshevComplexDPFunctsTemplate, "load")
+@overload_method(PruneTaylorFixedComplexDPFunctsTemplate, "load")
 def ol_load_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     fold: np.ndarray,
     seg_idx: int,
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevComplexDPFuncts,
+        self: PruneTaylorFixedComplexDPFuncts,
         fold: np.ndarray,
         seg_idx: int,
     ) -> np.ndarray:
@@ -862,16 +712,16 @@ def ol_load_complex_func(
     return impl
 
 
-@overload_method(PruneChebyshevComplexDPFunctsTemplate, "resolve")
+@overload_method(PruneTaylorFixedComplexDPFunctsTemplate, "resolve")
 def ol_resolve_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevComplexDPFuncts,
+        self: PruneTaylorFixedComplexDPFuncts,
         leaves_batch: np.ndarray,
         coord_add: tuple[float, float],
         coord_cur: tuple[float, float],
@@ -882,16 +732,16 @@ def ol_resolve_complex_func(
     return impl
 
 
-@overload_method(PruneChebyshevComplexDPFunctsTemplate, "branch")
+@overload_method(PruneTaylorFixedComplexDPFunctsTemplate, "branch")
 def ol_branch_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
     coord_cur_fixed: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevComplexDPFuncts,
+        self: PruneTaylorFixedComplexDPFuncts,
         leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
@@ -902,14 +752,14 @@ def ol_branch_complex_func(
     return impl
 
 
-@overload_method(PruneChebyshevComplexDPFunctsTemplate, "suggest")
+@overload_method(PruneTaylorFixedComplexDPFunctsTemplate, "suggest")
 def ol_suggest_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevComplexDPFuncts,
+        self: PruneTaylorFixedComplexDPFuncts,
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
     ) -> SuggestionStructComplex:
@@ -918,13 +768,13 @@ def ol_suggest_complex_func(
     return impl
 
 
-@overload_method(PruneChebyshevComplexDPFunctsTemplate, "score")
+@overload_method(PruneTaylorFixedComplexDPFunctsTemplate, "score")
 def ol_score_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     combined_res_batch: np.ndarray,
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevComplexDPFuncts,
+        self: PruneTaylorFixedComplexDPFuncts,
         combined_res_batch: np.ndarray,
     ) -> np.ndarray:
         return score_complex_func(self, combined_res_batch)
@@ -932,27 +782,27 @@ def ol_score_complex_func(
     return impl
 
 
-@overload_method(PruneChebyshevComplexDPFunctsTemplate, "pack")
+@overload_method(PruneTaylorFixedComplexDPFunctsTemplate, "pack")
 def ol_pack_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     data: np.ndarray,
 ) -> types.FunctionType:
-    def impl(self: PruneChebyshevComplexDPFuncts, data: np.ndarray) -> np.ndarray:
+    def impl(self: PruneTaylorFixedComplexDPFuncts, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
 
     return impl
 
 
-@overload_method(PruneChebyshevComplexDPFunctsTemplate, "shift_add")
+@overload_method(PruneTaylorFixedComplexDPFunctsTemplate, "shift_add")
 def ol_shift_add_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     segment_batch: np.ndarray,
     shift_batch: np.ndarray,
     folds: np.ndarray,
     isuggest_batch: np.ndarray,
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevComplexDPFuncts,
+        self: PruneTaylorFixedComplexDPFuncts,
         segment_batch: np.ndarray,
         shift_batch: np.ndarray,
         folds: np.ndarray,
@@ -969,15 +819,15 @@ def ol_shift_add_complex_func(
     return impl
 
 
-@overload_method(PruneChebyshevComplexDPFunctsTemplate, "transform")
+@overload_method(PruneTaylorFixedComplexDPFunctsTemplate, "transform")
 def ol_transform_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevComplexDPFuncts,
+        self: PruneTaylorFixedComplexDPFuncts,
         leaves_batch: np.ndarray,
         coord_next: tuple[float, float],
         coord_cur: tuple[float, float],
@@ -987,14 +837,14 @@ def ol_transform_complex_func(
     return impl
 
 
-@overload_method(PruneChebyshevComplexDPFunctsTemplate, "get_transform_matrix")
+@overload_method(PruneTaylorFixedComplexDPFunctsTemplate, "get_transform_matrix")
 def ol_get_transform_matrix_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     coord_next: tuple[float, float],
     coord_prev: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevComplexDPFuncts,
+        self: PruneTaylorFixedComplexDPFuncts,
         coord_next: tuple[float, float],
         coord_prev: tuple[float, float],
     ) -> np.ndarray:
@@ -1003,15 +853,15 @@ def ol_get_transform_matrix_complex_func(
     return impl
 
 
-@overload_method(PruneChebyshevComplexDPFunctsTemplate, "validate")
+@overload_method(PruneTaylorFixedComplexDPFunctsTemplate, "validate")
 def ol_validate_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevComplexDPFuncts,
+        self: PruneTaylorFixedComplexDPFuncts,
         leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
         coord_cur: tuple[float, float],
@@ -1021,13 +871,13 @@ def ol_validate_complex_func(
     return impl
 
 
-@overload_method(PruneChebyshevComplexDPFunctsTemplate, "get_validation_params")
+@overload_method(PruneTaylorFixedComplexDPFunctsTemplate, "get_validation_params")
 def ol_get_validation_params_complex_func(
-    self: PruneChebyshevComplexDPFuncts,
+    self: PruneTaylorFixedComplexDPFuncts,
     coord_add: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
-        self: PruneChebyshevComplexDPFuncts,
+        self: PruneTaylorFixedComplexDPFuncts,
         coord_add: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray, float]:
         return get_validation_params_func(self, coord_add)

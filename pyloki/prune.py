@@ -12,6 +12,8 @@ from pyloki.core import (
     PruneChebyshevDPFuncts,
     PruneTaylorComplexDPFuncts,
     PruneTaylorDPFuncts,
+    PruneTaylorFixedComplexDPFuncts,
+    PruneTaylorFixedDPFuncts,
     set_prune_load_func,
 )
 from pyloki.io.cands import (
@@ -162,6 +164,7 @@ def pruning_iteration_batched(
     coord_next: tuple[float, float],
     coord_init: tuple[float, float],
     coord_cur: tuple[float, float],
+    coord_cur_fixed: tuple[float, float],
     coord_add: tuple[float, float],
     prune_funcs: DP_FUNCS_TYPE,
     threshold: float,
@@ -222,6 +225,7 @@ def pruning_iteration_batched(
             sugg.param_sets[i_batch_start:i_batch_end],
             coord_cur,
             coord_prev,
+            coord_cur_fixed,
         )
         n_leaves_batch = len(batch_leaves)
         n_leaves += n_leaves_batch
@@ -525,12 +529,13 @@ class Pruning:
         ):
             self.execute_iter(log_file)
         # Transform the suggestion params to middle of the data
+        coord_init = self.scheme.get_coord(0)
         coord_mid = self.scheme.get_coord(self.prune_level)
         with PruneResultWriter(result_file, mode="a") as writer:
             writer.write_run_results(
                 run_name,
                 self.scheme.data,
-                self.suggestion.get_transformed(coord_mid),
+                self.suggestion.get_transformed(coord_mid, coord_init),
                 self.suggestion.scores,
                 self.pstats,
             )
@@ -553,6 +558,7 @@ class Pruning:
         coord_prev = self.scheme.get_coord(self.prune_level - 1)
         coord_next = self.scheme.get_coord(self.prune_level)
         coord_cur = self.scheme.get_current_coord(self.prune_level)
+        coord_cur_fixed = self.scheme.get_current_coord_fixed(self.prune_level)
         coord_add = self.scheme.get_seg_coord(self.prune_level)
         suggestion, stats_dict, timers = pruning_iteration_batched(
             self.suggestion,
@@ -561,6 +567,7 @@ class Pruning:
             coord_next,
             coord_init,
             coord_cur,
+            coord_cur_fixed,
             coord_add,
             self.prune_funcs,
             threshold,
@@ -604,6 +611,24 @@ class Pruning:
         elif kind == "taylor" and not self.dyp.cfg.use_fft_shifts:
             self._prune_funcs = PicklableStructRefWrapper[PruneTaylorDPFuncts](
                 PruneTaylorDPFuncts,
+                self.dyp.param_arr,
+                self.dyp.dparams_limited,
+                self.dyp.tseg,
+                self.dyp.cfg,
+            )
+        elif kind == "taylor_fixed" and self.dyp.cfg.use_fft_shifts:
+            self._prune_funcs = PicklableStructRefWrapper[
+                PruneTaylorFixedComplexDPFuncts
+            ](
+                PruneTaylorFixedComplexDPFuncts,
+                self.dyp.param_arr,
+                self.dyp.dparams_limited,
+                self.dyp.tseg,
+                self.dyp.cfg,
+            )
+        elif kind == "taylor_fixed" and not self.dyp.cfg.use_fft_shifts:
+            self._prune_funcs = PicklableStructRefWrapper[PruneTaylorFixedDPFuncts](
+                PruneTaylorFixedDPFuncts,
                 self.dyp.param_arr,
                 self.dyp.dparams_limited,
                 self.dyp.tseg,

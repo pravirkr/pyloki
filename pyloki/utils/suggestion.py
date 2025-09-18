@@ -9,7 +9,7 @@ from numba import njit, types
 from numba.experimental import structref
 from numba.extending import overload, overload_method
 
-from pyloki.utils import psr_utils
+from pyloki.utils import transforms
 
 
 @structref.register
@@ -125,23 +125,26 @@ class SuggestionStruct(structref.StructRefProxy):
     def get_best(self) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
 
-    def get_transformed(self, coord_mid: tuple[float, float]) -> np.ndarray:
+    def get_transformed(
+        self,
+        coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> np.ndarray:
         """Transform the search parameters to some given t_ref.
 
         Parameters
         ----------
         coord_mid : tuple[float, float]
             Final representation coordinate.
+        coord_init : tuple[float, float]
+            Initial representation coordinate.
 
         Returns
         -------
         np.ndarray
             Array of transformed search parameters (nsuggestions, nparams, 2)
         """
-        return get_transformed_func(self, coord_mid)
-
-    def convert_to_circular(self) -> SuggestionStruct:
-        return convert_to_circular_func(self)
+        return get_transformed_func(self, coord_mid, coord_init)
 
     def add(
         self,
@@ -286,11 +289,12 @@ class SuggestionStructComplex(structref.StructRefProxy):
     def get_best(self) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
 
-    def get_transformed(self, coord_mid: tuple[float, float]) -> np.ndarray:
-        return get_transformed_func(self, coord_mid)
-
-    def convert_to_circular(self) -> SuggestionStruct:
-        return convert_to_circular_func_complex(self)
+    def get_transformed(
+        self,
+        coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> np.ndarray:
+        return get_transformed_func(self, coord_mid, coord_init)
 
     def add(
         self,
@@ -461,65 +465,25 @@ def get_best_func(self: SuggestionStruct) -> tuple[np.ndarray, np.ndarray, float
 def get_transformed_func(
     self: SuggestionStruct,
     coord_mid: tuple[float, float],
+    coord_init: tuple[float, float],
 ) -> np.ndarray:
     if self.mode == "taylor":
-        return psr_utils.report_leaves_taylor_batch(self.param_sets)
+        return transforms.taylor_report_batch(self.param_sets)
     if self.mode == "chebyshev":
-        return psr_utils.report_leaves_chebyshev_batch(self.param_sets, coord_mid)
-    msg = "Suggestion struct is not in Taylor or Chebyshev basis."
+        return transforms.chebyshev_report_batch(self.param_sets, coord_mid)
+    if self.mode == "taylor_fixed":
+        delta_t = coord_mid[0] - coord_init[0]
+        if self.nparams < 4:
+            return transforms.taylor_fixed_report_batch(self.param_sets, delta_t)
+        if self.nparams == 4:
+            return transforms.taylor_fixed_circular_report_batch(
+                self.param_sets,
+                delta_t,
+            )
+        msg = "For Taylor fixed suggestion struct, nparams must be less than 4."
+        raise ValueError(msg)
+    msg = "mode must be in ['taylor', 'chebyshev', 'taylor_fixed']."
     raise ValueError(msg)
-
-
-@njit(cache=True, fastmath=True)
-def convert_to_circular_func(self: SuggestionStruct) -> SuggestionStruct:
-    if self.mode != "taylor":
-        msg = "Suggestion struct is not in Taylor basis."
-        raise ValueError(msg)
-    if self.nparams != 4:
-        msg = "Taylor suggestion struct must have 4 parameters."
-        raise ValueError(msg)
-    # Mask invalid parameters
-    snap = self.param_sets[:, 0, 0]
-    accel = self.param_sets[:, 2, 0]
-    omega_sq = -snap / accel
-    mask = np.logical_and(snap != 0, accel != 0, omega_sq > 0)
-    circular_params = psr_utils.convert_taylor_to_circular(
-        self.param_sets[:, : self.nparams, :][mask],
-    )
-    return SuggestionStruct(
-        param_sets=circular_params,
-        folds=self.folds[mask],
-        scores=self.scores[mask],
-        backtracks=self.backtracks[mask],
-        mode="circular",
-    )
-
-
-@njit(cache=True, fastmath=True)
-def convert_to_circular_func_complex(
-    self: SuggestionStructComplex,
-) -> SuggestionStructComplex:
-    if self.mode != "taylor":
-        msg = "Suggestion struct is not in Taylor basis."
-        raise ValueError(msg)
-    if self.nparams != 4:
-        msg = "Taylor suggestion struct must have 4 parameters."
-        raise ValueError(msg)
-    # Mask invalid parameters
-    snap = self.param_sets[:, 0, 0]
-    accel = self.param_sets[:, 2, 0]
-    omega_sq = -snap / accel
-    mask = np.logical_and(snap != 0, accel != 0, omega_sq > 0)
-    circular_params = psr_utils.convert_taylor_to_circular(
-        self.param_sets[:, : self.nparams, :][mask],
-    )
-    return SuggestionStructComplex(
-        param_sets=circular_params,
-        folds=self.folds[mask],
-        scores=self.scores[mask],
-        backtracks=self.backtracks[mask],
-        mode="circular",
-    )
 
 
 @njit(cache=True, fastmath=True)
@@ -696,9 +660,14 @@ def ol_get_best_func(self: SuggestionStruct) -> types.FunctionType:
 def ol_get_transformed_func(
     self: SuggestionStruct,
     coord_mid: tuple[float, float],
+    coord_init: tuple[float, float],
 ) -> types.FunctionType:
-    def impl(self: SuggestionStruct, coord_mid: tuple[float, float]) -> np.ndarray:
-        return get_transformed_func(self, coord_mid)
+    def impl(
+        self: SuggestionStruct,
+        coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> np.ndarray:
+        return get_transformed_func(self, coord_mid, coord_init)
 
     return impl
 
@@ -843,12 +812,14 @@ def ol_get_best_func_complex(
 def ol_get_transformed_func_complex(
     self: SuggestionStructComplex,
     coord_mid: tuple[float, float],
+    coord_init: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: SuggestionStructComplex,
         coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
     ) -> np.ndarray:
-        return get_transformed_func(self, coord_mid)
+        return get_transformed_func(self, coord_mid, coord_init)
 
     return impl
 

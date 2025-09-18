@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
-from numba import njit, prange
+from numba import njit, prange, types
 
-from pyloki.utils import psr_utils
+from pyloki.utils import np_utils, psr_utils, transforms
 
 
 @njit(cache=True, fastmath=True)
@@ -390,3 +390,145 @@ def brutefold_start_complex(
                 fold[iseg, ifreq, 1, m] = acc_v_r + 1j * acc_v_i
 
     return fold
+
+
+@njit(cache=True, fastmath=True)
+def ffa_taylor_init(
+    ts_e: np.ndarray,
+    ts_v: np.ndarray,
+    param_arr: types.ListType[types.Array],
+    bseg_brute: int,
+    fold_bins: int,
+    tsamp: float,
+) -> np.ndarray:
+    """Initialize the fold for the FFA search.
+
+    Parameters
+    ----------
+    ts_e : np.ndarray
+        Time series intensity (signal weighted by E/V).
+    ts_v : np.ndarray
+        Time series variance (E**2/V).
+    param_arr : types.ListType[types.Array]
+        Parameter grid array for each search parameter dimension.
+    bseg_brute : int
+        Brute force segment size in bins.
+    fold_bins : int
+        Number of bins in the folded profile.
+    tsamp : float
+        Sampling time of the data.
+
+    Returns
+    -------
+    np.ndarray
+        Initial fold for the FFA search.
+    """
+    freq_arr = param_arr[-1]
+    nparams = len(param_arr)
+    t_ref = 0 if nparams == 1 else bseg_brute * tsamp / 2
+    return brutefold_start(
+        ts_e,
+        ts_v,
+        freq_arr,
+        bseg_brute,
+        fold_bins,
+        tsamp,
+        t_ref,
+    )
+
+
+@njit(cache=True, fastmath=True)
+def ffa_taylor_init_complex(
+    ts_e: np.ndarray,
+    ts_v: np.ndarray,
+    param_arr: types.ListType[types.Array],
+    bseg_brute: int,
+    fold_bins: int,
+    tsamp: float,
+) -> np.ndarray:
+    """Initialize the fold for the FFA search (complex-domain).
+
+    Parameters
+    ----------
+    ts_e : np.ndarray
+        Time series intensity (signal weighted by E/V).
+    ts_v : np.ndarray
+        Time series variance (E**2/V).
+    param_arr : types.ListType[types.Array]
+        Parameter grid array for each search parameter dimension.
+    bseg_brute : int
+        Brute force segment size in bins.
+    fold_bins : int
+        Number of bins in the folded profile.
+    tsamp : float
+        Sampling time of the data.
+
+    Returns
+    -------
+    np.ndarray
+        Initial fold for the FFA search.
+    """
+    freq_arr = param_arr[-1]
+    nparams = len(param_arr)
+    t_ref = 0 if nparams == 1 else bseg_brute * tsamp / 2
+    return brutefold_start_complex(
+        ts_e,
+        ts_v,
+        freq_arr,
+        bseg_brute,
+        fold_bins,
+        tsamp,
+        t_ref,
+    )
+
+
+@njit(cache=True, fastmath=True)
+def ffa_taylor_resolve(
+    pset_cur: np.ndarray,
+    param_arr: types.ListType[types.Array],
+    ffa_level: int,
+    latter: int,
+    tseg_brute: float,
+    fold_bins: int,
+) -> tuple[np.ndarray, float]:
+    """Resolve the params to find the closest index in grid and absolute phase shift.
+
+    Parameters
+    ----------
+    pset_cur : np.ndarray
+        The current iter parameter set to resolve.
+    param_arr : types.ListType[types.Array]
+        Parameter grid array for the previous iteration (ffa_level - 1).
+    ffa_level : int
+        Current FFA level (same level as pset_cur).
+    latter : int
+        Switch for the two halves of the previous iteration segments (0 or 1).
+    tseg_brute : float
+        Duration of the brute force segment.
+    fold_bins : int
+        Number of bins in the folded profile.
+
+    Returns
+    -------
+    tuple[np.ndarray, float]
+        The resolved parameter index in the ``param_arr`` and the relative phase shift.
+
+    phase_shift is complete phase shift with fractional part.
+
+    Notes
+    -----
+    delta_t is the time difference between the reference time of the current segment
+    (0) and the reference time of the previous segment.
+    """
+    nparams = len(pset_cur)
+    if nparams == 1:
+        delta_t = latter * 2 ** (ffa_level - 1) * tseg_brute
+        pset_new, delay = pset_cur, 0
+    else:
+        delta_t = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
+        pset_new, delay = transforms.shift_taylor_params_d_f(pset_cur, delta_t)
+    relative_phase = psr_utils.get_phase_idx(delta_t, pset_cur[-1], fold_bins, delay)
+    pindex_prev = np.zeros(nparams, dtype=np.int64)
+    for ip in range(nparams):
+        pindex_prev[ip] = np_utils.find_nearest_sorted_idx(param_arr[ip], pset_new[ip])
+    return pindex_prev, relative_phase

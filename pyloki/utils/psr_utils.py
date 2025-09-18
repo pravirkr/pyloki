@@ -4,7 +4,7 @@ import attrs
 import numpy as np
 from numba import njit, vectorize
 
-from pyloki.utils import maths, transforms
+from pyloki.utils import maths
 from pyloki.utils.misc import C_VAL
 
 
@@ -133,6 +133,46 @@ def poly_taylor_step_d_vec(
     return dparams_f[np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
 
 
+@njit(cache=True, fastmath=True)
+def poly_taylor_step_d_f_vec(
+    nparams: int,
+    tobs: float,
+    fold_bins: int,
+    tol_bins: float,
+    f_max: np.ndarray,
+    t_ref: float = 0,
+) -> np.ndarray:
+    """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion (vector)."""
+    dparams_f = poly_taylor_step_f(nparams, tobs, fold_bins, tol_bins, t_ref)
+    dparams = np.zeros((len(f_max), nparams), dtype=np.float64)
+    dparams[:, :-1] = dparams_f[:-1][np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
+    dparams[:, -1] = dparams_f[-1]
+    return dparams
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_shift_d_f_vec(
+    dparam_old: np.ndarray,
+    dparam_new: np.ndarray,
+    tobs_new: float,
+    fold_bins: int,
+    f_cur: np.ndarray,
+    t_ref: float = 0,
+) -> np.ndarray:
+    """Compute the bin shift for parameters {d_k,... d_2, f} (vector)."""
+    nbatch, nparams = dparam_old.shape
+    k = np.arange(nparams - 1, -1, -1)
+    factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
+    factors_opt = factors / 2**k
+    factors_broadcast = np.empty((nbatch, nparams), dtype=dparam_old.dtype)
+    for i in range(nbatch):
+        factors_broadcast[i, :] = factors_opt
+    # For all but last param, scale by f_cur / C_VAL
+    scale = (f_cur / C_VAL)[:, np.newaxis]
+    factors_broadcast[:, :-1] *= scale
+    return np.abs(dparam_old - dparam_new) * factors_broadcast
+
+
 @njit
 def split_f(
     df_old: float,
@@ -218,54 +258,6 @@ def poly_cheb_shift_vec(
 ) -> np.ndarray:
     scale_factors = fold_bins * (f_cur / C_VAL)[:, np.newaxis]
     return np.abs(dparam_old - dparam_new) * scale_factors
-
-
-@njit(cache=True, fastmath=True)
-def report_leaves_taylor_batch(leaves_batch: np.ndarray) -> np.ndarray:
-    param_sets_batch = leaves_batch[:, :-2, :]
-    v_final = leaves_batch[:, -3, 0]
-    dv_final = leaves_batch[:, -3, 1]
-    f0_batch = leaves_batch[:, -1, 0]
-    s_factor = 1 - v_final / C_VAL
-    # Gauge transform + error propagation
-    param_sets_vals = param_sets_batch[:, :-1, 0]
-    param_sets_sigs = param_sets_batch[:, :-1, 1]
-    param_sets_batch[:, :-1, 0] = param_sets_vals / s_factor[:, None]
-    param_sets_batch[:, :-1, 1] = np.sqrt(
-        (param_sets_sigs / s_factor[:, None]) ** 2
-        + ((param_sets_vals / (C_VAL * s_factor[:, None] ** 2)) ** 2)
-        * (dv_final[:, None] ** 2),
-    )
-    param_sets_batch[:, -1, 0] = f0_batch * s_factor
-    param_sets_batch[:, -1, 1] = f0_batch * dv_final / C_VAL
-    return param_sets_batch
-
-
-@njit(cache=True, fastmath=True)
-def report_leaves_chebyshev_batch(
-    leaves_batch: np.ndarray,
-    coord_mid: tuple[float, float],
-) -> np.ndarray:
-    cheby_coeffs_batch = leaves_batch[:, :-1, :]
-    f0_batch = leaves_batch[:, -1, 0]
-    _, scale = coord_mid
-    param_sets_batch_d = transforms.cheby_to_taylor_full(cheby_coeffs_batch, scale)
-    param_sets_batch = param_sets_batch_d[:, :-1]
-    v_final = param_sets_batch[:, -1, 0]
-    dv_final = param_sets_batch[:, -1, 1]
-    s_factor = 1 - v_final / C_VAL
-    # Gauge transform + error propagation
-    param_sets_vals = param_sets_batch[:, :-1, 0]
-    param_sets_sigs = param_sets_batch[:, :-1, 1]
-    param_sets_batch[:, :-1, 0] = param_sets_vals / s_factor[:, None]
-    param_sets_batch[:, :-1, 1] = np.sqrt(
-        (param_sets_sigs / s_factor[:, None]) ** 2
-        + ((param_sets_vals / (C_VAL * s_factor[:, None] ** 2)) ** 2)
-        * (dv_final[:, None] ** 2),
-    )
-    param_sets_batch[:, -1, 0] = f0_batch * s_factor
-    param_sets_batch[:, -1, 1] = f0_batch * dv_final / C_VAL
-    return param_sets_batch
 
 
 @njit(cache=True, fastmath=True)
@@ -520,7 +512,7 @@ class SnailScheme:
         return ref, scale
 
     def get_current_coord(self, level: int) -> tuple[float, float]:
-        """Get adaptive reference time and maximum distance from reference."""
+        """Get current ref, scale for an adaptive grid."""
         if level < 0 or level >= self.nseg:
             msg = f"level must be in [0, {self.nseg - 1}], got {level}."
             raise ValueError(msg)
@@ -530,6 +522,20 @@ class SnailScheme:
         prev_ref, _ = self.get_coord(level - 1)
         _, cur_scale = self.get_coord(level)
         return prev_ref, cur_scale
+
+    def get_current_coord_fixed(self, level: int) -> tuple[float, float]:
+        """Get fixed ref, scale for a fixed grid."""
+        if level < 0 or level >= self.nseg:
+            msg = f"level must be in [0, {self.nseg - 1}], got {level}."
+            raise ValueError(msg)
+        if level == 0:
+            return self.get_coord(level)
+        t0_init, scale_init = self.get_coord(0)
+        t0_next, scale_next = self.get_coord(level)
+        left_edge = t0_next - scale_next
+        right_edge = t0_next + scale_next
+        scale_cur = max(abs(left_edge - t0_init), abs(right_edge - t0_init))
+        return t0_init, scale_cur
 
     def get_valid(self, prune_level: int) -> tuple[float, float]:
         scheme_till_now = self.data[:prune_level]
