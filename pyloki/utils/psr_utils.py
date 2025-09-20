@@ -530,7 +530,7 @@ class SnailScheme:
             raise ValueError(msg)
         if level == 0:
             return self.get_coord(level)
-        t0_init, scale_init = self.get_coord(0)
+        t0_init, _ = self.get_coord(0)
         t0_next, scale_next = self.get_coord(level)
         left_edge = t0_next - scale_next
         right_edge = t0_next + scale_next

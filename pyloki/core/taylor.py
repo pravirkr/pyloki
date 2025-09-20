@@ -5,7 +5,7 @@ from numba import njit, typed, types
 
 from pyloki.core.common import get_leaves
 from pyloki.detection.scoring import snr_score_func, snr_score_func_complex
-from pyloki.utils import maths, np_utils, psr_utils, transforms
+from pyloki.utils import np_utils, psr_utils, transforms
 from pyloki.utils.misc import C_VAL
 from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
@@ -342,7 +342,165 @@ def poly_taylor_branch_batch(
 
 
 @njit(cache=True, fastmath=True)
-def poly_taylor_validate_batch(
+def poly_taylor_branch_circular_batch(
+    leaves_batch: np.ndarray,
+    coord_cur: tuple[float, float],
+    fold_bins: int,
+    tol_bins: float,
+    poly_order: int,
+    param_limits: types.ListType[types.Tuple[float, float]],
+    branch_max: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Branch a batch of parameter sets to leaves."""
+    n_batch, _, _ = leaves_batch.shape
+    _, t_obs_minus_t_ref = coord_cur
+    param_cur_batch = leaves_batch[:, :-2, 0]
+    dparam_cur_batch = leaves_batch[:, :-2, 1]
+    d0_cur_batch = leaves_batch[:, -2, 0]
+    f0_batch = leaves_batch[:, -1, 0]
+
+    param_limits_d = np.empty((n_batch, poly_order, 2), dtype=np.float64)
+    for i in range(poly_order):
+        param_limits_d[:, i, 0] = param_limits[i][0]
+        param_limits_d[:, i, 1] = param_limits[i][1]
+    param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
+    param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
+
+    dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
+        poly_order,
+        t_obs_minus_t_ref,
+        fold_bins,
+        tol_bins,
+        f0_batch,
+        t_ref=0,
+    )
+    shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
+        dparam_cur_batch,
+        dparam_new_batch,
+        t_obs_minus_t_ref,
+        fold_bins,
+        f0_batch,
+        t_ref=0,
+    )
+    # --- Vectorized Padded Branching ( All params except crackle) ---
+    pad_branched_params = np.empty((n_batch, poly_order, branch_max), dtype=np.float64)
+    pad_branched_dparams = np.empty((n_batch, poly_order), dtype=np.float64)
+    branched_counts = np.empty((n_batch, poly_order), dtype=np.int64)
+    for i in range(n_batch):
+        for j in range(1, poly_order):  # skip crackle (j=0)
+            param_min, param_max = param_limits_d[i, j]
+            dparam_act, count = psr_utils.branch_param_padded(
+                pad_branched_params[i, j],
+                param_cur_batch[i, j],
+                dparam_cur_batch[i, j],
+                dparam_new_batch[i, j],
+                param_min,
+                param_max,
+            )
+            pad_branched_dparams[i, j] = dparam_act
+            branched_counts[i, j] = count
+
+    # --- Vectorized Selection (mask non-crackle branched params)---
+    eps = 1e-6  # Small tolerance for floating-point comparison
+    needs_branching = shift_bins_batch >= (tol_bins - eps)
+    for i in range(n_batch):
+        for j in range(poly_order):
+            if not needs_branching[i, j] or j == 0:
+                # crackle - don't branch yet, keep at current value
+                pad_branched_params[i, j, :] = 0
+                pad_branched_params[i, j, 0] = param_cur_batch[i, j]
+                pad_branched_dparams[i, j] = dparam_cur_batch[i, j]
+                branched_counts[i, j] = 1
+    # --- First Cartesian Product (All Except Crackle) ---
+    leaves_branch_taylor_batch, batch_origins = np_utils.cartesian_prod_padded(
+        pad_branched_params,
+        branched_counts,
+        n_batch,
+        poly_order,
+    )
+    total_intermediate_leaves = len(batch_origins)
+    leaves_intermediate = np.zeros(
+        (total_intermediate_leaves, poly_order + 2, 2),
+        dtype=np.float64,
+    )
+    leaves_intermediate[:, :-2, 0] = leaves_branch_taylor_batch
+    leaves_intermediate[:, :-2, 1] = pad_branched_dparams[batch_origins]
+    leaves_intermediate[:, -2, 0] = d0_cur_batch[batch_origins]
+    leaves_intermediate[:, -1, 0] = f0_batch[batch_origins]
+
+    # --- Clasify Intermediate Leaves into Circular and Non-Circular ---
+    idx_circular_snap, idx_circular_crackle, idx_taylor = get_circular_mask(
+        leaves_intermediate,
+        snap_threshold=5,
+    )
+    if idx_circular_crackle.size == 0:
+        # No crackle branching needed, return intermediate leaves
+        return leaves_intermediate, batch_origins
+
+    # Branch crackle for idx_circular_crackle cases
+    crackle_branch_leaves = leaves_intermediate[idx_circular_crackle]
+    crackle_origins = batch_origins[idx_circular_crackle]
+    n_crackle_branch = len(idx_circular_crackle)
+
+    # Branch crackle parameter for these specific leaves
+    crackle_branched_params = np.empty((n_crackle_branch, branch_max), dtype=np.float64)
+    crackle_branched_dparams = np.empty(n_crackle_branch, dtype=np.float64)
+    crackle_branched_counts = np.empty(n_crackle_branch, dtype=np.int64)
+
+    for i in range(n_crackle_branch):
+        orig_batch_idx = crackle_origins[i]
+        param_min, param_max = param_limits_d[orig_batch_idx, 0]  # crackle limits
+        dparam_act, count = psr_utils.branch_param_padded(
+            crackle_branched_params[i],
+            crackle_branch_leaves[i, 0, 0],
+            crackle_branch_leaves[i, 0, 1],
+            dparam_new_batch[orig_batch_idx, 0],
+            param_min,
+            param_max,
+        )
+        crackle_branched_dparams[i] = dparam_act
+        crackle_branched_counts[i] = count
+
+    for i in range(n_crackle_branch):
+        orig_batch_idx = crackle_origins[i]
+        # Check if crackle actually needs branching
+        if not needs_branching[orig_batch_idx, 0]:
+            crackle_branched_params[i, :] = 0
+            crackle_branched_params[i, 0] = crackle_branch_leaves[i, 0, 0]
+            crackle_branched_dparams[i] = crackle_branch_leaves[i, 0, 1]
+            crackle_branched_counts[i] = 1
+
+    # Create new leaves with branched crackle
+    total_crackle_branches = np.sum(crackle_branched_counts)
+    # Keep non-crackle-branching leaves as-is
+    keep_indices = np.concatenate((idx_circular_snap, idx_taylor))
+    total_leaves = len(keep_indices) + total_crackle_branches
+    leaves_final = np.empty((total_leaves, poly_order + 2, 2), dtype=np.float64)
+    origins_final = np.empty(total_leaves, dtype=np.int64)
+
+    n_keep = len(keep_indices)
+    if n_keep > 0:
+        leaves_final[:n_keep] = leaves_intermediate[keep_indices]
+        origins_final[:n_keep] = batch_origins[keep_indices]
+
+    current_idx = n_keep
+    for i in range(n_crackle_branch):
+        count_i = crackle_branched_counts[i]
+        orig_leaf = crackle_branch_leaves[i]
+        orig_batch_idx = crackle_origins[i]
+        # Vectorized leaf copying
+        end_idx = current_idx + count_i
+        leaves_final[current_idx:end_idx] = orig_leaf  # Broadcast copy
+        leaves_final[current_idx:end_idx, 0, 0] = crackle_branched_params[i, :count_i]
+        leaves_final[current_idx:end_idx, 0, 1] = crackle_branched_dparams[i]
+        origins_final[current_idx:end_idx] = orig_batch_idx
+        current_idx = end_idx
+
+    return leaves_final, batch_origins
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_validate_circular_batch(
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
     p_orb_min: float,
@@ -370,9 +528,9 @@ def poly_taylor_validate_batch(
         Filtered leaf parameter sets (only physically plausible) and their origins.
     """
     eps = 1e-12
-    snap = leaves_batch[:, 0, 0]
-    dsnap = leaves_batch[:, 0, 1]
-    accel = leaves_batch[:, 2, 0]
+    snap = leaves_batch[:, 1, 0]
+    dsnap = leaves_batch[:, 1, 1]
+    accel = leaves_batch[:, 3, 0]
     omega_orb_max_sq = (2 * np.pi / p_orb_min) ** 2
     # omega_orb = -snap/accel > 0:
     # 1) snap=0 → omega_orb=0 (valid)
@@ -501,7 +659,7 @@ def poly_taylor_resolve_batch(
 def get_circular_mask(
     leaves_batch: np.ndarray,
     snap_threshold: float = 5,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Generate a robust mask to identify circular orbit candidates.
 
     Filters out physically implausible and numerically unstable orbits.
@@ -520,23 +678,45 @@ def get_circular_mask(
 
     """
     eps = 1e-12
-    snap = leaves_batch[:, 0, 0]
-    dsnap = leaves_batch[:, 0, 1]
-    accel = leaves_batch[:, 2, 0]
-
-    # Numerical Stability
-    # The acceleration and snap must be significantly non-zero to define an orbit.
-    is_stable = (np.abs(accel) > eps) & (np.abs(snap) > eps)
-
-    # Physicality
-    # For Omega^2 = -s/a to be positive, s and a must have opposite signs.
-    # This is the most fundamental check for oscillatory motion.
-    omega_sq = -snap / (accel + eps)
-    is_physical = omega_sq > 0
+    crackle = leaves_batch[:, 0, 0]
+    snap = leaves_batch[:, 1, 0]
+    dsnap = leaves_batch[:, 1, 1]
+    jerk = leaves_batch[:, 2, 0]
+    accel = leaves_batch[:, 3, 0]
 
     # Delays circular classification until snap is well-measured.
     is_significant = np.abs(snap / (dsnap + eps)) > snap_threshold
-    return is_stable & is_physical & is_significant
+
+    # Numerical Stability - acceleration and snap must be significantly non-zero
+    is_stable = (np.abs(accel) > eps) & (np.abs(snap) > eps)
+
+    # Physicality - for Omega^2 = -s/a to be positive, s and a must have opposite signs
+    omega_sq = -snap / (accel + eps)
+    is_physical = omega_sq > 0
+    # Classification logic
+    stable_and_significant = is_stable & is_significant
+    # idx_circular_snap: stable, significant, and physical
+    mask_circular_snap = stable_and_significant & is_physical
+
+    # For unstable but significant cases, check crackle/jerk approximation
+    unstable_and_significant = (~is_stable) & is_significant
+    crackle_jerk_nonzero = (np.abs(crackle) > eps) & (np.abs(jerk) > eps)
+    omega_sq_crackle_jerk = -crackle / (jerk + eps)
+    crackle_jerk_physical = omega_sq_crackle_jerk > 0
+
+    # idx_circular_crackle: unstable snap/accel but stable crackle/jerk
+    mask_circular_crackle = (
+        unstable_and_significant & crackle_jerk_nonzero & crackle_jerk_physical
+    )
+
+    # idx_taylor: everything else (no hope for circularity)
+    mask_taylor = ~(mask_circular_snap | mask_circular_crackle)
+
+    idx_circular_snap = np.where(mask_circular_snap)[0]
+    idx_circular_crackle = np.where(mask_circular_crackle)[0]
+    idx_taylor = np.where(mask_taylor)[0]
+
+    return idx_circular_snap, idx_circular_crackle, idx_taylor
 
 
 @njit(cache=True, fastmath=True)
@@ -557,23 +737,38 @@ def poly_taylor_resolve_circular_batch(
     param_set_batch = leaves_batch[:, :-1, 0]
     f0_batch = leaves_batch[:, -1, 0]
 
-    circ_mask = get_circular_mask(leaves_batch, snap_threshold=5)
-    idx_circular = np.where(circ_mask)[0]
-    idx_taylor = np.where(~circ_mask)[0]
-    dvec_t_add = np.empty((n_batch, 5), dtype=np.float64)
-    dvec_t_init = np.empty((n_batch, 5), dtype=np.float64)
+    idx_circular_snap, idx_circular_crackle, idx_taylor = get_circular_mask(
+        leaves_batch,
+        snap_threshold=5,
+    )
+    dvec_t_add = np.empty((n_batch, 6), dtype=np.float64)
+    dvec_t_init = np.empty((n_batch, 6), dtype=np.float64)
 
-    if idx_circular.size > 0:
-        dvec_t_add_circ = transforms.shift_taylor_params_circular_batch(
-            param_set_batch[idx_circular],
+    if idx_circular_snap.size > 0:
+        dvec_t_add_circ_snap = transforms.shift_taylor_params_circular_batch(
+            param_set_batch[idx_circular_snap],
             t0_add - t0_cur,
         )
-        dvec_t_init_circ = transforms.shift_taylor_params_circular_batch(
-            param_set_batch[idx_circular],
+        dvec_t_init_circ_snap = transforms.shift_taylor_params_circular_batch(
+            param_set_batch[idx_circular_snap],
             t0_init - t0_cur,
         )
-        dvec_t_add[idx_circular] = dvec_t_add_circ
-        dvec_t_init[idx_circular] = dvec_t_init_circ
+        dvec_t_add[idx_circular_snap] = dvec_t_add_circ_snap
+        dvec_t_init[idx_circular_snap] = dvec_t_init_circ_snap
+
+    if idx_circular_crackle.size > 0:
+        dvec_t_add_circ_crackle = transforms.shift_taylor_params_circular_crackle_batch(
+            param_set_batch[idx_circular_crackle],
+            t0_add - t0_cur,
+        )
+        dvec_t_init_circ_crackle = (
+            transforms.shift_taylor_params_circular_crackle_batch(
+                param_set_batch[idx_circular_crackle],
+                t0_init - t0_cur,
+            )
+        )
+        dvec_t_add[idx_circular_crackle] = dvec_t_add_circ_crackle
+        dvec_t_init[idx_circular_crackle] = dvec_t_init_circ_crackle
 
     if idx_taylor.size > 0:
         dvec_t_add_norm = transforms.shift_taylor_params(
@@ -637,14 +832,23 @@ def poly_taylor_transform_circular_batch(
 ) -> np.ndarray:
     """Re-center the leaves to the next segment reference time."""
     delta_t = coord_next[0] - coord_cur[0]
-    circ_mask = get_circular_mask(leaves_batch, snap_threshold=5)
-    idx_circular = np.where(circ_mask)[0]
-    idx_taylor = np.where(~circ_mask)[0]
+    idx_circular_snap, idx_circular_crackle, idx_taylor = get_circular_mask(
+        leaves_batch,
+        snap_threshold=5,
+    )
     leaves_batch_trans = leaves_batch.copy()
-    if idx_circular.size > 0:
-        leaves_batch_trans[idx_circular, :-1] = (
+    if idx_circular_snap.size > 0:
+        leaves_batch_trans[idx_circular_snap, :-1] = (
             transforms.shift_taylor_full_circular_batch(
-                leaves_batch[idx_circular, :-1],
+                leaves_batch[idx_circular_snap, :-1],
+                delta_t,
+                conservative_errors,
+            )
+        )
+    if idx_circular_crackle.size > 0:
+        leaves_batch_trans[idx_circular_crackle, :-1] = (
+            transforms.shift_taylor_full_circular_crackle_batch(
+                leaves_batch[idx_circular_crackle, :-1],
                 delta_t,
                 conservative_errors,
             )
@@ -776,7 +980,7 @@ def generate_bp_taylor(
         n_branches = np.ones(n_freqs, dtype=np.int64)
 
         # Vectorized branching decision
-        eps = 1e-12
+        eps = 1e-6
         needs_branching = shift_bins_batch >= (tol_bins - eps)
         too_large_step = dparam_new_batch > (param_ranges + eps)
 
@@ -794,16 +998,13 @@ def generate_bp_taylor(
 
         # Transform dparams to the next segment
         delta_t = coord_next[0] - coord_cur[0]
-        n_params = poly_order + 1
-        # Construct the transformation matrix
-        powers = np.tril(np.arange(n_params)[:, np.newaxis] - np.arange(n_params))
-        t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
         dparam_d_vec = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
         dparam_d_vec[:, :-1] = dparam_cur_next
-        if use_conservative_errors:
-            dparam_d_vec_new = np.sqrt((dparam_d_vec**2) @ (t_mat**2).T)
-        else:
-            dparam_d_vec_new = dparam_d_vec * np.abs(np.diag(t_mat))
+        dparam_d_vec_new = transforms.shift_taylor_errors(
+            dparam_d_vec,
+            delta_t,
+            use_conservative_errors,
+        )
         dparam_cur_batch = dparam_d_vec_new[:, :-1]
 
     return branching_pattern
@@ -823,8 +1024,8 @@ def generate_bp_taylor_circular(
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor circular pruning search."""
     poly_order = len(dparams_lim)
-    if poly_order != 4:
-        msg = "Circular branching pattern requires exactly 4 parameters."
+    if poly_order != 5:
+        msg = "Circular branching pattern requires exactly 5 parameters."
         raise ValueError(msg)
 
     f0_batch = param_arr[-1]
@@ -891,7 +1092,7 @@ def generate_bp_taylor_circular(
         too_large_step = dparam_new_batch > (param_ranges + eps)
 
         for i in range(n_freqs):
-            for j in range(poly_order):
+            for j in range(1, poly_order):
                 if not needs_branching[i, j] or too_large_step[i, j]:
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
@@ -900,9 +1101,9 @@ def generate_bp_taylor_circular(
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
 
-                if j == 0:
+                if j == 1:
                     n_branch_snap[i] = num_points
-                if j == 2:
+                if j == 3:
                     n_branch_accel[i] = num_points
 
             # Determine validation fraction
@@ -930,15 +1131,12 @@ def generate_bp_taylor_circular(
 
         # Transform dparams to the next segment
         delta_t = coord_next[0] - coord_cur[0]
-        n_params = poly_order + 1
-        # Construct the transformation matrix
-        powers = np.tril(np.arange(n_params)[:, np.newaxis] - np.arange(n_params))
-        t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
         dparam_d_vec = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
         dparam_d_vec[:, :-1] = dparam_cur_next
-        if use_conservative_errors:
-            dparam_d_vec_new = np.sqrt((dparam_d_vec**2) @ (t_mat**2).T)
-        else:
-            dparam_d_vec_new = dparam_d_vec * np.abs(np.diag(t_mat))
+        dparam_d_vec_new = transforms.shift_taylor_errors(
+            dparam_d_vec,
+            delta_t,
+            use_conservative_errors,
+        )
         dparam_cur_batch = dparam_d_vec_new[:, :-1]
     return branching_pattern

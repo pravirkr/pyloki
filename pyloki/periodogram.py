@@ -24,7 +24,7 @@ def get_precision(d: float) -> int:
 @attrs.define(auto_attribs=True, kw_only=True)
 class Periodogram:
     REQUIRED_PARAMS: ClassVar[tuple[str, str]] = ("freq", "width")
-    OPTIONAL_PARAMS: ClassVar[tuple[str, ...]] = ("snap", "jerk", "accel")
+    OPTIONAL_PARAMS: ClassVar[tuple[str, ...]] = ("crackle", "snap", "jerk", "accel")
 
     params: dict[str, np.ndarray]
     snrs: np.ndarray

@@ -41,6 +41,40 @@ def shift_taylor_params(
 
 
 @njit(cache=True, fastmath=True)
+def shift_taylor_errors(
+    taylor_error_vec: np.ndarray,
+    delta_t: float,
+    conservative_errors: bool,
+) -> np.ndarray:
+    """Shift the kinematic Taylor errors to a new reference time.
+
+    Parameters
+    ----------
+    taylor_error_vec : np.ndarray
+        Error vector of shape (..., nparams) at reference time t_i.
+        Ordering is [dd_k_max, ..., dd_1, dd_0] where dd_k is coefficient
+        of (t - t_c)^k/k!.
+    delta_t : float
+        The time difference (t_j - t_i) to shift the parameters by.
+    conservative_errors : bool
+        If True, the errors are propagated conservatively, otherwise unchanged.
+
+    Returns
+    -------
+    np.ndarray
+        Error vector of shape (..., nparams) at reference time t_j.
+    """
+    n_params = taylor_error_vec.shape[-1]
+    # Construct the transformation matrix
+    powers = np.tril(np.arange(n_params)[:, np.newaxis] - np.arange(n_params))
+    t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
+    # Propagate errors (assuming no covariance)
+    if conservative_errors:
+        return np.sqrt((np.ascontiguousarray(taylor_error_vec) ** 2) @ (t_mat**2).T)
+    return np.ascontiguousarray(taylor_error_vec) * np.abs(np.diag(t_mat))
+
+
+@njit(cache=True, fastmath=True)
 def shift_taylor_full(
     taylor_full_vec: np.ndarray,
     delta_t: float,
@@ -293,31 +327,32 @@ def shift_taylor_params_circular_batch(
 ) -> np.ndarray:
     """Specialized version of shift_taylor_params for circular-orbit propagation.
 
-    Works only for 5 parameters and batch processing. Input must be guaranteed to be
-    a physical circular orbit.
+    Works only for 6 parameters and batch processing. Input must be guaranteed to be
+    a physical circular orbit. Crackle is redundant and not used for pinning omega.
 
     Parameters
     ----------
     taylor_param_vec : np.ndarray
-        Parameter vector of shape (n_batch, 5), ordered [s, j, a, v, d] at t_i.
+        Parameter vector of shape (n_batch, 6), ordered [c, s, j, a, v, d] at t_i.
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
 
     Returns
     -------
     np.ndarray
-        Parameter vector of shape (n_batch, 5), ordered [s, j, a, v, d] at t_j.
+        Parameter vector of shape (n_batch, 6), ordered [c, s, j, a, v, d] at t_j.
     """
     n_batch, n_params = taylor_param_vec.shape
-    if n_params != 5:
-        msg = "5 parameters are needed for circular orbit propagation."
+    if n_params != 6:
+        msg = "6 parameters are needed for circular orbit propagation."
         raise ValueError(msg)
-    s_i = taylor_param_vec[:, 0]
-    j_i = taylor_param_vec[:, 1]
-    a_i = taylor_param_vec[:, 2]
-    v_i = taylor_param_vec[:, 3]
-    d_i = taylor_param_vec[:, 4]
+    s_i = taylor_param_vec[:, 1]
+    j_i = taylor_param_vec[:, 2]
+    a_i = taylor_param_vec[:, 3]
+    v_i = taylor_param_vec[:, 4]
+    d_i = taylor_param_vec[:, 5]
 
+    # Pin-down the orbit using snap and accel
     omega_orb_sq = -s_i / a_i
     omega_orb = np.sqrt(omega_orb_sq)
     # Evolve the phase to the new time t_j = t_i + delta_t
@@ -328,6 +363,7 @@ def shift_taylor_params_circular_batch(
     a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
     j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
     s_j = -omega_orb_sq * a_j
+    c_j = -omega_orb_sq * j_j
     # Integrate to get {v, d}
     v_circ_i = -j_i / omega_orb_sq
     v_circ_j = -j_j / omega_orb_sq
@@ -336,12 +372,75 @@ def shift_taylor_params_circular_batch(
     d_circ_i = -a_i / omega_orb_sq
     d_j = d_circ_j + (d_i - d_circ_i) + (v_i - v_circ_i) * delta_t
 
-    out = np.empty((n_batch, 5), dtype=taylor_param_vec.dtype)
-    out[:, 0] = s_j
-    out[:, 1] = j_j
-    out[:, 2] = a_j
-    out[:, 3] = v_j
-    out[:, 4] = d_j
+    out = np.empty((n_batch, 6), dtype=taylor_param_vec.dtype)
+    out[:, 0] = c_j
+    out[:, 1] = s_j
+    out[:, 2] = j_j
+    out[:, 3] = a_j
+    out[:, 4] = v_j
+    out[:, 5] = d_j
+    return out
+
+
+@njit(cache=True, fastmath=True)
+def shift_taylor_params_circular_crackle_batch(
+    taylor_param_vec: np.ndarray,
+    delta_t: float,
+) -> np.ndarray:
+    """Specialized version of shift_taylor_params for circular-orbit propagation.
+
+    Works only for 6 parameters and batch processing. Input must be guaranteed to be
+    a physical circular orbit. Crackle is used here as snap/accel is unstable.
+
+    Parameters
+    ----------
+    taylor_param_vec : np.ndarray
+        Parameter vector of shape (n_batch, 6), ordered [c, s, j, a, v, d] at t_i.
+    delta_t : float
+        The time difference (t_j - t_i) to shift the parameters by.
+
+    Returns
+    -------
+    np.ndarray
+        Parameter vector of shape (n_batch, 6), ordered [c, s, j, a, v, d] at t_j.
+    """
+    n_batch, n_params = taylor_param_vec.shape
+    if n_params != 6:
+        msg = "6 parameters are needed for circular orbit propagation."
+        raise ValueError(msg)
+    c_i = taylor_param_vec[:, 0]
+    j_i = taylor_param_vec[:, 2]
+    a_i = taylor_param_vec[:, 3]
+    v_i = taylor_param_vec[:, 4]
+    d_i = taylor_param_vec[:, 5]
+
+    # Pin-down the orbit using crackle and jerk
+    omega_orb_sq = -c_i / j_i
+    omega_orb = np.sqrt(omega_orb_sq)
+    # Evolve the phase to the new time t_j = t_i + delta_t
+    omega_dt = omega_orb * delta_t
+    cos_odt = np.cos(omega_dt)
+    sin_odt = np.sin(omega_dt)
+    # Pin-down {s, j, a}
+    a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
+    j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
+    s_j = -omega_orb_sq * a_j
+    c_j = -omega_orb_sq * j_j
+    # Integrate to get {v, d}
+    v_circ_i = -j_i / omega_orb_sq
+    v_circ_j = -j_j / omega_orb_sq
+    v_j = v_circ_j + (v_i - v_circ_i)
+    d_circ_j = -a_j / omega_orb_sq
+    d_circ_i = -a_i / omega_orb_sq
+    d_j = d_circ_j + (d_i - d_circ_i) + (v_i - v_circ_i) * delta_t
+
+    out = np.empty((n_batch, 6), dtype=taylor_param_vec.dtype)
+    out[:, 0] = c_j
+    out[:, 1] = s_j
+    out[:, 2] = j_j
+    out[:, 3] = a_j
+    out[:, 4] = v_j
+    out[:, 5] = d_j
     return out
 
 
@@ -353,14 +452,14 @@ def shift_taylor_full_circular_batch(
 ) -> np.ndarray:
     """Specialized version of shift_taylor_full for circular-orbit propagation.
 
-    Works only for 5 parameters and batch processing. Input must be guaranteed to be
-    a physical circular orbit.
+    Works only for 6 parameters and batch processing. Input must be guaranteed to be
+    a physical circular orbit. Crackle is redundant and not used for pinning omega.
 
     Parameters
     ----------
     taylor_full_vec : np.ndarray
-        Parameter vector of shape (n_batch, 5, 2) at reference time t_i.
-        Ordering is [[s, ds], [j, dj], [a, da], [v, dv], [d, dd]]
+        Parameter vector of shape (n_batch, 6, 2) at reference time t_i.
+        Ordering is [[c, dc], [s, ds], [j, dj], [a, da], [v, dv], [d, dd]]
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
     conservative_errors : bool
@@ -369,18 +468,19 @@ def shift_taylor_full_circular_batch(
     Returns
     -------
     np.ndarray
-        Parameter vector of shape (n_batch, 5, 2) at reference time t_j.
+        Parameter vector of shape (n_batch, 6, 2) at reference time t_j.
     """
     _, n_params, _ = taylor_full_vec.shape
-    if n_params != 5:
-        msg = "5 parameters are needed for circular orbit propagation."
+    if n_params != 6:
+        msg = "6 parameters are needed for circular orbit propagation."
         raise ValueError(msg)
-    s_i = taylor_full_vec[:, 0, 0]
-    j_i = taylor_full_vec[:, 1, 0]
-    a_i = taylor_full_vec[:, 2, 0]
-    v_i = taylor_full_vec[:, 3, 0]
-    d_i = taylor_full_vec[:, 4, 0]
+    s_i = taylor_full_vec[:, 1, 0]
+    j_i = taylor_full_vec[:, 2, 0]
+    a_i = taylor_full_vec[:, 3, 0]
+    v_i = taylor_full_vec[:, 4, 0]
+    d_i = taylor_full_vec[:, 5, 0]
 
+    # Pin-down the orbit using snap and accel
     omega_orb_sq = -s_i / a_i
     omega_orb = np.sqrt(omega_orb_sq)
     # Evolve the phase to the new time t_j = t_i + delta_t
@@ -391,6 +491,7 @@ def shift_taylor_full_circular_batch(
     a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
     j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
     s_j = -omega_orb_sq * a_j
+    c_j = -omega_orb_sq * j_j
     # Integrate to get {v, d}
     v_circ_i = -j_i / omega_orb_sq
     v_circ_j = -j_j / omega_orb_sq
@@ -401,11 +502,79 @@ def shift_taylor_full_circular_batch(
 
     out = taylor_full_vec.copy()
     # Unchanged errors, for now (no use of grid conservative here)
-    out[:, 0, 0] = s_j
-    out[:, 1, 0] = j_j
-    out[:, 2, 0] = a_j
-    out[:, 3, 0] = v_j
-    out[:, 4, 0] = d_j
+    out[:, 0, 0] = c_j
+    out[:, 1, 0] = s_j
+    out[:, 2, 0] = j_j
+    out[:, 3, 0] = a_j
+    out[:, 4, 0] = v_j
+    out[:, 5, 0] = d_j
+    return out
+
+
+@njit(cache=True, fastmath=True)
+def shift_taylor_full_circular_crackle_batch(
+    taylor_full_vec: np.ndarray,
+    delta_t: float,
+    conservative_errors: bool,  # noqa: ARG001
+) -> np.ndarray:
+    """Specialized version of shift_taylor_full for circular-orbit propagation.
+
+    Works only for 6 parameters and batch processing. Input must be guaranteed to be
+    a physical circular orbit. Crackle is used here as snap/accel is unstable.
+
+    Parameters
+    ----------
+    taylor_full_vec : np.ndarray
+        Parameter vector of shape (n_batch, 6, 2) at reference time t_i.
+        Ordering is [[c, dc], [s, ds], [j, dj], [a, da], [v, dv], [d, dd]]
+    delta_t : float
+        The time difference (t_j - t_i) to shift the parameters by.
+    conservative_errors : bool
+        If True, the errors are propagated conservatively, otherwise unchanged.
+
+    Returns
+    -------
+    np.ndarray
+        Parameter vector of shape (n_batch, 6, 2) at reference time t_j.
+    """
+    _, n_params, _ = taylor_full_vec.shape
+    if n_params != 6:
+        msg = "6 parameters are needed for circular orbit propagation."
+        raise ValueError(msg)
+    c_i = taylor_full_vec[:, 0, 0]
+    j_i = taylor_full_vec[:, 2, 0]
+    a_i = taylor_full_vec[:, 3, 0]
+    v_i = taylor_full_vec[:, 4, 0]
+    d_i = taylor_full_vec[:, 5, 0]
+
+    # Pin-down the orbit using crackle and jerk
+    omega_orb_sq = -c_i / j_i
+    omega_orb = np.sqrt(omega_orb_sq)
+    # Evolve the phase to the new time t_j = t_i + delta_t
+    omega_dt = omega_orb * delta_t
+    cos_odt = np.cos(omega_dt)
+    sin_odt = np.sin(omega_dt)
+    # Pin-down {s, j, a}
+    a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
+    j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
+    s_j = -omega_orb_sq * a_j
+    c_j = -omega_orb_sq * j_j
+    # Integrate to get {v, d}
+    v_circ_i = -j_i / omega_orb_sq
+    v_circ_j = -j_j / omega_orb_sq
+    v_j = v_circ_j + (v_i - v_circ_i)
+    d_circ_j = -a_j / omega_orb_sq
+    d_circ_i = -a_i / omega_orb_sq
+    d_j = d_circ_j + (d_i - d_circ_i) + (v_i - v_circ_i) * delta_t
+
+    out = taylor_full_vec.copy()
+    # Unchanged errors, for now (no use of grid conservative here)
+    out[:, 0, 0] = c_j
+    out[:, 1, 0] = s_j
+    out[:, 2, 0] = j_j
+    out[:, 3, 0] = a_j
+    out[:, 4, 0] = v_j
+    out[:, 5, 0] = d_j
     return out
 
 

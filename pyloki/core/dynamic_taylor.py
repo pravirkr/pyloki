@@ -342,7 +342,7 @@ def resolve_func(
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    if self.poly_order == 4:
+    if self.poly_order == 5:
         return taylor.poly_taylor_resolve_circular_batch(
             leaves_batch,
             coord_add,
@@ -369,6 +369,16 @@ def branch_func(
     coord_prev: tuple[float, float],
     coord_cur_fixed: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
+    if self.poly_order == 5:
+        return taylor.poly_taylor_branch_circular_batch(
+            leaves_batch,
+            coord_cur,
+            self.nbins,
+            self.tol_bins,
+            self.poly_order,
+            self.param_limits,
+            self.branch_max,
+        )
     return taylor.poly_taylor_branch_batch(
         leaves_batch,
         coord_cur,
@@ -464,7 +474,7 @@ def transform_func(
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
 ) -> np.ndarray:
-    if self.poly_order == 4:
+    if self.poly_order == 5:
         return taylor.poly_taylor_transform_circular_batch(
             leaves_batch,
             coord_next,
@@ -495,8 +505,8 @@ def validate_func(
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    if self.poly_order == 4:
-        return taylor.poly_taylor_validate_batch(
+    if self.poly_order == 5:
+        return taylor.poly_taylor_validate_circular_batch(
             leaves_batch,
             leaves_origins,
             self.p_orb_min,

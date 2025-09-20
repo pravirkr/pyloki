@@ -596,8 +596,8 @@ class Pruning:
         self._suggestion = suggestion
 
     def _setup_pruning(self, kind: str) -> None:
-        if self.dyp.fold.ndim > 7:
-            msg = "Pruning only supports initial data with up to 4 param dimensions."
+        if self.dyp.fold.ndim > 8:
+            msg = "Pruning currently supports initial data till 5 param dimensions."
             raise ValueError(msg)
         self._load_func = set_prune_load_func(self.dyp.fold.ndim - 3)
         if kind == "taylor" and self.dyp.cfg.use_fft_shifts:

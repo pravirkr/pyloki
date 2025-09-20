@@ -122,7 +122,7 @@ class ParamLimits:
         p_orb_min: float,
         m_c: float,
         m_p: float = 1.4,
-        poly_order: int = 4,
+        poly_order: int = 5,
     ) -> ParamLimits:
         """Generate search parameter limits from circular orbit parameters.
 
@@ -137,7 +137,7 @@ class ParamLimits:
         m_p : float, optional
             Pulsar mass (in solar masses), by default 1.4.
         poly_order : int, optional
-            Order of the polynomial to use for the search, by default 4.
+            Order of the polynomial to use for the search, by default 5.
 
         Returns
         -------
@@ -360,7 +360,7 @@ class PulsarSearchConfig:
         value: list[tuple[float, float]],
     ) -> None:
         if len(value) < 1:  # or len(value) > 4:
-            msg = f"param_limits must have 1-4 elements, got {len(value)}"
+            msg = f"param_limits must have 1-5 elements, got {len(value)}"
             raise ValueError(msg)
         for _, (val_min, val_max) in enumerate(value):
             if not isinstance(val_min, int | float) or not isinstance(
@@ -387,7 +387,7 @@ class PulsarSearchConfig:
         if self.bseg_ffa <= self.bseg_brute:
             msg = f"bseg_ffa ({self.bseg_ffa}) must be > bseg_brute ({self.bseg_brute})"
             raise ValueError(msg)
-        if self.prune_poly_order == 4 and self.p_orb_min == 0:
+        if self.prune_poly_order == 5 and self.p_orb_min == 0:
             msg = "p_orb_min must be provided for a circular orbit search"
             raise ValueError(msg)
 
@@ -414,7 +414,7 @@ class PulsarSearchConfig:
     @property
     def param_names(self) -> list[str]:
         """:obj:`list[str]`: Names of the search parameters."""
-        default_names = ["snap", "jerk", "accel", "freq"]
+        default_names = ["crackle", "snap", "jerk", "accel", "freq"]
         return default_names[-self.nparams :]
 
     @property
