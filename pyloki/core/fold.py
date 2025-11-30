@@ -392,6 +392,48 @@ def brutefold_start_complex(
     return fold
 
 
+@njit(
+    ["c8[:,:,:,::1](f4[::1],f4[::1],f8[::1],i8,i8,f8,f8,i8)"],
+    cache=True,
+    parallel=True,
+    fastmath=True,
+)
+def brutefold_complex_oversampled(
+    ts_e: np.ndarray,
+    ts_v: np.ndarray,
+    freq_arr: np.ndarray,
+    segment_len: int,
+    nbins: int,
+    tsamp: float,
+    t_ref: float = 0,
+    oversample_factor: int = 4,
+) -> np.ndarray:
+    nfreqs = len(freq_arr)
+    nsamples = len(ts_e)
+    nsegments = int(np.ceil(nsamples / segment_len))
+    fine_nbins = nbins * oversample_factor
+    # Get time-domain folded profiles on oversampled grid
+    fold_time = brutefold_bucketed(
+        ts_e,
+        ts_v,
+        freq_arr,
+        segment_len,
+        fine_nbins,
+        tsamp,
+        t_ref,
+    )
+
+    # Output size: keep only first (nbins//2)+1 Fourier coefficients
+    nbins_f = (nbins // 2) + 1
+    fold_out = np.zeros((nsegments, nfreqs, 2, nbins_f), dtype=np.complex64)
+    for iseg in prange(nsegments):
+        for ifreq in range(nfreqs):
+            fold_out[iseg, ifreq] = np.fft.rfft(fold_time[iseg, ifreq], axis=-1)[
+                :, :nbins_f,
+            ]
+    return fold_out
+
+
 @njit(cache=True, fastmath=True)
 def ffa_taylor_init(
     ts_e: np.ndarray,

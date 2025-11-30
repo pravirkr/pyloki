@@ -332,7 +332,7 @@ def shift_add_complex_direct(
     phase_shift_tail: float,
     phase_shift_head: float,
 ) -> np.ndarray:
-    n_comps, nbins_f = data_tail.shape
+    _, nbins_f = data_tail.shape
     nbins = (nbins_f - 1) * 2
     phase_shift_tail_float = np.float32(phase_shift_tail)
     phase_shift_head_float = np.float32(phase_shift_head)
