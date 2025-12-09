@@ -281,7 +281,7 @@ def poly_taylor_fixed_resolve_circular_batch(
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
     # only works for circular orbit when nparams = 4
     n_batch, _, _ = leaves_batch.shape
-    t0_cur, _ = coord_cur
+    _, _ = coord_cur
     t0_init, _ = coord_init
     t0_add, _ = coord_add
     delta_t = t0_add - t0_init
@@ -397,7 +397,7 @@ def generate_bp_taylor_fixed(
         too_large_step = dparam_new_batch > (param_ranges + eps)
 
         weighted_sum = 0.0
-        total_weight = 0
+        total_weight = 0.0
         total_freq_branches = 0
 
         for i in range(nfreq):

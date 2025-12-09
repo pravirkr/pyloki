@@ -530,12 +530,12 @@ class SnailScheme:
             raise ValueError(msg)
         if level == 0:
             return self.get_coord(level)
-        t0_init, _ = self.get_coord(0)
+        t0_init, scale_init = self.get_coord(0)
         t0_next, scale_next = self.get_coord(level)
         left_edge = t0_next - scale_next
         right_edge = t0_next + scale_next
         scale_cur = max(abs(left_edge - t0_init), abs(right_edge - t0_init))
-        return t0_init, scale_cur
+        return t0_init, scale_cur - scale_init
 
     def get_valid(self, prune_level: int) -> tuple[float, float]:
         scheme_till_now = self.data[:prune_level]

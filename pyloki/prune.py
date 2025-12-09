@@ -2,19 +2,25 @@ from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 from numba import njit, types
 
-from pyloki.core import (
-    PruneChebyshevComplexDPFuncts,
-    PruneChebyshevDPFuncts,
-    PruneTaylorComplexDPFuncts,
-    PruneTaylorDPFuncts,
-    PruneTaylorFixedComplexDPFuncts,
-    PruneTaylorFixedDPFuncts,
-    set_prune_load_func,
+from pyloki.core import set_prune_load_func
+from pyloki.dynamic import (
+    PruneCircChebyshevComplexDPFuncts,
+    PruneCircChebyshevDPFuncts,
+    PruneCircTaylorComplexDPFuncts,
+    PruneCircTaylorDPFuncts,
+    PruneCircTaylorFixedComplexDPFuncts,
+    PruneCircTaylorFixedDPFuncts,
+    PrunePolyChebyshevComplexDPFuncts,
+    PrunePolyChebyshevDPFuncts,
+    PrunePolyTaylorComplexDPFuncts,
+    PrunePolyTaylorDPFuncts,
+    PrunePolyTaylorFixedComplexDPFuncts,
+    PrunePolyTaylorFixedDPFuncts,
 )
 from pyloki.io.cands import (
     PruneResultWriter,
@@ -43,7 +49,14 @@ if TYPE_CHECKING:
     from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
 DP_FUNCS_TYPE = (
-    PruneTaylorDPFuncts | PruneTaylorComplexDPFuncts | PruneChebyshevDPFuncts
+    PrunePolyTaylorDPFuncts
+    | PrunePolyTaylorComplexDPFuncts
+    | PrunePolyChebyshevDPFuncts
+    | PruneCircTaylorDPFuncts
+    | PruneCircTaylorComplexDPFuncts
+    | PruneCircChebyshevDPFuncts
+    | PruneCircTaylorFixedDPFuncts
+    | PruneCircTaylorFixedComplexDPFuncts
 )
 
 logger = get_logger(__name__)
@@ -348,6 +361,22 @@ class Pruning:
         The kind of pruning algorithm to use, by default "taylor".
     """
 
+    _PRUNE_DISPATCH: ClassVar[dict[tuple[bool, str, bool], type[DP_FUNCS_TYPE]]] = {
+        # (is_circular, kind, use_complex): Class
+        (True, "taylor", True): PruneCircTaylorComplexDPFuncts,
+        (True, "taylor", False): PruneCircTaylorDPFuncts,
+        (True, "taylor_fixed", True): PruneCircTaylorFixedComplexDPFuncts,
+        (True, "taylor_fixed", False): PruneCircTaylorFixedDPFuncts,
+        (True, "chebyshev", True): PruneCircChebyshevComplexDPFuncts,
+        (True, "chebyshev", False): PruneCircChebyshevDPFuncts,
+        (False, "taylor", True): PrunePolyTaylorComplexDPFuncts,
+        (False, "taylor", False): PrunePolyTaylorDPFuncts,
+        (False, "taylor_fixed", True): PrunePolyTaylorFixedComplexDPFuncts,
+        (False, "taylor_fixed", False): PrunePolyTaylorFixedDPFuncts,
+        (False, "chebyshev", True): PrunePolyChebyshevComplexDPFuncts,
+        (False, "chebyshev", False): PrunePolyChebyshevDPFuncts,
+    }
+
     def __init__(
         self,
         dyp: DynamicProgramming,
@@ -600,61 +629,21 @@ class Pruning:
             msg = "Pruning currently supports initial data till 5 param dimensions."
             raise ValueError(msg)
         self._load_func = set_prune_load_func(self.dyp.fold.ndim - 3)
-        if kind == "taylor" and self.dyp.cfg.use_fft_shifts:
-            self._prune_funcs = PicklableStructRefWrapper[PruneTaylorComplexDPFuncts](
-                PruneTaylorComplexDPFuncts,
-                self.dyp.param_arr,
-                self.dyp.dparams_limited,
-                self.dyp.tseg,
-                self.dyp.cfg,
-            )
-        elif kind == "taylor" and not self.dyp.cfg.use_fft_shifts:
-            self._prune_funcs = PicklableStructRefWrapper[PruneTaylorDPFuncts](
-                PruneTaylorDPFuncts,
-                self.dyp.param_arr,
-                self.dyp.dparams_limited,
-                self.dyp.tseg,
-                self.dyp.cfg,
-            )
-        elif kind == "taylor_fixed" and self.dyp.cfg.use_fft_shifts:
-            self._prune_funcs = PicklableStructRefWrapper[
-                PruneTaylorFixedComplexDPFuncts
-            ](
-                PruneTaylorFixedComplexDPFuncts,
-                self.dyp.param_arr,
-                self.dyp.dparams_limited,
-                self.dyp.tseg,
-                self.dyp.cfg,
-            )
-        elif kind == "taylor_fixed" and not self.dyp.cfg.use_fft_shifts:
-            self._prune_funcs = PicklableStructRefWrapper[PruneTaylorFixedDPFuncts](
-                PruneTaylorFixedDPFuncts,
-                self.dyp.param_arr,
-                self.dyp.dparams_limited,
-                self.dyp.tseg,
-                self.dyp.cfg,
-            )
-        elif kind == "chebyshev" and self.dyp.cfg.use_fft_shifts:
-            self._prune_funcs = PicklableStructRefWrapper[
-                PruneChebyshevComplexDPFuncts
-            ](
-                PruneChebyshevComplexDPFuncts,
-                self.dyp.param_arr,
-                self.dyp.dparams_limited,
-                self.dyp.tseg,
-                self.dyp.cfg,
-            )
-        elif kind == "chebyshev" and not self.dyp.cfg.use_fft_shifts:
-            self._prune_funcs = PicklableStructRefWrapper[PruneChebyshevDPFuncts](
-                PruneChebyshevDPFuncts,
-                self.dyp.param_arr,
-                self.dyp.dparams_limited,
-                self.dyp.tseg,
-                self.dyp.cfg,
-            )
-        else:
-            msg = f"Invalid pruning kind: {kind}"
+
+        key = (self.dyp.cfg.prune_poly_order == 5, kind, self.dyp.cfg.use_fft_shifts)
+        prune_class = self._PRUNE_DISPATCH.get(key)
+
+        if prune_class is None:
+            msg = f"Invalid pruning configuration: {key}"
             raise ValueError(msg)
+
+        self._prune_funcs = PicklableStructRefWrapper[DP_FUNCS_TYPE](
+            prune_class,
+            self.dyp.param_arr,
+            self.dyp.dparams_limited,
+            self.dyp.tseg,
+            self.dyp.cfg,
+        )
 
 
 def _prune_dyp_seg(
@@ -782,7 +771,7 @@ def prune_dyp_tree(
                 futures_to_seg[future] = ref_seg
 
             # Collect results with integrated progress tracking
-            results, errors = tracker.collect_results(futures_to_seg)
+            _, errors = tracker.collect_results(futures_to_seg)
             with log_file.open("a") as f:
                 for ref_seg, error_msg in errors:
                     f.write(f"Error processing ref_seg {ref_seg}: {error_msg}\n")

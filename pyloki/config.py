@@ -8,6 +8,16 @@ import attrs
 import numpy as np
 
 from pyloki import kepler
+from pyloki.core import (
+    generate_bp_chebyshev,
+    generate_bp_chebyshev_approx,
+    generate_bp_chebyshev_fixed,
+    generate_bp_taylor,
+    generate_bp_taylor_approx,
+    generate_bp_taylor_circular,
+    generate_bp_taylor_fixed,
+    generate_bp_taylor_fixed_circular,
+)
 from pyloki.detection.scoring import generate_box_width_trials
 from pyloki.utils import maths, psr_utils, transforms
 from pyloki.utils.misc import C_VAL
@@ -518,6 +528,183 @@ class PulsarSearchConfig:
             psr_utils.range_param(*self.param_limits[iparam], dparams[iparam])
             for iparam in range(self.nparams)
         ]
+
+    def generate_branching_pattern_approx(
+        self,
+        kind: str = "taylor",
+        ref_seg: int = 0,
+        isuggest: int = 0,
+    ) -> np.ndarray:
+        """Generate the approximate branching pattern for the pruning search.
+
+        This is a simplified version of the branching pattern that only tracks the
+        worst-case branching factor.
+
+        Returns
+        -------
+        np.ndarray
+            Branching pattern for the pruning search.
+        """
+        nsegments_ffa = int(np.ceil(self.nsamps / self.bseg_ffa))
+        dparams = self.get_dparams(self.niters_ffa)
+        param_arr = self.get_param_arr(dparams)
+        dparams_lim = self.get_dparams_limited(self.niters_ffa)
+        if kind == "taylor":
+            return generate_bp_taylor_approx(
+                param_arr,
+                dparams_lim,
+                self.param_limits,
+                self.tseg_ffa,
+                nsegments_ffa,
+                self.nbins,
+                self.tol_bins,
+                ref_seg,
+                isuggest,
+                self.use_conservative_grid,
+            )
+        if kind == "chebyshev":
+            return generate_bp_chebyshev_approx(
+                param_arr,
+                dparams_lim,
+                self.param_limits,
+                self.tseg_ffa,
+                nsegments_ffa,
+                self.nbins,
+                self.tol_bins,
+                ref_seg,
+                isuggest,
+                self.use_conservative_grid,
+            )
+        msg = f"Invalid kind: {kind}"
+        raise ValueError(msg)
+
+    def generate_branching_pattern(
+        self,
+        kind: str = "taylor",
+        ref_seg: int = 0,
+    ) -> np.ndarray:
+        """Generate the exact branching pattern for the pruning search.
+
+        This tracks the exact number of branches per node to compute the average
+        branching factor.
+
+        Parameters
+        ----------
+        kind : str
+            The kind of branching pattern to generate.
+        ref_seg : int
+            The reference segment to generate the branching pattern for.
+
+        Returns
+        -------
+        np.ndarray
+            The branching pattern for the pruning search.
+        """
+        nsegments_ffa = int(np.ceil(self.nsamps / self.bseg_ffa))
+        dparams = self.get_dparams(self.niters_ffa)
+        param_arr = self.get_param_arr(dparams)
+        dparams_lim = self.get_dparams_limited(self.niters_ffa)
+        if kind == "taylor":
+            return generate_bp_taylor(
+                param_arr,
+                dparams_lim,
+                self.param_limits,
+                self.tseg_ffa,
+                nsegments_ffa,
+                self.nbins,
+                self.tol_bins,
+                ref_seg,
+                self.use_conservative_grid,
+            )
+        if kind == "chebyshev":
+            return generate_bp_chebyshev(
+                param_arr,
+                dparams_lim,
+                self.param_limits,
+                self.tseg_ffa,
+                nsegments_ffa,
+                self.nbins,
+                self.tol_bins,
+                ref_seg,
+                self.use_conservative_grid,
+            )
+        if kind == "taylor_fixed":
+            return generate_bp_taylor_fixed(
+                param_arr,
+                dparams_lim,
+                self.param_limits,
+                self.tseg_ffa,
+                nsegments_ffa,
+                self.nbins,
+                self.tol_bins,
+                ref_seg,
+            )
+        if kind == "chebyshev_fixed":
+            return generate_bp_chebyshev_fixed(
+                param_arr,
+                dparams_lim,
+                self.param_limits,
+                self.tseg_ffa,
+                nsegments_ffa,
+                self.nbins,
+                self.tol_bins,
+                ref_seg,
+                self.use_conservative_grid,
+            )
+        msg = f"Invalid kind: {kind}"
+        raise ValueError(msg)
+
+    def generate_branching_pattern_circular(
+        self,
+        kind: str = "taylor",
+        ref_seg: int = 0,
+    ) -> np.ndarray:
+        """Generate the exact branching pattern for the circular pruning search.
+
+        This tracks the exact number of branches per node to compute the average
+        branching factor.
+
+        Parameters
+        ----------
+        kind : str
+            The kind of branching pattern to generate.
+        ref_seg : int
+            The reference segment to generate the branching pattern for.
+
+        Returns
+        -------
+        np.ndarray
+            The branching pattern for the pruning search.
+        """
+        nsegments_ffa = int(np.ceil(self.nsamps / self.bseg_ffa))
+        dparams = self.get_dparams(self.niters_ffa)
+        param_arr = self.get_param_arr(dparams)
+        dparams_lim = self.get_dparams_limited(self.niters_ffa)
+        if kind == "taylor":
+            return generate_bp_taylor_circular(
+                param_arr,
+                dparams_lim,
+                self.param_limits,
+                self.tseg_ffa,
+                nsegments_ffa,
+                self.nbins,
+                self.tol_bins,
+                ref_seg,
+                self.use_conservative_grid,
+            )
+        if kind == "taylor_fixed":
+            return generate_bp_taylor_fixed_circular(
+                param_arr,
+                dparams_lim,
+                self.param_limits,
+                self.tseg_ffa,
+                nsegments_ffa,
+                self.nbins,
+                self.tol_bins,
+                ref_seg,
+            )
+        msg = f"Invalid kind: {kind}"
+        raise ValueError(msg)
 
     def _bseg_brute_default(self) -> int:
         init_levels = 1 if self.nparams == 1 else 5

@@ -5,13 +5,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import typed
 
-from pyloki.core import (
+from pyloki.core import set_ffa_load_func
+from pyloki.core.fold import ffa_taylor_resolve
+from pyloki.dynamic import (
     FFATaylorComplexDPFuncts,
     FFATaylorDPFuncts,
-    set_ffa_load_func,
     unify_fold,
 )
-from pyloki.core.fold import ffa_taylor_resolve
 from pyloki.utils import np_utils
 from pyloki.utils.misc import (
     PicklableStructRefWrapper,
