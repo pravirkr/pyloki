@@ -36,7 +36,7 @@ from pyloki.utils.misc import (
     mkdir_p,
     prune_track,
 )
-from pyloki.utils.psr_utils import SnailScheme
+from pyloki.utils.snail import MiddleOutScheme
 from pyloki.utils.timing import Timer, nb_time_now
 
 if TYPE_CHECKING:
@@ -199,7 +199,7 @@ def pruning_iteration_batched(
         The fold segment of the current pruning level to be used for pruning.
     prune_funcs : PruningTaylorDPFunctions
         A container for the functions to be used in the pruning algorithm.
-    scheme : SnailScheme
+    scheme : MiddleOutScheme
         A container describing the indexing scheme used in the pruning algorithm.
     threshold : float
         The threshold score for the current pruning level.
@@ -430,7 +430,7 @@ class Pruning:
         return self._complete
 
     @property
-    def scheme(self) -> SnailScheme:
+    def scheme(self) -> MiddleOutScheme:
         return self._scheme
 
     @property
@@ -463,10 +463,10 @@ class Pruning:
         -----
         Reference time for the parameters will be the middle of the reference segment.
         """
-        self._scheme = SnailScheme(
-            nseg=self.dyp.nsegments,
+        self._scheme = MiddleOutScheme(
+            nsegments=self.dyp.nsegments,
             ref_idx=ref_seg,
-            tseg=self.dyp.tseg,
+            tsegment=self.dyp.tseg,
         )
         self._complete = False
         self._prune_level = 0
@@ -497,7 +497,7 @@ class Pruning:
         self._pstats = PruneStatsCollection()
         pstats_cur = PruneStats(
             level=self.prune_level,
-            seg_idx=self.scheme.get_idx(self.prune_level),
+            seg_idx=self.scheme.get_segment_idx(self.prune_level),
             threshold=0,
             score_min=self.suggestion.score_min,
             score_max=self.suggestion.score_max,
@@ -579,7 +579,7 @@ class Pruning:
         if self.is_complete:
             return
         self._prune_level += 1
-        seg_idx_cur = self.scheme.get_idx(self.prune_level)
+        seg_idx_cur = self.scheme.get_segment_idx(self.prune_level)
         fold_segment = self.prune_funcs.load(self.dyp.fold, seg_idx_cur)
         threshold = self.threshold_scheme[self.prune_level - 1]
         # Get the useful precomputed values: coord_next := coord_cur + coord_add
@@ -588,7 +588,7 @@ class Pruning:
         coord_next = self.scheme.get_coord(self.prune_level)
         coord_cur = self.scheme.get_current_coord(self.prune_level)
         coord_cur_fixed = self.scheme.get_current_coord_fixed(self.prune_level)
-        coord_add = self.scheme.get_seg_coord(self.prune_level)
+        coord_add = self.scheme.get_segment_coord(self.prune_level)
         suggestion, stats_dict, timers = pruning_iteration_batched(
             self.suggestion,
             fold_segment,

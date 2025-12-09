@@ -8,8 +8,7 @@ from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
-from pyloki.core import chebyshev as cheby
-from pyloki.core import common
+from pyloki.core import chebyshev, common
 from pyloki.detection import scoring
 
 if TYPE_CHECKING:
@@ -481,7 +480,7 @@ def resolve_func(
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    return cheby.poly_chebyshev_resolve_batch(
+    return chebyshev.poly_chebyshev_resolve_batch(
         leaves_batch,
         coord_add,
         coord_cur,
@@ -499,7 +498,7 @@ def branch_func(
     coord_prev: tuple[float, float],
     coord_cur_fixed: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    return cheby.poly_chebyshev_branch_batch(
+    return chebyshev.poly_chebyshev_branch_batch(
         leaves_batch,
         coord_cur,
         coord_prev,
@@ -518,7 +517,7 @@ def suggest_func(
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
 ) -> SuggestionStruct:
-    return cheby.poly_chebyshev_suggest(
+    return chebyshev.poly_chebyshev_suggest(
         fold_segment,
         coord_init,
         self.param_arr,
@@ -534,7 +533,7 @@ def suggest_complex_func(
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
 ) -> SuggestionStructComplex:
-    return cheby.poly_chebyshev_suggest_complex(
+    return chebyshev.poly_chebyshev_suggest_complex(
         fold_segment,
         coord_init,
         self.param_arr,
@@ -599,7 +598,7 @@ def transform_func(
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
 ) -> np.ndarray:
-    return cheby.poly_chebyshev_transform_batch(
+    return chebyshev.poly_chebyshev_transform_batch(
         leaves_batch,
         coord_next,
         coord_cur,

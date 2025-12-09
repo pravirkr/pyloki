@@ -8,7 +8,7 @@ from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
-from pyloki.core import common, taylor, taylor_fixed
+from pyloki.core import circular, common, taylor_fixed
 from pyloki.detection import scoring
 
 if TYPE_CHECKING:
@@ -364,7 +364,7 @@ def resolve_func(
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    return taylor_fixed.poly_taylor_fixed_resolve_circular_batch(
+    return circular.poly_taylor_fixed_resolve_circular_batch(
         leaves_batch,
         coord_add,
         coord_cur,
@@ -499,15 +499,12 @@ def validate_func(
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    if self.poly_order == 4:
-        return taylor.poly_taylor_validate_batch(
-            leaves_batch,
-            leaves_origins,
-            self.p_orb_min,
-            self.snap_threshold,
-        )
-    return leaves_batch, leaves_origins
-
+    return circular.poly_taylor_validate_circular_batch(
+        leaves_batch,
+        leaves_origins,
+        self.p_orb_min,
+        self.snap_threshold,
+    )
 
 @njit(cache=True, fastmath=True)
 def get_validation_params_func(

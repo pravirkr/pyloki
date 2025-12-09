@@ -8,7 +8,7 @@ from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
-from pyloki.core import common, taylor
+from pyloki.core import circular, common, taylor
 from pyloki.detection import scoring
 
 if TYPE_CHECKING:
@@ -361,7 +361,7 @@ def resolve_func(
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    return taylor.poly_taylor_resolve_circular_batch(
+    return circular.poly_taylor_resolve_circular_batch(
         leaves_batch,
         coord_add,
         coord_cur,
@@ -379,7 +379,7 @@ def branch_func(
     coord_prev: tuple[float, float],
     coord_cur_fixed: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    return taylor.poly_taylor_branch_circular_batch(
+    return circular.poly_taylor_branch_circular_batch(
         leaves_batch,
         coord_cur,
         self.nbins,
@@ -477,7 +477,7 @@ def transform_func(
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
 ) -> np.ndarray:
-    return taylor.poly_taylor_transform_circular_batch(
+    return circular.poly_taylor_transform_circular_batch(
         leaves_batch,
         coord_next,
         coord_cur,
@@ -501,7 +501,7 @@ def validate_func(
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    return taylor.poly_taylor_validate_circular_batch(
+    return circular.poly_taylor_validate_circular_batch(
         leaves_batch,
         leaves_origins,
         self.p_orb_min,

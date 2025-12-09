@@ -7,6 +7,7 @@ from pyloki.core.common import get_leaves
 from pyloki.detection.scoring import snr_score_func, snr_score_func_complex
 from pyloki.utils import maths, np_utils, psr_utils, transforms
 from pyloki.utils.misc import C_VAL
+from pyloki.utils.snail import MiddleOutScheme
 from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
 
@@ -322,118 +323,6 @@ def poly_chebyshev_branch_batch(
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebyshev_validate_batch(
-    leaves_batch: np.ndarray,
-    leaves_origins: np.ndarray,
-    coord_cur: tuple[float, float],
-    p_orb_min: float,
-    snap_threshold: float = 5,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Validate a batch of leaf params.
-
-    Filters out unphysical orbits. Currently removes cases with imaginary orbital
-    frequency (i.e., -snap/accel <= 0) and orbital frequency > omega_orb_max.
-
-    Parameters
-    ----------
-    leaves_batch : np.ndarray
-        The leaf parameter sets to validate. Shape: (N, nparams + 2, 2)
-    leaves_origins : np.ndarray
-        The origins of the leaves. Shape: (N,)
-    coord_cur: tuple[float, float]
-        The coordinates of the current segment (level cur).
-    p_orb_min : float
-        Minimum allowed orbital period.
-    snap_threshold: float
-        Threshold for significant snap (number of snap grid cells). Defaults to 5.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        Filtered leaf parameter sets (only physically plausible) and their origins.
-    """
-    eps = 1e-12
-    _, t_s = coord_cur
-    alpha_4 = leaves_batch[:, 0, 0]
-    dalpha_4 = leaves_batch[:, 0, 1]
-    alpha_2 = leaves_batch[:, 2, 0]
-    # Calculate accel and snap
-    accel = (4 / t_s**2) * (alpha_2 - 4 * alpha_4)
-    snap = (192 / t_s**4) * alpha_4
-    dsnap = (192 / t_s**4) * dalpha_4
-    omega_orb_max_sq = (2 * np.pi / p_orb_min) ** 2
-    # omega_orb = -snap/accel > 0:
-    # 1) snap=0 → omega_orb=0 (valid)
-    # 2) snap≠0 & accel=0 → omega_orb=±∞ (allowed)
-    # 3) snap≠0 & accel≠0 & -snap/accel>0 (valid)
-
-    omega_sq = -snap / (accel + eps)
-
-    # Physically usable via s/a
-    is_usable = (np.abs(accel) > eps) & (np.abs(snap) > eps) & (omega_sq > 0.0)
-    # Numerically degenerate but not obviously unphysical
-    is_zero = (np.abs(snap) <= eps) | (np.abs(accel) <= eps)
-
-    # Within maximum orbital frequency limit
-    is_within_omega_limit = omega_sq <= omega_orb_max_sq
-
-    # Delays circular validation until snap is well-measured.
-    is_significant = np.abs(snap / (dsnap + eps)) > snap_threshold
-
-    # No filtering for each leaf until its snap is significant
-    mask = ~is_significant | (is_zero | (is_usable & is_within_omega_limit))
-    idx = np.where(mask)[0]
-    return leaves_batch[idx], leaves_origins[idx]
-
-
-@njit(cache=True, fastmath=True)
-def get_circular_mask(
-    leaves_batch: np.ndarray,
-    t_s: float,
-    snap_threshold: float = 5,
-) -> np.ndarray:
-    """Generate a robust mask to identify circular orbit candidates.
-
-    Filters out physically implausible and numerically unstable orbits.
-
-    Parameters
-    ----------
-    leaves_batch : np.ndarray
-        Shape (n_batch, nparams + 2, 2)
-    snap_threshold: float
-        Threshold for significant snap (number of snap grid cells). Defaults to 5.
-
-    Returns
-    -------
-    np.ndarray
-        A boolean array where True indicates a high-quality circular orbit candidate.
-
-    """
-    eps = 1e-12
-    alpha_4 = leaves_batch[:, 0, 0]
-    dalpha_4 = leaves_batch[:, 0, 1]
-    alpha_2 = leaves_batch[:, 2, 0]
-    # Calculate accel and snap
-    accel = (4 / t_s**2) * (alpha_2 - 4 * alpha_4)
-    snap = (192 / t_s**4) * alpha_4
-    dsnap = (192 / t_s**4) * dalpha_4
-
-    # Numerical Stability
-    # The acceleration and snap must be significantly non-zero to define an orbit.
-    is_stable = (np.abs(accel) > eps) & (np.abs(snap) > eps)
-
-    # Physicality
-    # For Omega^2 = -s/a to be positive, s and a must have opposite signs.
-    # This is the most fundamental check for oscillatory motion.
-    omega_sq = -snap / (accel + eps)
-    is_physical = omega_sq > 0
-
-    # Delays circular classification until snap is well-measured.
-    is_significant = np.abs(snap / (dsnap + eps)) > snap_threshold
-    return is_stable & is_physical & is_significant
-
-
-@njit(cache=True, fastmath=True)
 def poly_chebyshev_resolve_batch(
     leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
@@ -515,86 +404,6 @@ def poly_chebyshev_resolve_batch(
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebyshev_resolve_circular_batch(
-    leaves_batch: np.ndarray,
-    coord_add: tuple[float, float],
-    coord_cur: tuple[float, float],
-    coord_init: tuple[float, float],
-    param_arr: types.ListType[types.Array],
-    fold_bins: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Resolve the leaf parameters to find the closest grid index and phase shift."""
-    # only works for circular orbit when nparams = 4
-    n_batch, _, _ = leaves_batch.shape
-    t0_cur, scale_cur = coord_cur
-    t0_init, _ = coord_init
-    t0_add, _ = coord_add
-    param_set_batch = leaves_batch[:, :-1, 0]
-    f0_batch = leaves_batch[:, -1, 0]
-
-    circ_mask = get_circular_mask(leaves_batch, scale_cur, snap_threshold=5)
-    idx_circular = np.where(circ_mask)[0]
-    idx_taylor = np.where(~circ_mask)[0]
-    dvec_t_add = np.empty((n_batch, 5), dtype=np.float64)
-    dvec_t_init = np.empty((n_batch, 5), dtype=np.float64)
-
-    if idx_circular.size > 0:
-        # Convert the chebyshev parameters to taylor parameters
-        param_set_batch_circ = param_set_batch[idx_circular]
-        taylor_param_vec_circ = transforms.cheby_to_taylor(
-            param_set_batch_circ,
-            scale_cur,
-        )
-        dvec_t_add_circ = transforms.shift_taylor_params_circular_batch(
-            taylor_param_vec_circ,
-            t0_add - t0_cur,
-        )
-        dvec_t_init_circ = transforms.shift_taylor_params_circular_batch(
-            taylor_param_vec_circ,
-            t0_init - t0_cur,
-        )
-        dvec_t_add[idx_circular] = dvec_t_add_circ
-        dvec_t_init[idx_circular] = dvec_t_init_circ
-
-    if idx_taylor.size > 0:
-        dvec_t_add_norm = transforms.cheby_to_taylor_param_shift(
-            param_set_batch[idx_taylor],
-            t0_cur,
-            scale_cur,
-            t0_add,
-        )
-        dvec_t_init_norm = transforms.cheby_to_taylor_param_shift(
-            param_set_batch[idx_taylor],
-            t0_cur,
-            scale_cur,
-            t0_init,
-        )
-        dvec_t_add[idx_taylor] = dvec_t_add_norm
-        dvec_t_init[idx_taylor] = dvec_t_init_norm
-
-    accel_new_batch = dvec_t_add[:, -3]
-    vel_new_batch = dvec_t_add[:, -2] - dvec_t_init[:, -2]
-    freq_new_batch = f0_batch * (1 - vel_new_batch / C_VAL)
-    delay_batch = (dvec_t_add[:, -1] - dvec_t_init[:, -1]) / C_VAL
-    relative_phase_batch = psr_utils.get_phase_idx(
-        t0_add - t0_init,
-        f0_batch,
-        fold_bins,
-        delay_batch,
-    )
-    param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
-    param_idx_batch[:, -2] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-2],
-        accel_new_batch,
-    )
-    param_idx_batch[:, -1] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-1],
-        freq_new_batch,
-    )
-    return param_idx_batch, relative_phase_batch
-
-
-@njit(cache=True, fastmath=True)
 def poly_chebyshev_transform_batch(
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
@@ -614,48 +423,6 @@ def poly_chebyshev_transform_batch(
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebyshev_transform_circular_batch(
-    leaves_batch: np.ndarray,
-    coord_next: tuple[float, float],
-    coord_cur: tuple[float, float],
-    conservative_errors: bool,
-) -> np.ndarray:
-    """Re-center the leaves to the next segment reference time."""
-    _, scale_cur = coord_cur
-    _, scale_next = coord_next
-    circ_mask = get_circular_mask(leaves_batch, scale_cur, snap_threshold=5)
-    idx_circular = np.where(circ_mask)[0]
-    idx_taylor = np.where(~circ_mask)[0]
-    leaves_batch_trans = leaves_batch.copy()
-    if idx_circular.size > 0:
-        # Convert the chebyshev parameters to taylor parameters
-        leaves_batch_circ = leaves_batch[idx_circular, :-1]
-        leaves_batch_circ_taylor = transforms.cheby_to_taylor_full(
-            leaves_batch_circ,
-            scale_cur,
-        )
-        # Shift the taylor parameters in circular orbit
-        dvec_t_add_circ = transforms.shift_taylor_full_circular_batch(
-            leaves_batch_circ_taylor,
-            coord_next[0] - coord_cur[0],
-            conservative_errors,
-        )
-        # Convert the taylor parameters back to chebyshev parameters
-        leaves_batch_trans[idx_circular, :-1] = transforms.taylor_to_cheby_full(
-            dvec_t_add_circ,
-            scale_next,
-        )
-    if idx_taylor.size > 0:
-        leaves_batch_trans[idx_taylor, :-1] = transforms.shift_cheby_full(
-            leaves_batch[idx_taylor, :-1],
-            coord_next,
-            coord_cur,
-            conservative_errors,
-        )
-    return leaves_batch_trans
-
-
-@njit(cache=True, fastmath=True)
 def generate_bp_chebyshev_approx(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
@@ -671,23 +438,14 @@ def generate_bp_chebyshev_approx(
     """Generate the approximate branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
     branch_max = 256
-    # Snail Scheme
-    scheme_data = np.argsort(np.abs(np.arange(nsegments) - ref_seg), kind="mergesort")
-    coord_init = (ref_seg + 0.5) * tseg_ffa, tseg_ffa / 2
+    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
+    coord_init = snail_scheme.get_coord(0)
     leaves_init = poly_chebyshev_leaves(param_arr, dparams_lim, poly_order, coord_init)
     leaf = leaves_init[isuggest]
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
     for prune_level in range(1, nsegments):
-        # Compute coordinates
-        scheme_till_now = scheme_data[: prune_level + 1]
-        ref = (np.min(scheme_till_now) + np.max(scheme_till_now) + 1) / 2
-        scale = ref - np.min(scheme_till_now)
-        coord_next = ref * tseg_ffa, scale * tseg_ffa
-        scheme_till_now_prev = scheme_data[:prune_level]
-        ref_prev = (np.min(scheme_till_now_prev) + np.max(scheme_till_now_prev) + 1) / 2
-        scale_prev = ref_prev - np.min(scheme_till_now_prev)
-        coord_prev = ref_prev * tseg_ffa, scale_prev * tseg_ffa
-        coord_cur = coord_prev[0], coord_next[1]
+        coord_next = snail_scheme.get_coord(prune_level)
+        coord_cur = snail_scheme.get_current_coord(prune_level)
         leaves_arr = poly_chebyshev_branch_batch(
             leaf[np.newaxis, :],
             coord_cur,
@@ -726,9 +484,8 @@ def generate_bp_chebyshev(
     f0_batch = param_arr[-1]
     n_freqs = len(f0_batch)
 
-    # Snail Scheme
-    scheme_data = np.argsort(np.abs(np.arange(nsegments) - ref_seg), kind="mergesort")
-    coord_init = (ref_seg + 0.5) * tseg_ffa, tseg_ffa / 2
+    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
+    coord_init = snail_scheme.get_coord(0)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
     # Keep poly_order+1 for d0
     dparam_cur_batch = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
@@ -749,16 +506,9 @@ def generate_bp_chebyshev(
     param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
 
     for prune_level in range(1, nsegments):
-        # Compute coordinates
-        scheme_till_now = scheme_data[: prune_level + 1]
-        ref = (np.min(scheme_till_now) + np.max(scheme_till_now) + 1) / 2
-        scale = ref - np.min(scheme_till_now)
-        coord_next = ref * tseg_ffa, scale * tseg_ffa
-        scheme_till_now_prev = scheme_data[:prune_level]
-        ref_prev = (np.min(scheme_till_now_prev) + np.max(scheme_till_now_prev) + 1) / 2
-        scale_prev = ref_prev - np.min(scheme_till_now_prev)
-        coord_prev = ref_prev * tseg_ffa, scale_prev * tseg_ffa
-        coord_cur = coord_prev[0], coord_next[1]
+        coord_next = snail_scheme.get_coord(prune_level)
+        coord_prev = snail_scheme.get_coord(prune_level - 1)
+        coord_cur = snail_scheme.get_current_coord(prune_level)
 
         # Transform dparams to the current segment
         dcheb_cur_batch = transforms.shift_cheby_errors(
@@ -835,9 +585,8 @@ def generate_bp_chebyshev_fixed(
     f0_batch = param_arr[-1]
     n_freqs = len(f0_batch)
 
-    # Snail Scheme
-    scheme_data = np.argsort(np.abs(np.arange(nsegments) - ref_seg), kind="mergesort")
-    coord_init = (ref_seg + 0.5) * tseg_ffa, tseg_ffa / 2
+    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
+    coord_init = snail_scheme.get_coord(0)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
     # Keep poly_order+1 for d0
     dparam_cur_batch = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
@@ -858,48 +607,22 @@ def generate_bp_chebyshev_fixed(
     param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
 
     for prune_level in range(1, nsegments):
-        # Compute coordinates
-        scheme_till_now = scheme_data[: prune_level + 1]
-        ref = (np.min(scheme_till_now) + np.max(scheme_till_now) + 1) / 2
-        scale = ref - np.min(scheme_till_now)
-        t0_next = ref * tseg_ffa
-        scale_next = scale * tseg_ffa
-        left_edge = t0_next - scale_next
-        right_edge = t0_next + scale_next
-        scale_cur = max(
-            float(abs(left_edge - coord_init[0])),
-            float(abs(right_edge - coord_init[0])),
-        )
-        t_obs_minus_t_ref = scale_cur - coord_init[1]
-        coord_cur = coord_init[0], t_obs_minus_t_ref
-
-        scheme_till_now_prev = scheme_data[:prune_level]
-        ref_prev = (np.min(scheme_till_now_prev) + np.max(scheme_till_now_prev) + 1) / 2
-        scale_prev = ref_prev - np.min(scheme_till_now_prev)
-        t0_prev = ref_prev * tseg_ffa
-        scale_prev = scale_prev * tseg_ffa
-        left_edge_prev = t0_prev - scale_prev
-        right_edge_prev = t0_prev + scale_prev
-        scale_cur_prev = max(
-            float(abs(left_edge_prev - coord_init[0])),
-            float(abs(right_edge_prev - coord_init[0])),
-        )
-        if prune_level == 1:
-            t_obs_minus_t_ref_prev = scale_cur_prev
-        else:
-            t_obs_minus_t_ref_prev = scale_cur_prev - coord_init[1]
-        coord_prev = coord_init[0], t_obs_minus_t_ref_prev
+        coord_cur_fixed = snail_scheme.get_current_coord_fixed(prune_level)
+        coord_prev_fixed = snail_scheme.get_current_coord_fixed(prune_level - 1)
 
         # Transform dparams to the current segment
         dcheb_cur_batch = transforms.shift_cheby_errors(
             dcheb_cur_batch,
-            coord_cur,
-            coord_prev,
+            coord_cur_fixed,
+            coord_prev_fixed,
             use_conservative_errors,
         )
 
         param_limits_cheby_d0 = np.zeros((n_freqs, poly_order + 1, 2), dtype=np.float64)
-        param_limits_cheby = taylor_to_chebyshev_limits(param_limits_d, coord_cur[1])
+        param_limits_cheby = taylor_to_chebyshev_limits(
+            param_limits_d,
+            coord_cur_fixed[1],
+        )
         param_limits_cheby_d0[:, :-1] = param_limits_cheby
         param_ranges = (
             param_limits_cheby_d0[:, :, 1] - param_limits_cheby_d0[:, :, 0]
