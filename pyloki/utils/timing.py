@@ -93,8 +93,11 @@ class Timer(ContextDecorator):
         if self.logger:
             if callable(self.text):
                 text = self.text(self.last)
-            else:
+            elif isinstance(self.text, str):
                 text = self.text.format(self.last)
+            else:
+                msg = f"Invalid text type: {type(self.text)}"
+                raise TypeError(msg)
             self.logger(text)
         if self.name:
             self.timers[self.name].add(self.last)

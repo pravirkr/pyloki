@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 
 from numba import njit, prange, types
 from numba.experimental import structref
@@ -154,7 +154,7 @@ def ffa_taylor_dp_functs_init(
     nbins: int,
     bseg_brute: int,
 ) -> FFATaylorDPFuncts:
-    self = structref.new(FFATaylorDPFunctsType)
+    self = cast("FFATaylorDPFuncts", structref.new(FFATaylorDPFunctsType))
     self.tsamp = tsamp
     self.nbins = nbins
     self.bseg_brute = bseg_brute
@@ -167,7 +167,7 @@ def ffa_taylor_complex_dp_functs_init(
     nbins: int,
     bseg_brute: int,
 ) -> FFATaylorComplexDPFuncts:
-    self = structref.new(FFATaylorComplexDPFunctsType)
+    self = cast("FFATaylorComplexDPFuncts", structref.new(FFATaylorComplexDPFunctsType))
     self.tsamp = tsamp
     self.nbins = nbins
     self.bseg_brute = bseg_brute
@@ -269,7 +269,7 @@ def ol_init_func(
     ) -> np.ndarray:
         return init_func(self, ts_e, ts_v, param_arr)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(FFATaylorDPFunctsTemplate, "resolve")
@@ -289,7 +289,7 @@ def ol_resolve(
     ) -> tuple[np.ndarray, int]:
         return resolve_func(self, pset_cur, parr_prev, ffa_level, latter)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(FFATaylorDPFunctsTemplate, "pack")
@@ -305,7 +305,7 @@ def ol_pack_func(
     ) -> np.ndarray:
         return pack_func(self, data, ffa_level)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(FFATaylorDPFunctsTemplate, "shift_add")
@@ -331,7 +331,7 @@ def ol_shift_add_func(
             phase_shift_head,
         )
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(FFATaylorComplexDPFunctsTemplate, "init")
@@ -349,7 +349,7 @@ def ol_init_complex_func(
     ) -> np.ndarray:
         return init_complex_func(self, ts_e, ts_v, param_arr)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(FFATaylorComplexDPFunctsTemplate, "resolve")
@@ -369,7 +369,7 @@ def ol_resolve_complex(
     ) -> tuple[np.ndarray, float]:
         return resolve_func(self, pset_cur, parr_prev, ffa_level, latter)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(FFATaylorComplexDPFunctsTemplate, "pack")
@@ -385,7 +385,7 @@ def ol_pack_complex_func(
     ) -> np.ndarray:
         return pack_func(self, data, ffa_level)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(FFATaylorComplexDPFunctsTemplate, "shift_add")
@@ -411,7 +411,7 @@ def ol_shift_add_complex_func(
             shift_head,
         )
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @Timer(name="unify_fold")

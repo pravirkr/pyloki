@@ -376,7 +376,7 @@ def lstsq_weighted(
     a_w = design_matrix * w_sqrt[:, np.newaxis]
     b_w = data * w_sqrt
 
-    x_hat, residuals, rank, s = np.linalg.lstsq(a_w, b_w, rcond=None)
+    x_hat, _, rank, _ = np.linalg.lstsq(a_w, b_w, rcond=None)
 
     # Calculate the covariance matrix
     if rank == design_matrix.shape[1]:  # Full rank

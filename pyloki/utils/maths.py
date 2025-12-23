@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from numba import njit, vectorize
 from numpy import polynomial
-from scipy import stats
+from scipy import special, stats
 
 from pyloki.utils import np_utils
 
@@ -236,7 +236,7 @@ def gen_power_series_table_np(order_max: int, n_derivs: int) -> np.ndarray:
     for order in range(order_max + 1):
         # Create power series polynomial
         coeffs = np.zeros(order + 1)
-        coeffs[order] = 1 / np.math.factorial(order)
+        coeffs[order] = 1 / special.factorial(order)
         poly = polynomial.Polynomial(coeffs)
 
         for deriv in range(n_derivs + 1):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Self
+from typing import Self, cast
 
 import numpy as np
 from numba import njit, types
@@ -162,7 +162,7 @@ def middle_out_scheme_init_func(
     ref_idx: int,
     tsegment: float,
 ) -> MiddleOutScheme:
-    self = structref.new(MiddleOutSchemeType)
+    self = cast("MiddleOutScheme", structref.new(MiddleOutSchemeType))
     if nsegments <= 0:
         msg = f"nsegments must be greater than 0, got {nsegments}."
         raise ValueError(msg)
@@ -260,7 +260,7 @@ def overload_middle_out_scheme_construct(
     def impl(nsegments: int, ref_idx: int, tsegment: float) -> MiddleOutScheme:
         return middle_out_scheme_init_func(nsegments, ref_idx, tsegment)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(MiddleOutSchemeTemplate, "get_segment_idx")
@@ -268,7 +268,7 @@ def ol_get_segment_idx_func(self: MiddleOutScheme, level: int) -> types.Function
     def impl(self: MiddleOutScheme, level: int) -> int:
         return get_segment_idx_func(self, level)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(MiddleOutSchemeTemplate, "get_coord")
@@ -276,7 +276,7 @@ def ol_get_coord_func(self: MiddleOutScheme, level: int) -> types.FunctionType:
     def impl(self: MiddleOutScheme, level: int) -> tuple[float, float]:
         return get_coord_func(self, level)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(MiddleOutSchemeTemplate, "get_segment_coord")
@@ -284,7 +284,7 @@ def ol_get_segment_coord_func(self: MiddleOutScheme, level: int) -> types.Functi
     def impl(self: MiddleOutScheme, level: int) -> tuple[float, float]:
         return get_segment_coord_func(self, level)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(MiddleOutSchemeTemplate, "get_current_coord")
@@ -292,7 +292,7 @@ def ol_get_current_coord_func(self: MiddleOutScheme, level: int) -> types.Functi
     def impl(self: MiddleOutScheme, level: int) -> tuple[float, float]:
         return get_current_coord_func(self, level)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(MiddleOutSchemeTemplate, "get_current_coord_fixed")
@@ -303,7 +303,7 @@ def ol_get_current_coord_fixed_func(
     def impl(self: MiddleOutScheme, level: int) -> tuple[float, float]:
         return get_current_coord_fixed_func(self, level)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(MiddleOutSchemeTemplate, "get_valid")
@@ -311,7 +311,7 @@ def ol_get_valid_func(self: MiddleOutScheme, prune_level: int) -> types.Function
     def impl(self: MiddleOutScheme, prune_level: int) -> tuple[float, float]:
         return get_valid_func(self, prune_level)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(MiddleOutSchemeTemplate, "get_delta")
@@ -319,4 +319,4 @@ def ol_get_delta_func(self: MiddleOutScheme, level: int) -> types.FunctionType:
     def impl(self: MiddleOutScheme, level: int) -> float:
         return get_delta_func(self, level)
 
-    return impl
+    return cast("types.FunctionType", impl)

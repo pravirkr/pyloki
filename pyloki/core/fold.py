@@ -393,6 +393,63 @@ def brutefold_start_complex(
 
 
 @njit(
+    ["c8[:,:,:,::1](f4[::1],f4[::1],f8[::1],i8,i8,f8,f8)"],
+    cache=True,
+    fastmath=True,
+)
+def brutefold_start_complex_opt(
+    ts_e: np.ndarray,
+    ts_v: np.ndarray,
+    freq_arr: np.ndarray,
+    segment_len: int,
+    nbins: int,
+    tsamp: float,
+    t_ref: float = 0,
+) -> np.ndarray:
+    """Optimized version of brutefold_start_complex using matrix multiplication."""
+    nfreqs = len(freq_arr)
+    nsamples = len(ts_e)
+    nsegments = int(np.ceil(nsamples / segment_len))
+    nbins_f = (nbins // 2) + 1
+    x_arr = ts_e.reshape(nsegments, segment_len).astype(np.float32)
+    y_arr = ts_v.reshape(nsegments, segment_len).astype(np.float32)
+
+    # Construct the "Comb" of target frequencies
+    n_comb = nfreqs * nbins_f
+    target_freqs_flat = np.empty(n_comb, dtype=np.float32)
+    for i in range(nfreqs):
+        for h in range(nbins_f):
+            target_freqs_flat[i * nbins_f + h] = freq_arr[i] * h
+
+    # Precompute the basis matrix
+    w_real = np.empty((n_comb, segment_len), dtype=np.float32)
+    w_imag = np.empty((n_comb, segment_len), dtype=np.float32)
+    time_factor = np.float32(-2.0 * np.pi * tsamp)
+    for t in range(segment_len):
+        time_val = t * time_factor
+        for i in range(n_comb):
+            ang = target_freqs_flat[i] * time_val
+            w_real[i, t] = np.cos(ang)
+            w_imag[i, t] = np.sin(ang)
+
+    result = np.empty((nsegments, nfreqs, 2, nbins_f), dtype=np.complex64)
+    # Result = X @ (Wr + jWi).T = (X @ Wr.T) + j(X @ Wi.T)
+    result.real[:, :, 0, :] = (x_arr @ w_real.T).reshape(nsegments, nfreqs, nbins_f)
+    result.imag[:, :, 0, :] = (x_arr @ w_imag.T).reshape(nsegments, nfreqs, nbins_f)
+    result.real[:, :, 1, :] = (y_arr @ w_real.T).reshape(nsegments, nfreqs, nbins_f)
+    result.imag[:, :, 1, :] = (y_arr @ w_imag.T).reshape(nsegments, nfreqs, nbins_f)
+
+    # Apply Phase Correction for t_ref
+    # DFT shift theorem: F(t - t0) <-> F(w) * e^(j * w * t0)
+    # phase is -w(t - t_ref) = -wt + w*t_ref. Multiply by e^(+ j * w * t_ref).
+    corr_factor = np.float32(2.0 * np.pi * t_ref)
+    corr_phasor = np.exp(1j * corr_factor * target_freqs_flat).astype(np.complex64)
+    corr_reshaped = corr_phasor.reshape(1, nfreqs, 1, nbins_f)
+    result *= corr_reshaped
+    return result
+
+
+@njit(
     ["c8[:,:,:,::1](f4[::1],f4[::1],f8[::1],i8,i8,f8,f8,i8)"],
     cache=True,
     parallel=True,
@@ -429,7 +486,8 @@ def brutefold_complex_oversampled(
     for iseg in prange(nsegments):
         for ifreq in range(nfreqs):
             fold_out[iseg, ifreq] = np.fft.rfft(fold_time[iseg, ifreq], axis=-1)[
-                :, :nbins_f,
+                :,
+                :nbins_f,
             ]
     return fold_out
 
@@ -513,7 +571,7 @@ def ffa_taylor_init_complex(
     freq_arr = param_arr[-1]
     nparams = len(param_arr)
     t_ref = 0 if nparams == 1 else bseg_brute * tsamp / 2
-    return brutefold_start_complex(
+    return brutefold_start_complex_opt(
         ts_e,
         ts_v,
         freq_arr,

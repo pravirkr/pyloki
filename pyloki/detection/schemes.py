@@ -110,7 +110,11 @@ class StateInfo:
     @classmethod
     def from_record(cls, state: np.recarray) -> Self:
         field_names = set(attrs.fields_dict(cls).keys())
-        missing = field_names - set(state.dtype.names)
+        dtype_names = state.dtype.names
+        if dtype_names is None:
+            msg = "State dtype has no field names"
+            raise ValueError(msg)
+        missing = field_names - set(dtype_names)
         if missing:
             msg = f"State dtype is missing required fields: {missing}"
             raise ValueError(msg)
@@ -434,8 +438,12 @@ class DynamicThresholdSchemeAnalyser:
 
             # Find and remove the previous best path line
             for line in ax.get_lines():
-                if line.get_label() == "Best path" or line.get_label().startswith(
-                    "Best: P(H1)",
+                label = line.get_label()
+                if label == "Best path" or (
+                    isinstance(label, str)
+                    and label.startswith(
+                        "Best: P(H1)",
+                    )
                 ):
                     line.remove()
 

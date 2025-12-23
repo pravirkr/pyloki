@@ -4,19 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyloki"
-version = "0.6.0"
+version = "0.7.0"
 description = "Detecting Pulsars"
 readme = "README.md"
 authors = [
     { name = "Pravir Kumar", email = "pravirka@gmail.com" },
     { name = "Barak Zackay", email = "bzackay@gmail.com" },
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: MacOS :: MacOS X",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
@@ -27,7 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=2.0",
-    "numba",
+    "numba>=0.63.0",
     "astropy",
     "xarray",
     "attrs",
@@ -44,10 +44,7 @@ dependencies = [
 Repository = "https://github.com/pravirkr/pyloki"
 
 [project.optional-dependencies]
-cuda = [
-    "cuda-python",
-    "numba-cuda",
-]
+cuda = ["cuda-python", "numba-cuda"]
 tests = [
     "pytest",
     "pytest-cov",
@@ -71,7 +68,7 @@ include = [
 ]
 line-length = 88
 indent-width = 4
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.format]
 quote-style = "double"
@@ -79,16 +76,7 @@ indent-style = "space"
 
 [tool.ruff.lint]
 select = ["ALL"]
-ignore = [
-    "D1",
-    "ANN003",
-    "PLR2004",
-    "G004",
-    "E712",
-    "FBT001",
-    "TD",
-    "FIX",
-]
+ignore = ["D1", "ANN003", "PLR2004", "G004", "E712", "FBT001", "TD", "FIX"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 20
@@ -120,7 +108,25 @@ show_missing = true
 ignore_errors = true
 exclude_lines = ['raise AssertionError', 'raise NotImplementedError']
 
-[tool.mypy]
-plugins = ["numpy.typing.mypy_plugin"]
-ignore_missing_imports = true
-disable_error_code = "attr-defined"
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+exclude = ["pyloki/cuda/*.py", "pyloki/main.py", "**/tests/**", "**/docs/**"]
+
+[tool.ty.rules]
+index-out-of-bounds = "ignore"
+unresolved-import = "ignore"
+not-iterable = "ignore"  # For Numba prange
+
+[[tool.ty.overrides]]
+include = [
+    "pyloki/dynamic/*.py",
+    "pyloki/detection/thresholding.py",
+    "pyloki/utils/snail.py",
+    "pyloki/utils/suggestion.py",
+]
+
+[tool.ty.overrides.rules]
+invalid-assignment = "ignore"
+unresolved-attribute = "ignore"

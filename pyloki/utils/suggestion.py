@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Self
+from typing import Self, cast
 
 import numpy as np
 from numba import njit, types
@@ -382,7 +382,7 @@ def suggestion_struct_init(
     backtracks: np.ndarray,
     mode: str = "taylor",
 ) -> SuggestionStruct:
-    self = structref.new(SuggestionStructType)
+    self = cast("SuggestionStruct", structref.new(SuggestionStructType))
     self.param_sets = param_sets
     self.folds = folds
     self.scores = scores
@@ -402,7 +402,7 @@ def suggestion_struct_complex_init(
     backtracks: np.ndarray,
     mode: str = "taylor",
 ) -> SuggestionStructComplex:
-    self = structref.new(SuggestionStructComplexType)
+    self = cast("SuggestionStructComplex", structref.new(SuggestionStructComplexType))
     self.param_sets = param_sets
     self.folds = folds
     self.scores = scores
@@ -637,7 +637,7 @@ def overload_sugg_construct(
     ) -> SuggestionStruct:
         return suggestion_struct_init(param_sets, folds, scores, backtracks, mode)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructTemplate, "get_new")
@@ -645,7 +645,7 @@ def ol_get_new_func(self: SuggestionStruct, max_sugg: int) -> types.FunctionType
     def impl(self: SuggestionStruct, max_sugg: int) -> SuggestionStruct:
         return get_new_func(self, max_sugg)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructTemplate, "get_best")
@@ -653,7 +653,7 @@ def ol_get_best_func(self: SuggestionStruct) -> types.FunctionType:
     def impl(self: SuggestionStruct) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructTemplate, "get_transformed")
@@ -669,7 +669,7 @@ def ol_get_transformed_func(
     ) -> np.ndarray:
         return get_transformed_func(self, coord_mid, coord_init)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructTemplate, "add")
@@ -689,7 +689,7 @@ def ol_add_func(
     ) -> bool:
         return add_func(self, param_set, fold, score, backtrack)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructTemplate, "add_batch")
@@ -718,7 +718,7 @@ def ol_add_batch_func(
             current_threshold,
         )
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructTemplate, "trim_threshold")
@@ -726,7 +726,7 @@ def ol_trim_threshold_func(self: SuggestionStruct) -> types.FunctionType:
     def impl(self: SuggestionStruct) -> float:
         return trim_threshold_func(self)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructTemplate, "trim_empty")
@@ -734,7 +734,7 @@ def ol_trim_empty_func(self: SuggestionStruct) -> types.FunctionType:
     def impl(self: SuggestionStruct) -> SuggestionStruct:
         return trim_empty_func(self)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructTemplate, "trim_repeats")
@@ -742,7 +742,7 @@ def ol_trim_repeats_func(self: SuggestionStruct) -> types.FunctionType:
     def impl(self: SuggestionStruct) -> None:
         return trim_repeats_func(self)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructTemplate, "trim_repeats_threshold")
@@ -750,7 +750,7 @@ def ol_trim_repeats_threshold_func(self: SuggestionStruct) -> types.FunctionType
     def impl(self: SuggestionStruct) -> float:
         return trim_repeats_threshold_func(self)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructTemplate, "_keep")
@@ -758,7 +758,7 @@ def ol_keep_func(self: SuggestionStruct, indices: np.ndarray) -> types.FunctionT
     def impl(self: SuggestionStruct, indices: np.ndarray) -> None:
         return keep_func(self, indices)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload(SuggestionStructComplex)
@@ -784,7 +784,7 @@ def overload_sugg_construct_complex(
             mode,
         )
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructComplexTemplate, "get_new")
@@ -795,7 +795,7 @@ def ol_get_new_func_complex(
     def impl(self: SuggestionStructComplex, max_sugg: int) -> SuggestionStructComplex:
         return get_new_func_complex(self, max_sugg)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructComplexTemplate, "get_best")
@@ -805,7 +805,7 @@ def ol_get_best_func_complex(
     def impl(self: SuggestionStructComplex) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructComplexTemplate, "get_transformed")
@@ -821,7 +821,7 @@ def ol_get_transformed_func_complex(
     ) -> np.ndarray:
         return get_transformed_func(self, coord_mid, coord_init)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructComplexTemplate, "add")
@@ -841,7 +841,7 @@ def ol_add_func_complex(
     ) -> bool:
         return add_func(self, param_set, fold, score, backtrack)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructComplexTemplate, "add_batch")
@@ -870,7 +870,7 @@ def ol_add_batch_func_complex(
             current_threshold,
         )
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructComplexTemplate, "trim_threshold")
@@ -880,7 +880,7 @@ def ol_trim_threshold_func_complex(
     def impl(self: SuggestionStructComplex) -> float:
         return trim_threshold_func(self)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructComplexTemplate, "trim_empty")
@@ -890,7 +890,7 @@ def ol_trim_empty_func_complex(
     def impl(self: SuggestionStructComplex) -> SuggestionStructComplex:
         return trim_empty_func_complex(self)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructComplexTemplate, "trim_repeats")
@@ -900,7 +900,7 @@ def ol_trim_repeats_func_complex(
     def impl(self: SuggestionStructComplex) -> None:
         return trim_repeats_func(self)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructComplexTemplate, "trim_repeats_threshold")
@@ -910,7 +910,7 @@ def ol_trim_repeats_threshold_func_complex(
     def impl(self: SuggestionStructComplex) -> float:
         return trim_repeats_threshold_func(self)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(SuggestionStructComplexTemplate, "_keep")
@@ -921,7 +921,7 @@ def ol_keep_func_complex(
     def impl(self: SuggestionStructComplex, indices: np.ndarray) -> None:
         return keep_func(self, indices)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @njit(cache=True, fastmath=True)

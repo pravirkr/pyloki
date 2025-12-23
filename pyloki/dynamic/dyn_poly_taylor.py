@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 
 from numba import njit, typed, types
 from numba.experimental import structref
@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 
     from pyloki.config import PulsarSearchConfig
     from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
-
 
 
 @structref.register
@@ -276,7 +275,7 @@ def prune_poly_taylor_dp_functs_init(
     grid_conservative: bool,
 ) -> PrunePolyTaylorDPFuncts:
     """Initialize the PrunePolyTaylorDPFuncts object."""
-    self = structref.new(PrunePolyTaylorDPFunctsType)
+    self = cast("PrunePolyTaylorDPFuncts", structref.new(PrunePolyTaylorDPFunctsType))
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
@@ -306,7 +305,10 @@ def prune_poly_taylor_complex_dp_functs_init(
     grid_conservative: bool,
 ) -> PrunePolyTaylorComplexDPFuncts:
     """Initialize the PrunePolyTaylorComplexDPFuncts object."""
-    self = structref.new(PrunePolyTaylorComplexDPFunctsType)
+    self = cast(
+        "PrunePolyTaylorComplexDPFuncts",
+        structref.new(PrunePolyTaylorComplexDPFunctsType),
+    )
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
@@ -502,7 +504,7 @@ def ol_load_func(
     ) -> np.ndarray:
         return load_func(self, fold, seg_idx)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "resolve")
@@ -522,7 +524,7 @@ def ol_resolve_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "branch")
@@ -542,7 +544,7 @@ def ol_branch_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "suggest")
@@ -558,7 +560,7 @@ def ol_suggest_func(
     ) -> SuggestionStruct:
         return suggest_func(self, fold_segment, coord_init)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "score")
@@ -572,7 +574,7 @@ def ol_score_func(
     ) -> np.ndarray:
         return score_func(self, combined_res_batch)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "pack")
@@ -580,7 +582,7 @@ def ol_pack_func(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> types.Funct
     def impl(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "shift_add")
@@ -600,7 +602,7 @@ def ol_shift_add_func(
     ) -> np.ndarray:
         return shift_add_func(self, segment_batch, shift_batch, folds, isuggest_batch)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "transform")
@@ -618,7 +620,7 @@ def ol_transform_func(
     ) -> np.ndarray:
         return transform_func(self, leaves_batch, coord_next, coord_cur)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "get_transform_matrix")
@@ -634,7 +636,7 @@ def ol_get_transform_matrix_func(
     ) -> np.ndarray:
         return get_transform_matrix_func(self, coord_next, coord_prev)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "validate")
@@ -652,7 +654,7 @@ def ol_validate_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "get_validation_params")
@@ -666,7 +668,7 @@ def ol_get_validation_params_func(
     ) -> tuple[np.ndarray, np.ndarray, float]:
         return get_validation_params_func(self, coord_add)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "load")
@@ -682,7 +684,7 @@ def ol_load_complex_func(
     ) -> np.ndarray:
         return load_func(self, fold, seg_idx)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "resolve")
@@ -702,7 +704,7 @@ def ol_resolve_complex_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "branch")
@@ -722,7 +724,7 @@ def ol_branch_complex_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "suggest")
@@ -738,7 +740,7 @@ def ol_suggest_complex_func(
     ) -> SuggestionStructComplex:
         return suggest_complex_func(self, fold_segment, coord_init)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "score")
@@ -752,7 +754,7 @@ def ol_score_complex_func(
     ) -> np.ndarray:
         return score_complex_func(self, combined_res_batch)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "pack")
@@ -763,7 +765,7 @@ def ol_pack_complex_func(
     def impl(self: PrunePolyTaylorComplexDPFuncts, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "shift_add")
@@ -789,7 +791,7 @@ def ol_shift_add_complex_func(
             isuggest_batch,
         )
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "transform")
@@ -807,7 +809,7 @@ def ol_transform_complex_func(
     ) -> np.ndarray:
         return transform_func(self, leaves_batch, coord_next, coord_cur)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "get_transform_matrix")
@@ -823,7 +825,7 @@ def ol_get_transform_matrix_complex_func(
     ) -> np.ndarray:
         return get_transform_matrix_func(self, coord_next, coord_prev)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "validate")
@@ -841,7 +843,7 @@ def ol_validate_complex_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
-    return impl
+    return cast("types.FunctionType", impl)
 
 
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "get_validation_params")
@@ -855,4 +857,4 @@ def ol_get_validation_params_complex_func(
     ) -> tuple[np.ndarray, np.ndarray, float]:
         return get_validation_params_func(self, coord_add)
 
-    return impl
+    return cast("types.FunctionType", impl)

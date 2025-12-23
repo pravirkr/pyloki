@@ -31,37 +31,34 @@ def get_circular_mask_taylor(
     """
     eps = 1e-12
     crackle = leaves_batch[:, 0, 0]
+    dcrackle = leaves_batch[:, 0, 1]
     snap = leaves_batch[:, 1, 0]
     dsnap = leaves_batch[:, 1, 1]
     jerk = leaves_batch[:, 2, 0]
     accel = leaves_batch[:, 3, 0]
 
     # Delays circular classification until snap is well-measured.
-    is_significant = np.abs(snap / (dsnap + eps)) > snap_threshold
+    is_sig_snap = np.abs(snap / (dsnap + eps)) > snap_threshold
+    is_sig_crackle = np.abs(crackle / (dcrackle + eps)) > snap_threshold
 
-    # Numerical Stability - acceleration and snap must be significantly non-zero
-    is_stable = (np.abs(accel) > eps) & (np.abs(snap) > eps)
+    # Snap-Dominated Region (Standard)
+    # We check if implied Omega is physical (-d4/d2 > 0)
+    omega_sq_snap = -snap / (accel + eps)
+    is_physical_snap = (omega_sq_snap > 0) & (np.abs(accel) > eps)
+    mask_circular_snap = is_sig_snap & is_physical_snap
 
-    # Physicality - for Omega^2 = -s/a to be positive, s and a must have opposite signs
-    omega_sq = -snap / (accel + eps)
-    is_physical = omega_sq > 0
-    # Classification logic
-    stable_and_significant = is_stable & is_significant
-    # idx_circular_snap: stable, significant, and physical
-    mask_circular_snap = stable_and_significant & is_physical
+    # Crackle-Dominated Region (The Hole)
+    # Condition: Snap is weak (in the null), but Crackle is strong.
+    # Note: d2 and d4 vanish in the hole, so we rely on d3 and d5.
+    in_the_hole = (~is_sig_snap) & is_sig_crackle
 
-    # For unstable but significant cases, check crackle/jerk approximation
-    unstable_and_significant = (~is_stable) & is_significant
-    crackle_jerk_nonzero = (np.abs(crackle) > eps) & (np.abs(jerk) > eps)
-    omega_sq_crackle_jerk = -crackle / (jerk + eps)
-    crackle_jerk_physical = omega_sq_crackle_jerk > 0
+    # Check physics using recurrence: d5 = -Omega^2 * d3
+    omega_sq_crackle = -crackle / (jerk + eps)
+    is_physical_crackle = (omega_sq_crackle > 0) & (np.abs(jerk) > eps)
+    mask_circular_crackle = in_the_hole & is_physical_crackle
 
-    # idx_circular_crackle: unstable snap/accel but stable crackle/jerk
-    mask_circular_crackle = (
-        unstable_and_significant & crackle_jerk_nonzero & crackle_jerk_physical
-    )
-
-    # idx_taylor: everything else (no hope for circularity)
+    # Taylor Region (Noise / Unresolved)
+    # Everything that isn't a confident circular candidate
     mask_taylor = ~(mask_circular_snap | mask_circular_crackle)
 
     idx_circular_snap = np.where(mask_circular_snap)[0]
@@ -234,6 +231,7 @@ def poly_taylor_validate_circular_batch(
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
     p_orb_min: float,
+    x_mass_const: float,
     snap_threshold: float = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Validate a batch of leaf params.
@@ -258,31 +256,73 @@ def poly_taylor_validate_circular_batch(
         Filtered leaf parameter sets (only physically plausible) and their origins.
     """
     eps = 1e-12
+    crackle = leaves_batch[:, 0, 0]
+    dcrackle = leaves_batch[:, 0, 1]
     snap = leaves_batch[:, 1, 0]
     dsnap = leaves_batch[:, 1, 1]
+    jerk = leaves_batch[:, 2, 0]
     accel = leaves_batch[:, 3, 0]
-    omega_orb_max_sq = (2 * np.pi / p_orb_min) ** 2
-    # omega_orb = -snap/accel > 0:
-    # 1) snap=0 → omega_orb=0 (valid)
-    # 2) snap≠0 & accel=0 → omega_orb=±∞ (allowed)
-    # 3) snap≠0 & accel≠0 & -snap/accel>0 (valid)
 
-    omega_sq = -snap / (accel + eps)
+    omega_max_sq = (2 * np.pi / p_orb_min) ** 2
 
-    # Physically usable via s/a
-    is_usable = (np.abs(accel) > eps) & (np.abs(snap) > eps) & (omega_sq > 0.0)
-    # Numerically degenerate but not obviously unphysical
-    is_zero = (np.abs(snap) <= eps) | (np.abs(accel) <= eps)
+    # Classification (for gatekeeping)
+    is_sig_snap = np.abs(snap / (dsnap + eps)) > snap_threshold
+    is_sig_crackle = np.abs(crackle / (dcrackle + eps)) > snap_threshold
 
-    # Within maximum orbital frequency limit
-    is_within_omega_limit = omega_sq <= omega_orb_max_sq
+    # Keep noise (unrefined Taylor cells) for now
+    is_noise = (~is_sig_snap) & (~is_sig_crackle)
 
-    # Delays circular validation until snap is well-measured.
-    is_significant = np.abs(snap / (dsnap + eps)) > snap_threshold
+    # Snap-Dominated Region (Standard)
+    omega_sq_snap = -snap / (accel + eps)
+    valid_omega_snap_sign = omega_sq_snap > 0
+    safe_omega_sq_snap = np.where(valid_omega_snap_sign, omega_sq_snap, 0.0)
+    omega_snap = np.sqrt(safe_omega_sq_snap)
 
-    # No filtering for each leaf until its snap is significant
-    mask = ~is_significant | (is_zero | (is_usable & is_within_omega_limit))
-    idx = np.where(mask)[0]
+    # Omega Validity
+    valid_omega_snap = valid_omega_snap_sign & (safe_omega_sq_snap < omega_max_sq)
+
+    # Physical Amplitude Limits
+    # Is Accel (d2) physical? |d2| < x * w^2
+    limit_accel = x_mass_const * (omega_snap ** (4 / 3) + eps)
+    valid_accel = np.abs(accel) < limit_accel
+
+    # Is Jerk (d3) physical? |d3| < x * w^3
+    limit_jerk_snap = limit_accel * omega_snap
+    valid_jerk_in_snap_region = np.abs(jerk) < limit_jerk_snap
+
+    mask_snap_valid = (
+        is_sig_snap & valid_omega_snap & valid_accel & valid_jerk_in_snap_region
+    )
+
+    # Crackle-Dominated Region (The Hole)
+    omega_sq_crackle = -crackle / (jerk + eps)
+    valid_omega_crackle_sign = omega_sq_crackle > 0
+    safe_omega_sq_crackle = np.where(valid_omega_crackle_sign, omega_sq_crackle, 0.0)
+    omega_crackle = np.sqrt(safe_omega_sq_crackle)
+
+    # Omega Validity
+    valid_omega_crackle = valid_omega_crackle_sign & (
+        safe_omega_sq_crackle < omega_max_sq
+    )
+    # Physical Amplitude Limits
+    # Is Accel (d2) small?
+    limit_accel_in_hole = x_mass_const * (omega_crackle ** (4 / 3) + eps)
+    valid_accel_in_hole = np.abs(accel) < limit_accel_in_hole
+
+    # Is Jerk (d3) physical? (Primary check in hole)
+    limit_jerk_hole = limit_accel_in_hole * omega_crackle
+    valid_jerk_in_hole = np.abs(jerk) < limit_jerk_hole
+
+    mask_crackle_valid = (
+        (~is_sig_snap)
+        & is_sig_crackle
+        & valid_omega_crackle
+        & valid_jerk_in_hole
+        & valid_accel_in_hole
+    )
+
+    mask_keep = is_noise | mask_snap_valid | mask_crackle_valid
+    idx = np.where(mask_keep)[0]
     return leaves_batch[idx], leaves_origins[idx]
 
 

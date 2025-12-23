@@ -6,7 +6,7 @@ import time
 from contextlib import contextmanager
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, Self, TypeVar
+from typing import TYPE_CHECKING, Self, TypeVar
 
 from astropy import constants
 from rich.console import Console
@@ -15,7 +15,6 @@ from rich.progress import (
     BarColumn,
     Progress,
     ProgressColumn,
-    ProgressType,
     SpinnerColumn,
     TaskProgressColumn,
     TextColumn,
@@ -29,8 +28,10 @@ if TYPE_CHECKING:
     from queue import Queue
     from typing import Any
 
+    from rich.progress import ProgressType, Task
 
-C_VAL = float(constants.c.value)
+
+C_VAL = float(constants.c.value)  # ty: ignore[unresolved-attribute]
 T = TypeVar("T")
 CONSOLE = Console()
 
@@ -218,13 +219,13 @@ def quiet_logger(
 
 
 class ScoreColumn(ProgressColumn):
-    def render(self, task: ProgressType) -> Text:
+    def render(self, task: Task) -> Text:
         score = task.fields.get("score", 0.0)
         return Text(f"Score: {score:.2f}", style="red")
 
 
 class LeavesColumn(ProgressColumn):
-    def render(self, task: ProgressType) -> Text:
+    def render(self, task: Task) -> Text:
         leaves = task.fields.get("leaves", 0.0)
         return Text(f"Leaves: {leaves:.2f}", style="green")
 
@@ -451,7 +452,7 @@ class MultiprocessProgressTracker:
         return results, errors
 
 
-class PicklableStructRefWrapper(Generic[T]):
+class PicklableStructRefWrapper[T]:
     """A generic wrapper to make Numba structref objects picklable.
 
     This class stores the constructor and arguments needed to create a structref object,

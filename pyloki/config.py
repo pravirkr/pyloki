@@ -1,4 +1,4 @@
-# ruff: noqa: ARG001, ARG002
+# ruff: noqa: ARG001
 
 from __future__ import annotations
 
@@ -33,6 +33,26 @@ def _is_power_of_two(
     if not maths.is_power_of_two(value):
         msg = f"'{attribute.name}' must be a power of 2: {value}"
         raise ValueError(msg)
+
+
+def _param_limits_validator(
+    instance: PulsarSearchConfig,
+    attribute: attrs.Attribute,
+    value: list[tuple[float, float]],
+) -> None:
+    if len(value) < 1:  # or len(value) > 4:
+        msg = f"param_limits must have 1-5 elements, got {len(value)}"
+        raise ValueError(msg)
+    for _, (val_min, val_max) in enumerate(value):
+        if not isinstance(val_min, int | float) or not isinstance(
+            val_max,
+            int | float,
+        ):
+            msg = f"param_limits must be tuples of numbers, got {value}"
+            raise TypeError(msg)
+        if val_min >= val_max:
+            msg = f"param_limits must have min < max, got {value}"
+            raise ValueError(msg)
 
 
 class ParamLimits:
@@ -332,7 +352,7 @@ class PulsarSearchConfig:
 
     nsamps: int = attrs.field(
         validator=[
-            attrs.validators.instance_of((int, np.integer)),
+            attrs.validators.instance_of(int | np.integer),
             attrs.validators.gt(0),
             _is_power_of_two,
         ],
@@ -340,48 +360,42 @@ class PulsarSearchConfig:
     tsamp: float = attrs.field(validator=attrs.validators.gt(0))
     nbins: int = attrs.field(
         validator=[
-            attrs.validators.instance_of((int, np.integer)),
+            attrs.validators.instance_of(int | np.integer),
             attrs.validators.gt(0),
         ],
     )
     tol_bins: float = attrs.field(validator=attrs.validators.gt(0))
-    param_limits: list[tuple[float, float]] = attrs.field()
-    ducy_max: float = attrs.field(default=0.2, validator=attrs.validators.gt(0))
-    wtsp: float = attrs.field(default=1.5, validator=attrs.validators.gt(0))
-    prune_poly_order: int = attrs.field(default=3, validator=attrs.validators.gt(0))
+    param_limits: list[tuple[float, float]] = attrs.field(
+        validator=_param_limits_validator,
+    )
+    ducy_max: float = attrs.field(default=0.2, validator=attrs.validators.gt(0.0))
+    wtsp: float = attrs.field(default=1.5, validator=attrs.validators.gt(0.0))
+    prune_poly_order: int = attrs.field(  # ty: ignore[no-matching-overload]
+        default=3,
+        validator=[
+            attrs.validators.instance_of(int | np.integer),
+            attrs.validators.gt(1),
+        ],
+    )
     p_orb_min: float = attrs.field(default=0)
     bseg_brute: int = attrs.field(
         default=0,
-        validator=[attrs.validators.instance_of((int, np.integer)), _is_power_of_two],
+        validator=[attrs.validators.instance_of(int | np.integer), _is_power_of_two],
     )
     bseg_ffa: int = attrs.field(
         default=0,
-        validator=[attrs.validators.instance_of((int, np.integer)), _is_power_of_two],
+        validator=[attrs.validators.instance_of(int | np.integer), _is_power_of_two],
     )
     use_fft_shifts: bool = attrs.field(default=True)
-    branch_max: int = attrs.field(default=16, validator=attrs.validators.gt(10))
-    snap_threshold: float = attrs.field(default=5, validator=attrs.validators.gt(0))
+    branch_max: int = attrs.field(  # ty: ignore[no-matching-overload]
+        default=16,
+        validator=[
+            attrs.validators.instance_of(int | np.integer),
+            attrs.validators.gt(10),
+        ],
+    )
+    snap_threshold: float = attrs.field(default=5.0, validator=attrs.validators.gt(0.0))
     use_conservative_grid: bool = attrs.field(default=False)
-
-    @param_limits.validator
-    def _param_limits_validator(
-        self,
-        attribute: attrs.Attribute,
-        value: list[tuple[float, float]],
-    ) -> None:
-        if len(value) < 1:  # or len(value) > 4:
-            msg = f"param_limits must have 1-5 elements, got {len(value)}"
-            raise ValueError(msg)
-        for _, (val_min, val_max) in enumerate(value):
-            if not isinstance(val_min, int | float) or not isinstance(
-                val_max,
-                int | float,
-            ):
-                msg = f"param_limits must be tuples of numbers, got {value}"
-                raise TypeError(msg)
-            if val_min >= val_max:
-                msg = f"param_limits must have min < max, got {value}"
-                raise ValueError(msg)
 
     def __attrs_post_init__(self) -> None:
         if self.bseg_brute == 0:

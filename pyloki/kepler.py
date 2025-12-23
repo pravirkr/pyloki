@@ -31,7 +31,7 @@ def semi_major_axis(mass: float, p_orb: float) -> float:
         Semi-major axis of the orbit in light-seconds.
     """
     omega = 2 * np.pi / p_orb
-    a = (mass * constants.M_sun * constants.G / omega**2) ** (1 / 3) / constants.c
+    a = (mass * constants.M_sun * constants.G / omega**2) ** (1 / 3) / constants.c  # ty: ignore[unresolved-attribute]
     return float(a.value)
 
 
@@ -54,9 +54,9 @@ def mass_function(radial_velocity_ratio: float, p_orb: float) -> float:
     float
         Mass function of the system in solar masses.
     """
-    av = radial_velocity_ratio * constants.c / 2
+    av = radial_velocity_ratio * constants.c / 2  # ty: ignore[unresolved-attribute]
     omega = 2 * np.pi / p_orb
-    f = av**3 / (omega * constants.G)
+    f = av**3 / (omega * constants.G)  # ty: ignore[unresolved-attribute]
     return float(f.value)
 
 
@@ -233,7 +233,7 @@ def keplerian_z_derivatives_exact(
     ecc = abs(ecc)
     nu = keplerian_nu(t_arr, p_orb, ecc, phi)
     # TODO: Need to finish this part.
-    e_arr = nu # Use a attr class for this.
+    e_arr = nu  # Use a attr class for this.
     dnu_dt, d2nu_dt2 = compute_nu_derivatives(e_arr, ecc, p_orb)
     one_plus_e_cos_nu = 1.0 + ecc * np.cos(nu)
     r = a * (1.0 - ecc**2) / one_plus_e_cos_nu

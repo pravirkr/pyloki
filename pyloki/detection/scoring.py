@@ -282,12 +282,12 @@ class MatchedFilter:
         return _compute_snr_double(folds, self.e_mat)
 
     def _init_template_bank(self, nbins: int) -> np.ndarray:
-        if self.shape == "boxcar":
+        if self.kind == "boxcar":
             templates = _gen_boxcar_templates(self.widths, nbins)
-        elif self.shape == "gaussian":
+        elif self.kind == "gaussian":
             templates = _gen_gaussian_templates(self.widths, nbins)
         else:
-            msg = f"Unknown template shape: {self.shape}"
+            msg = f"Unknown template shape: {self.kind}"
             raise ValueError(msg)
         return templates
 

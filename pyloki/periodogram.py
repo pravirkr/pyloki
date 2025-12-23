@@ -266,7 +266,7 @@ class ScatteredPeriodogram:
                 for p in self.param_names
             )
             summary.append(
-                f"Run: {row.run_id}, S/N: {row.score:.2f}, {params_str}",
+                f"Run: {row.run_id}, S/N: {row.score:.2f}, {params_str}",  # ty:ignore[possibly-missing-attribute]
             )
         return "\n".join(summary)
 

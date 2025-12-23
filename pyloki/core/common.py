@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 from numba import njit, types
@@ -38,7 +38,7 @@ def get_leaves_opt(
     param_arr: types.ListType,
     dparams: np.ndarray,
 ) -> np.ndarray:
-    nparams = len(param_arr)
+    nparams = len(cast("list", param_arr))
     shapes = np.empty(nparams, dtype=np.int64)
     for i in range(nparams):
         shapes[i] = len(param_arr[i])

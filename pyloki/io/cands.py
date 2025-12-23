@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import importlib
 import re
+from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -300,8 +300,11 @@ class PruneResultWriter:
         max_sugg: int,
         threshold_scheme: np.ndarray,
     ) -> None:
+        if self.file is None:
+            msg = "File not open."
+            raise ValueError(msg)
         # Store package version
-        self.file.attrs["pruning_version"] = importlib.metadata.version("pyloki")
+        self.file.attrs["pruning_version"] = metadata.version("pyloki")
         self.file.attrs["param_names"] = param_names
         self.file.attrs["nsegments"] = nsegments
         self.file.attrs["max_sugg"] = max_sugg

@@ -177,8 +177,8 @@ class CircularModulating(Modulating):
         return {"coeffs": d_arr}
 
 
-@attrs.frozen(auto_attribs=True, kw_only=True)
-class CircularT0Modulating:
+@attrs.define(auto_attribs=True, kw_only=True)
+class CircularT0Modulating(Modulating):
     """A circular modulating function with a reference epoch."""
 
     a: float  # projected semi-major axis (in seconds)
@@ -192,8 +192,8 @@ class CircularT0Modulating:
         return t_arr - delay / C_VAL
 
 
-@attrs.frozen(auto_attribs=True, kw_only=True)
-class KeplerianModulating:
+@attrs.define(auto_attribs=True, kw_only=True)
+class KeplerianModulating(Modulating):
     """A Keplerian modulating function."""
 
     p_orb: float
@@ -203,9 +203,9 @@ class KeplerianModulating:
     om: float
     inc: float
 
-    def generate(self, t: np.ndarray) -> np.ndarray:
+    def generate(self, t_arr: np.ndarray, t_ref: float = 0) -> np.ndarray:
         delay = kepler.keplerian_z(
-            t,
+            t_arr - t_ref,
             self.p_orb,
             self.ecc,
             self.phi,
@@ -213,10 +213,10 @@ class KeplerianModulating:
             self.om,
             self.inc,
         )
-        return t - delay / C_VAL
+        return t_arr - delay / C_VAL
 
 
-type_to_mods = {
+type_to_mods: dict[str, type[Modulating]] = {
     "derivative": DerivativeModulating,
     "derivative_series": DerivativeSeriesModulating,
     "circular": CircularModulating,
