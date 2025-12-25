@@ -76,7 +76,17 @@ indent-style = "space"
 
 [tool.ruff.lint]
 select = ["ALL"]
-ignore = ["D1", "ANN003", "PLR2004", "G004", "E712", "FBT001", "TD", "FIX"]
+ignore = [
+    "D1",
+    "ANN003",
+    "PLR2004",
+    "G004",
+    "E712",
+    "FBT001",
+    "FBT002",
+    "TD",
+    "FIX",
+]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 20
@@ -117,7 +127,7 @@ exclude = ["pyloki/cuda/*.py", "pyloki/main.py", "**/tests/**", "**/docs/**"]
 [tool.ty.rules]
 index-out-of-bounds = "ignore"
 unresolved-import = "ignore"
-not-iterable = "ignore"  # For Numba prange
+not-iterable = "ignore"        # For Numba prange
 
 [[tool.ty.overrides]]
 include = [

@@ -9,14 +9,14 @@ import numpy as np
 
 from pyloki import kepler
 from pyloki.core import (
-    generate_bp_chebyshev,
-    generate_bp_chebyshev_approx,
-    generate_bp_chebyshev_fixed,
-    generate_bp_taylor,
-    generate_bp_taylor_approx,
-    generate_bp_taylor_circular,
-    generate_bp_taylor_fixed,
-    generate_bp_taylor_fixed_circular,
+    generate_bp_circ_taylor,
+    generate_bp_circ_taylor_fixed,
+    generate_bp_poly_chebyshev,
+    generate_bp_poly_chebyshev_approx,
+    generate_bp_poly_chebyshev_fixed,
+    generate_bp_poly_taylor,
+    generate_bp_poly_taylor_approx,
+    generate_bp_poly_taylor_fixed,
 )
 from pyloki.detection.scoring import generate_box_width_trials
 from pyloki.utils import maths, psr_utils, transforms
@@ -564,7 +564,7 @@ class PulsarSearchConfig:
         param_arr = self.get_param_arr(dparams)
         dparams_lim = self.get_dparams_limited(self.niters_ffa)
         if kind == "taylor":
-            return generate_bp_taylor_approx(
+            return generate_bp_poly_taylor_approx(
                 param_arr,
                 dparams_lim,
                 self.param_limits,
@@ -577,7 +577,7 @@ class PulsarSearchConfig:
                 self.use_conservative_grid,
             )
         if kind == "chebyshev":
-            return generate_bp_chebyshev_approx(
+            return generate_bp_poly_chebyshev_approx(
                 param_arr,
                 dparams_lim,
                 self.param_limits,
@@ -619,7 +619,7 @@ class PulsarSearchConfig:
         param_arr = self.get_param_arr(dparams)
         dparams_lim = self.get_dparams_limited(self.niters_ffa)
         if kind == "taylor":
-            return generate_bp_taylor(
+            return generate_bp_poly_taylor(
                 param_arr,
                 dparams_lim,
                 self.param_limits,
@@ -631,7 +631,7 @@ class PulsarSearchConfig:
                 self.use_conservative_grid,
             )
         if kind == "chebyshev":
-            return generate_bp_chebyshev(
+            return generate_bp_poly_chebyshev(
                 param_arr,
                 dparams_lim,
                 self.param_limits,
@@ -643,7 +643,7 @@ class PulsarSearchConfig:
                 self.use_conservative_grid,
             )
         if kind == "taylor_fixed":
-            return generate_bp_taylor_fixed(
+            return generate_bp_poly_taylor_fixed(
                 param_arr,
                 dparams_lim,
                 self.param_limits,
@@ -654,7 +654,7 @@ class PulsarSearchConfig:
                 ref_seg,
             )
         if kind == "chebyshev_fixed":
-            return generate_bp_chebyshev_fixed(
+            return generate_bp_poly_chebyshev_fixed(
                 param_arr,
                 dparams_lim,
                 self.param_limits,
@@ -695,7 +695,7 @@ class PulsarSearchConfig:
         param_arr = self.get_param_arr(dparams)
         dparams_lim = self.get_dparams_limited(self.niters_ffa)
         if kind == "taylor":
-            return generate_bp_taylor_circular(
+            return generate_bp_circ_taylor(
                 param_arr,
                 dparams_lim,
                 self.param_limits,
@@ -707,7 +707,7 @@ class PulsarSearchConfig:
                 self.use_conservative_grid,
             )
         if kind == "taylor_fixed":
-            return generate_bp_taylor_fixed_circular(
+            return generate_bp_circ_taylor_fixed(
                 param_arr,
                 dparams_lim,
                 self.param_limits,

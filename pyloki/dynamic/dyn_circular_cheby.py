@@ -35,6 +35,7 @@ class PruneCircChebyshevDPFuncts(structref.StructRefProxy):
         dparams: np.ndarray,
         tseg_ffa: float,
         cfg: PulsarSearchConfig,
+        use_moving_grid: bool = True,
     ) -> Self:
         """Create a new instance of PruneCircChebyshevDPFuncts."""
         return prune_circ_chebyshev_dp_functs_init(
@@ -48,38 +49,44 @@ class PruneCircChebyshevDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            cfg.use_conservative_grid,
+            cfg.use_conservative_tile,
             cfg.p_orb_min,
-            cfg.snap_threshold,
+            cfg.x_mass_const,
+            cfg.minimum_snap_cells,
+            use_moving_grid,
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
-        """Load the data for the given segment index from the folded data structure.
-
-        Parameters
-        ----------
-        fold : np.ndarray
-            The folded data structure to load from.
-        seg_idx : int
-            Segment index to load from the fold.
-
-        Returns
-        -------
-        np.ndarray
-            The data for the given index.
-
-        Notes
-        -----
-        Future implementations may include:
-        - Simply accessing the data from the fold.
-        - Calibration (RFI removal + fold_e, fold_v generation) of the data structure.
-        - Compute the data structure live (using dynamic programming).
-        - Save the calculated data structure to prevent excessive computation.
-        - Remove pulsars with known ephemeris to keep the suggestion counts low.
-        - Implement it as a class, and pass its loading function here.
-
-        """
         return load_func(self, fold, seg_idx)
+
+    def suggest(
+        self,
+        fold_segment: np.ndarray,
+        coord_init: tuple[float, float],
+    ) -> SuggestionStruct:
+        return suggest_func(self, fold_segment, coord_init)
+
+    def branch(
+        self,
+        leaves_batch: np.ndarray,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
+
+    def validate(
+        self,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
+        coord_cur: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
+
+    def get_validation_params(
+        self,
+        coord_add: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        return get_validation_params_func(self, coord_add)
 
     def resolve(
         self,
@@ -88,96 +95,7 @@ class PruneCircChebyshevDPFuncts(structref.StructRefProxy):
         coord_cur: tuple[float, float],
         coord_init: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Resolve the leaf parameters to find the closest param index and phase shift.
-
-        Parameters
-        ----------
-        leaves_batch : np.ndarray
-            Current leaf parameter set.
-        coord_add : tuple[float, float]
-            Time coordinate of the added segment.
-        coord_cur : tuple[float, float]
-            Time coordinate of the current segment.
-        coord_init : tuple[float, float]
-            Time coordinate of the starting segment.
-
-        Returns
-        -------
-        tuple[np.ndarray, int]
-            The resolved parameter index and the relative phase shift.
-        """
         return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
-
-    def branch(
-        self,
-        leaves_batch: np.ndarray,
-        coord_cur: tuple[float, float],
-        coord_prev: tuple[float, float],
-        coord_cur_fixed: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Branch the current parameter set into the finer grid of parameters (leaves).
-
-        Parameters
-        ----------
-        leaves_batch : np.ndarray
-            The current parameter set to branch.
-        coord_cur : tuple[float, float]
-            The current coordinate.
-        coord_prev : tuple[float, float]
-            The previous coordinate.
-        coord_cur_fixed : tuple[float, float]
-            The current coordinate fixed.
-
-        Returns
-        -------
-        np.ndarray
-            The branched parameter set.
-        """
-        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
-
-    def suggest(
-        self,
-        fold_segment: np.ndarray,
-        coord_init: tuple[float, float],
-    ) -> SuggestionStruct:
-        """Generate an initial suggestion struct for the starting segment.
-
-        Parameters
-        ----------
-        fold_segment : np.ndarray
-            The folded data segment to generate the suggestion for.
-        coord_init : tuple[float, float]
-            The coordinate of the starting segment.
-
-        Returns
-        -------
-        common.SuggestionStruct
-            The initial suggestion struct for the segment.
-        """
-        return suggest_func(self, fold_segment, coord_init)
-
-    def score(self, combined_res_batch: np.ndarray) -> np.ndarray:
-        """Calculate the statistical detection score of the combined fold.
-
-        Parameters
-        ----------
-        combined_res_batch : np.ndarray
-            The combined fold to calculate the score for (fold_e, fold_v).
-
-        Returns
-        -------
-        float
-            The statistical detection score of the combined fold.
-
-        Notes
-        -----
-        - Score units should be log(P(D|pulsar(theta)) / P(D|noise)).
-        - Maybe use it to keep track of a family of scores (profile width, etc).
-        """
-        return score_func(self, combined_res_batch)
-
-    def pack(self, data: np.ndarray) -> np.ndarray:
-        return pack_func(self, data)
 
     def shift_add(
         self,
@@ -194,84 +112,26 @@ class PruneCircChebyshevDPFuncts(structref.StructRefProxy):
             isuggest_batch,
         )
 
+    def score(self, combined_res_batch: np.ndarray) -> np.ndarray:
+        return score_func(self, combined_res_batch)
+
     def transform(
         self,
         leaves_batch: np.ndarray,
         coord_next: tuple[float, float],
         coord_cur: tuple[float, float],
     ) -> np.ndarray:
-        """Transform the leaf parameters to the new coordinate system.
-
-        Parameters
-        ----------
-        leaves_batch : np.ndarray
-            Current leaf parameter set.
-        coord_next : tuple[float, float]
-            The new coordinate to transform the leaf to.
-        coord_cur : tuple[float, float]
-            The current coordinate.
-
-        Returns
-        -------
-        np.ndarray
-            The transformed leaf parameter set.
-        """
         return transform_func(self, leaves_batch, coord_next, coord_cur)
 
     def get_transform_matrix(
         self,
-        coord_cur: tuple[float, float],
+        coord_next: tuple[float, float],
         coord_prev: tuple[float, float],
     ) -> np.ndarray:
-        """Get the transformation matrix between two coordinate systems."""
-        return get_transform_matrix_func(self, coord_cur, coord_prev)
+        return get_transform_matrix_func(self, coord_next, coord_prev)
 
-    def validate(
-        self,
-        leaves_batch: np.ndarray,
-        leaves_origins: np.ndarray,
-        coord_cur: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Validate which of the leaves are physical.
-
-        Parameters
-        ----------
-        leaves : np.ndarray
-            Set of leaves (parameter sets) to validate.
-        coord_cur : tuple[float, float]
-            The current coordinate.
-
-        Returns
-        -------
-        np.ndarray
-            Boolean mask indicating which of the leaves are physical.
-
-        Notes
-        -----
-        - The validation_params are pre-computed to reduce computation.
-        - This function should filter out leafs with unphysical derivatives.
-        - pruning scans only functions that are physical at position (t/2).
-        But same bounds apply everywhere.
-        """
-        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
-
-    def get_validation_params(
-        self,
-        coord_add: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, float]:
-        """Prepare the validation parameters for the epicyclic validation.
-
-        Parameters
-        ----------
-        coord_add : float
-            The Chebyshev time to prepare the validation parameters for.
-
-        Returns
-        -------
-        tuple[np.ndarray, np.ndarray, float]
-            The validation parameters for the epicyclic validation.
-        """
-        return get_validation_params_func(self, coord_add)
+    def pack(self, data: np.ndarray) -> np.ndarray:
+        return pack_func(self, data)
 
 
 class PruneCircChebyshevComplexDPFuncts(structref.StructRefProxy):
@@ -281,6 +141,7 @@ class PruneCircChebyshevComplexDPFuncts(structref.StructRefProxy):
         dparams: np.ndarray,
         tseg_ffa: float,
         cfg: PulsarSearchConfig,
+        use_moving_grid: bool = True,
     ) -> Self:
         """Create a new instance of PruneCircChebyshevComplexDPFuncts."""
         return prune_circ_chebyshev_complex_dp_functs_init(
@@ -294,13 +155,44 @@ class PruneCircChebyshevComplexDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            cfg.use_conservative_grid,
+            cfg.use_conservative_tile,
             cfg.p_orb_min,
-            cfg.snap_threshold,
+            cfg.x_mass_const,
+            cfg.minimum_snap_cells,
+            use_moving_grid,
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
         return load_func(self, fold, seg_idx)
+
+    def suggest(
+        self,
+        fold_segment: np.ndarray,
+        coord_init: tuple[float, float],
+    ) -> SuggestionStructComplex:
+        return suggest_complex_func(self, fold_segment, coord_init)
+
+    def branch(
+        self,
+        leaves_batch: np.ndarray,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
+
+    def validate(
+        self,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
+        coord_cur: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
+
+    def get_validation_params(
+        self,
+        coord_add: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        return get_validation_params_func(self, coord_add)
 
     def resolve(
         self,
@@ -310,28 +202,6 @@ class PruneCircChebyshevComplexDPFuncts(structref.StructRefProxy):
         coord_init: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
         return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
-
-    def branch(
-        self,
-        leaves_batch: np.ndarray,
-        coord_cur: tuple[float, float],
-        coord_prev: tuple[float, float],
-        coord_cur_fixed: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
-
-    def suggest(
-        self,
-        fold_segment: np.ndarray,
-        coord_init: tuple[float, float],
-    ) -> SuggestionStructComplex:
-        return suggest_complex_func(self, fold_segment, coord_init)
-
-    def score(self, combined_res_batch: np.ndarray) -> np.ndarray:
-        return score_complex_func(self, combined_res_batch)
-
-    def pack(self, data: np.ndarray) -> np.ndarray:
-        return pack_func(self, data)
 
     def shift_add(
         self,
@@ -348,6 +218,9 @@ class PruneCircChebyshevComplexDPFuncts(structref.StructRefProxy):
             isuggest_batch,
         )
 
+    def score(self, combined_res_batch: np.ndarray) -> np.ndarray:
+        return score_complex_func(self, combined_res_batch)
+
     def transform(
         self,
         leaves_batch: np.ndarray,
@@ -358,25 +231,13 @@ class PruneCircChebyshevComplexDPFuncts(structref.StructRefProxy):
 
     def get_transform_matrix(
         self,
-        coord_cur: tuple[float, float],
+        coord_next: tuple[float, float],
         coord_prev: tuple[float, float],
     ) -> np.ndarray:
-        """Get the transformation matrix between two coordinate systems."""
-        return get_transform_matrix_func(self, coord_cur, coord_prev)
+        return get_transform_matrix_func(self, coord_next, coord_prev)
 
-    def validate(
-        self,
-        leaves_batch: np.ndarray,
-        leaves_origins: np.ndarray,
-        coord_cur: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
-
-    def get_validation_params(
-        self,
-        coord_add: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, float]:
-        return get_validation_params_func(self, coord_add)
+    def pack(self, data: np.ndarray) -> np.ndarray:
+        return pack_func(self, data)
 
 
 fields_prune_circ_chebyshev_dp_funcs = [
@@ -390,9 +251,11 @@ fields_prune_circ_chebyshev_dp_funcs = [
     ("score_widths", types.i8[::1]),
     ("poly_order", types.i8),
     ("branch_max", types.i8),
-    ("conservative_errors", types.bool_),
+    ("use_conservative_tile", types.bool_),
     ("p_orb_min", types.f8),
-    ("snap_threshold", types.f8),
+    ("x_mass_const", types.f8),
+    ("minimum_snap_cells", types.f8),
+    ("use_moving_grid", types.bool_),
 ]
 
 structref.define_boxing(PruneCircChebyshevDPFunctsTemplate, PruneCircChebyshevDPFuncts)
@@ -421,9 +284,11 @@ def prune_circ_chebyshev_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    conservative_errors: bool,
+    use_conservative_tile: bool,
     p_orb_min: float,
-    snap_threshold: float,
+    x_mass_const: float,
+    minimum_snap_cells: float,
+    use_moving_grid: bool,
 ) -> PruneCircChebyshevDPFuncts:
     """Initialize the PruneCircChebyshevDPFuncts struct."""
     self = cast(
@@ -440,9 +305,11 @@ def prune_circ_chebyshev_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.conservative_errors = conservative_errors
+    self.use_conservative_tile = use_conservative_tile
     self.p_orb_min = p_orb_min
-    self.snap_threshold = snap_threshold
+    self.x_mass_const = x_mass_const
+    self.minimum_snap_cells = minimum_snap_cells
+    self.use_moving_grid = use_moving_grid
     if self.poly_order != 5:
         msg = (
             f"Poly order {self.poly_order} is not supported for circular orbit pruning"
@@ -463,9 +330,11 @@ def prune_circ_chebyshev_complex_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    conservative_errors: bool,
+    use_conservative_tile: bool,
     p_orb_min: float,
-    snap_threshold: float,
+    x_mass_const: float,
+    minimum_snap_cells: float,
+    use_moving_grid: bool,
 ) -> PruneCircChebyshevComplexDPFuncts:
     """Initialize the PruneCircChebyshevComplexDPFuncts struct."""
     self = cast(
@@ -482,9 +351,11 @@ def prune_circ_chebyshev_complex_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.conservative_errors = conservative_errors
+    self.use_conservative_tile = use_conservative_tile
     self.p_orb_min = p_orb_min
-    self.snap_threshold = snap_threshold
+    self.x_mass_const = x_mass_const
+    self.minimum_snap_cells = minimum_snap_cells
+    self.use_moving_grid = use_moving_grid
     if self.poly_order != 5:
         msg = (
             f"Poly order {self.poly_order} is not supported for circular orbit pruning"
@@ -500,45 +371,6 @@ def load_func(
     seg_idx: int,
 ) -> np.ndarray:
     return fold[seg_idx]
-
-
-@njit(cache=True, fastmath=True)
-def resolve_func(
-    self: PruneCircChebyshevDPFuncts,
-    leaves_batch: np.ndarray,
-    coord_add: tuple[float, float],
-    coord_cur: tuple[float, float],
-    coord_init: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray]:
-    return circular.poly_chebyshev_resolve_circular_batch(
-        leaves_batch,
-        coord_add,
-        coord_cur,
-        coord_init,
-        self.param_arr,
-        self.nbins,
-    )
-
-
-@njit(cache=True, fastmath=True)
-def branch_func(
-    self: PruneCircChebyshevDPFuncts,
-    leaves_batch: np.ndarray,
-    coord_cur: tuple[float, float],
-    coord_prev: tuple[float, float],
-    coord_cur_fixed: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray]:
-    return chebyshev.poly_chebyshev_branch_batch(
-        leaves_batch,
-        coord_cur,
-        coord_prev,
-        self.nbins,
-        self.tol_bins,
-        self.poly_order,
-        self.param_limits,
-        self.branch_max,
-        self.conservative_errors,
-    )
 
 
 @njit(cache=True, fastmath=True)
@@ -574,24 +406,83 @@ def suggest_complex_func(
 
 
 @njit(cache=True, fastmath=True)
-def score_func(
+def branch_func(
     self: PruneCircChebyshevDPFuncts,
-    combined_res_batch: np.ndarray,
-) -> float:
-    return scoring.snr_score_batch_func(combined_res_batch, self.score_widths)
+    leaves_batch: np.ndarray,
+    coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    # Pass coord_cur for moving grid, coord_prev for fixed grid
+    msg = "Not implemented yet"
+    raise NotImplementedError(msg)
+    """
+    return circular.circ_chebyshev_branch_batch(
+        leaves_batch,
+        coord_cur,
+        coord_prev,
+        self.nbins,
+        self.tol_bins,
+        self.poly_order,
+        self.param_limits,
+        self.branch_max,
+        self.use_conservative_tile,
+    )
+    """
 
 
 @njit(cache=True, fastmath=True)
-def score_complex_func(
-    self: PruneCircChebyshevComplexDPFuncts,
-    combined_res_batch: np.ndarray,
-) -> float:
-    return scoring.snr_score_batch_func_complex(combined_res_batch, self.score_widths)
+def validate_func(
+    self: PruneCircChebyshevDPFuncts,
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
+    coord_cur: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    return circular.circ_chebyshev_validate_batch(
+        leaves_batch,
+        leaves_origins,
+        coord_cur,
+        self.p_orb_min,
+        self.x_mass_const,
+        self.minimum_snap_cells,
+    )
 
 
 @njit(cache=True, fastmath=True)
-def pack_func(self: PruneCircChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
-    return common.pack(data)
+def get_validation_params_func(
+    self: PruneCircChebyshevDPFuncts,
+    coord_add: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray, float]:
+    return common.get_validation_params(coord_add)
+
+
+@njit(cache=True, fastmath=True)
+def resolve_func(
+    self: PruneCircChebyshevDPFuncts,
+    leaves_batch: np.ndarray,
+    coord_add: tuple[float, float],
+    coord_cur: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    # Pass coord_cur for moving grid, coord_cur_fixed for fixed grid
+    if self.use_moving_grid:
+        return circular.circ_chebyshev_resolve_batch(
+            leaves_batch,
+            coord_add,
+            coord_cur,
+            coord_init,
+            self.param_arr,
+            self.nbins,
+            self.minimum_snap_cells,
+        )
+    return circular.circ_chebyshev_fixed_resolve_batch(
+        leaves_batch,
+        coord_add,
+        coord_cur,
+        coord_init,
+        self.param_arr,
+        self.nbins,
+        self.minimum_snap_cells,
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -622,51 +513,51 @@ def shift_add_complex_func(
 
 
 @njit(cache=True, fastmath=True)
+def score_func(
+    self: PruneCircChebyshevDPFuncts,
+    combined_res_batch: np.ndarray,
+) -> float:
+    return scoring.snr_score_batch_func(combined_res_batch, self.score_widths)
+
+
+@njit(cache=True, fastmath=True)
+def score_complex_func(
+    self: PruneCircChebyshevComplexDPFuncts,
+    combined_res_batch: np.ndarray,
+) -> float:
+    return scoring.snr_score_batch_func_complex(combined_res_batch, self.score_widths)
+
+
+@njit(cache=True, fastmath=True)
 def transform_func(
     self: PruneCircChebyshevDPFuncts,
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
 ) -> np.ndarray:
-    return circular.poly_chebyshev_transform_circular_batch(
-        leaves_batch,
-        coord_next,
-        coord_cur,
-        self.conservative_errors,
-    )
+    if self.use_moving_grid:
+        return circular.circ_chebyshev_transform_batch(
+            leaves_batch,
+            coord_next,
+            coord_cur,
+            self.use_conservative_tile,
+            self.minimum_snap_cells,
+        )
+    return leaves_batch
 
 
 @njit(cache=True, fastmath=True)
 def get_transform_matrix_func(
     self: PruneCircChebyshevDPFuncts,
-    coord_cur: tuple[float, float],
+    coord_next: tuple[float, float],
     coord_prev: tuple[float, float],
 ) -> np.ndarray:
-    return common.get_trans_matrix(coord_cur, coord_prev)
+    return common.get_trans_matrix(coord_next, coord_prev)
 
 
 @njit(cache=True, fastmath=True)
-def validate_func(
-    self: PruneCircChebyshevDPFuncts,
-    leaves_batch: np.ndarray,
-    leaves_origins: np.ndarray,
-    coord_cur: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray]:
-    return circular.poly_chebyshev_validate_circular_batch(
-        leaves_batch,
-        leaves_origins,
-        coord_cur,
-        self.p_orb_min,
-        self.snap_threshold,
-    )
-
-
-@njit(cache=True, fastmath=True)
-def get_validation_params_func(
-    self: PruneCircChebyshevDPFuncts,
-    coord_add: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray, float]:
-    return common.get_validation_params(coord_add)
+def pack_func(self: PruneCircChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
+    return common.pack(data)
 
 
 @overload_method(PruneCircChebyshevDPFunctsTemplate, "load")
@@ -681,6 +572,72 @@ def ol_load_func(
         seg_idx: int,
     ) -> np.ndarray:
         return load_func(self, fold, seg_idx)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PruneCircChebyshevDPFunctsTemplate, "suggest")
+def ol_suggest_func(
+    self: PruneCircChebyshevDPFuncts,
+    fold_segment: np.ndarray,
+    coord_init: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PruneCircChebyshevDPFuncts,
+        fold_segment: np.ndarray,
+        coord_init: tuple[float, float],
+    ) -> SuggestionStruct:
+        return suggest_func(self, fold_segment, coord_init)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PruneCircChebyshevDPFunctsTemplate, "branch")
+def ol_branch_func(
+    self: PruneCircChebyshevDPFuncts,
+    leaves_batch: np.ndarray,
+    coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PruneCircChebyshevDPFuncts,
+        leaves_batch: np.ndarray,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PruneCircChebyshevDPFunctsTemplate, "validate")
+def ol_validate_func(
+    self: PruneCircChebyshevDPFuncts,
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
+    coord_cur: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PruneCircChebyshevDPFuncts,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
+        coord_cur: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PruneCircChebyshevDPFunctsTemplate, "get_validation_params")
+def ol_get_validation_params_func(
+    self: PruneCircChebyshevDPFuncts,
+    coord_add: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PruneCircChebyshevDPFuncts,
+        coord_add: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        return get_validation_params_func(self, coord_add)
 
     return cast("types.FunctionType", impl)
 
@@ -705,64 +662,6 @@ def ol_resolve_func(
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PruneCircChebyshevDPFunctsTemplate, "branch")
-def ol_branch_func(
-    self: PruneCircChebyshevDPFuncts,
-    leaves_batch: np.ndarray,
-    coord_cur: tuple[float, float],
-    coord_prev: tuple[float, float],
-    coord_cur_fixed: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PruneCircChebyshevDPFuncts,
-        leaves_batch: np.ndarray,
-        coord_cur: tuple[float, float],
-        coord_prev: tuple[float, float],
-        coord_cur_fixed: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PruneCircChebyshevDPFunctsTemplate, "suggest")
-def ol_suggest_func(
-    self: PruneCircChebyshevDPFuncts,
-    fold_segment: np.ndarray,
-    coord_init: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PruneCircChebyshevDPFuncts,
-        fold_segment: np.ndarray,
-        coord_init: tuple[float, float],
-    ) -> SuggestionStruct:
-        return suggest_func(self, fold_segment, coord_init)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PruneCircChebyshevDPFunctsTemplate, "score")
-def ol_score_func(
-    self: PruneCircChebyshevDPFuncts,
-    combined_res_batch: np.ndarray,
-) -> types.FunctionType:
-    def impl(self: PruneCircChebyshevDPFuncts, combined_res_batch: np.ndarray) -> float:
-        return score_func(self, combined_res_batch)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PruneCircChebyshevDPFunctsTemplate, "pack")
-def ol_pack_func(
-    self: PruneCircChebyshevDPFuncts,
-    data: np.ndarray,
-) -> types.FunctionType:
-    def impl(self: PruneCircChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
-        return pack_func(self, data)
-
-    return cast("types.FunctionType", impl)
-
-
 @overload_method(PruneCircChebyshevDPFunctsTemplate, "shift_add")
 def ol_shift_add_func(
     self: PruneCircChebyshevDPFuncts,
@@ -779,6 +678,17 @@ def ol_shift_add_func(
         isuggest_batch: np.ndarray,
     ) -> np.ndarray:
         return shift_add_func(self, segment_batch, shift_batch, folds, isuggest_batch)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PruneCircChebyshevDPFunctsTemplate, "score")
+def ol_score_func(
+    self: PruneCircChebyshevDPFuncts,
+    combined_res_batch: np.ndarray,
+) -> types.FunctionType:
+    def impl(self: PruneCircChebyshevDPFuncts, combined_res_batch: np.ndarray) -> float:
+        return score_func(self, combined_res_batch)
 
     return cast("types.FunctionType", impl)
 
@@ -817,34 +727,13 @@ def ol_get_transform_matrix_func(
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PruneCircChebyshevDPFunctsTemplate, "validate")
-def ol_validate_func(
+@overload_method(PruneCircChebyshevDPFunctsTemplate, "pack")
+def ol_pack_func(
     self: PruneCircChebyshevDPFuncts,
-    leaves_batch: np.ndarray,
-    leaves_origins: np.ndarray,
-    coord_cur: tuple[float, float],
+    data: np.ndarray,
 ) -> types.FunctionType:
-    def impl(
-        self: PruneCircChebyshevDPFuncts,
-        leaves_batch: np.ndarray,
-        leaves_origins: np.ndarray,
-        coord_cur: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PruneCircChebyshevDPFunctsTemplate, "get_validation_params")
-def ol_get_validation_params_func(
-    self: PruneCircChebyshevDPFuncts,
-    coord_add: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PruneCircChebyshevDPFuncts,
-        coord_add: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, float]:
-        return get_validation_params_func(self, coord_add)
+    def impl(self: PruneCircChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
+        return pack_func(self, data)
 
     return cast("types.FunctionType", impl)
 
@@ -865,46 +754,6 @@ def ol_load_complex_func(
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "resolve")
-def ol_resolve_complex_func(
-    self: PruneCircChebyshevComplexDPFuncts,
-    leaves_batch: np.ndarray,
-    coord_add: tuple[float, float],
-    coord_cur: tuple[float, float],
-    coord_init: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PruneCircChebyshevComplexDPFuncts,
-        leaves_batch: np.ndarray,
-        coord_add: tuple[float, float],
-        coord_cur: tuple[float, float],
-        coord_init: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "branch")
-def ol_branch_complex_func(
-    self: PruneCircChebyshevComplexDPFuncts,
-    leaves_batch: np.ndarray,
-    coord_cur: tuple[float, float],
-    coord_prev: tuple[float, float],
-    coord_cur_fixed: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PruneCircChebyshevComplexDPFuncts,
-        leaves_batch: np.ndarray,
-        coord_cur: tuple[float, float],
-        coord_prev: tuple[float, float],
-        coord_cur_fixed: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
-
-    return cast("types.FunctionType", impl)
-
-
 @overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "suggest")
 def ol_suggest_complex_func(
     self: PruneCircChebyshevComplexDPFuncts,
@@ -921,27 +770,72 @@ def ol_suggest_complex_func(
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "score")
-def ol_score_complex_func(
+@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "branch")
+def ol_branch_complex_func(
     self: PruneCircChebyshevComplexDPFuncts,
-    combined_res_batch: np.ndarray,
+    leaves_batch: np.ndarray,
+    coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PruneCircChebyshevComplexDPFuncts,
-        combined_res_batch: np.ndarray,
-    ) -> np.ndarray:
-        return score_complex_func(self, combined_res_batch)
+        leaves_batch: np.ndarray,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "pack")
-def ol_pack_complex_func(
+@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "validate")
+def ol_validate_complex_func(
     self: PruneCircChebyshevComplexDPFuncts,
-    data: np.ndarray,
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
+    coord_cur: tuple[float, float],
 ) -> types.FunctionType:
-    def impl(self: PruneCircChebyshevComplexDPFuncts, data: np.ndarray) -> np.ndarray:
-        return pack_func(self, data)
+    def impl(
+        self: PruneCircChebyshevComplexDPFuncts,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
+        coord_cur: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "get_validation_params")
+def ol_get_validation_params_complex_func(
+    self: PruneCircChebyshevComplexDPFuncts,
+    coord_add: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PruneCircChebyshevComplexDPFuncts,
+        coord_add: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        return get_validation_params_func(self, coord_add)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "resolve")
+def ol_resolve_complex_func(
+    self: PruneCircChebyshevComplexDPFuncts,
+    leaves_batch: np.ndarray,
+    coord_add: tuple[float, float],
+    coord_cur: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PruneCircChebyshevComplexDPFuncts,
+        leaves_batch: np.ndarray,
+        coord_add: tuple[float, float],
+        coord_cur: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
     return cast("types.FunctionType", impl)
 
@@ -968,6 +862,20 @@ def ol_shift_add_complex_func(
             folds,
             isuggest_batch,
         )
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "score")
+def ol_score_complex_func(
+    self: PruneCircChebyshevComplexDPFuncts,
+    combined_res_batch: np.ndarray,
+) -> types.FunctionType:
+    def impl(
+        self: PruneCircChebyshevComplexDPFuncts,
+        combined_res_batch: np.ndarray,
+    ) -> np.ndarray:
+        return score_complex_func(self, combined_res_batch)
 
     return cast("types.FunctionType", impl)
 
@@ -1006,33 +914,12 @@ def ol_get_transform_matrix_complex_func(
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "validate")
-def ol_validate_complex_func(
+@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "pack")
+def ol_pack_complex_func(
     self: PruneCircChebyshevComplexDPFuncts,
-    leaves_batch: np.ndarray,
-    leaves_origins: np.ndarray,
-    coord_cur: tuple[float, float],
+    data: np.ndarray,
 ) -> types.FunctionType:
-    def impl(
-        self: PruneCircChebyshevComplexDPFuncts,
-        leaves_batch: np.ndarray,
-        leaves_origins: np.ndarray,
-        coord_cur: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PruneCircChebyshevComplexDPFunctsTemplate, "get_validation_params")
-def ol_get_validation_params_complex_func(
-    self: PruneCircChebyshevComplexDPFuncts,
-    coord_add: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PruneCircChebyshevComplexDPFuncts,
-        coord_add: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, float]:
-        return get_validation_params_func(self, coord_add)
+    def impl(self: PruneCircChebyshevComplexDPFuncts, data: np.ndarray) -> np.ndarray:
+        return pack_func(self, data)
 
     return cast("types.FunctionType", impl)

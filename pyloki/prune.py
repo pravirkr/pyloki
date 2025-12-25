@@ -13,14 +13,10 @@ from pyloki.dynamic import (
     PruneCircChebyshevDPFuncts,
     PruneCircTaylorComplexDPFuncts,
     PruneCircTaylorDPFuncts,
-    PruneCircTaylorFixedComplexDPFuncts,
-    PruneCircTaylorFixedDPFuncts,
     PrunePolyChebyshevComplexDPFuncts,
     PrunePolyChebyshevDPFuncts,
     PrunePolyTaylorComplexDPFuncts,
     PrunePolyTaylorDPFuncts,
-    PrunePolyTaylorFixedComplexDPFuncts,
-    PrunePolyTaylorFixedDPFuncts,
 )
 from pyloki.io.cands import (
     PruneResultWriter,
@@ -49,14 +45,14 @@ if TYPE_CHECKING:
     from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
 DP_FUNCS_TYPE = (
-    PrunePolyTaylorDPFuncts
-    | PrunePolyTaylorComplexDPFuncts
-    | PrunePolyChebyshevDPFuncts
+    PruneCircTaylorComplexDPFuncts
     | PruneCircTaylorDPFuncts
-    | PruneCircTaylorComplexDPFuncts
+    | PruneCircChebyshevComplexDPFuncts
     | PruneCircChebyshevDPFuncts
-    | PruneCircTaylorFixedDPFuncts
-    | PruneCircTaylorFixedComplexDPFuncts
+    | PrunePolyTaylorComplexDPFuncts
+    | PrunePolyTaylorDPFuncts
+    | PrunePolyChebyshevComplexDPFuncts
+    | PrunePolyChebyshevDPFuncts
 )
 
 logger = get_logger(__name__)
@@ -177,7 +173,6 @@ def pruning_iteration_batched(
     coord_next: tuple[float, float],
     coord_init: tuple[float, float],
     coord_cur: tuple[float, float],
-    coord_cur_fixed: tuple[float, float],
     coord_add: tuple[float, float],
     prune_funcs: DP_FUNCS_TYPE,
     threshold: float,
@@ -238,7 +233,6 @@ def pruning_iteration_batched(
             sugg.param_sets[i_batch_start:i_batch_end],
             coord_cur,
             coord_prev,
-            coord_cur_fixed,
         )
         n_leaves_batch = len(batch_leaves)
         n_leaves += n_leaves_batch
@@ -357,22 +351,20 @@ class Pruning:
     max_sugg : int, optional
         Maximum suggestions to store in memory (to avoid tree explosion),
         by default 2**17.
-    kind : {"taylor", "chebyshev"}, optional
-        The kind of pruning algorithm to use, by default "taylor".
+    poly_basis : {"taylor", "chebyshev"}, optional
+        The polynomial coeffecient basis to use, by default "taylor".
+    use_moving_grid : bool, optional
+        Whether to use a moving (transforming) grid, by default True.
     """
 
     _PRUNE_DISPATCH: ClassVar[dict[tuple[bool, str, bool], type[DP_FUNCS_TYPE]]] = {
-        # (is_circular, kind, use_complex): Class
+        # (is_circular, poly_basis, use_complex): Class
         (True, "taylor", True): PruneCircTaylorComplexDPFuncts,
         (True, "taylor", False): PruneCircTaylorDPFuncts,
-        (True, "taylor_fixed", True): PruneCircTaylorFixedComplexDPFuncts,
-        (True, "taylor_fixed", False): PruneCircTaylorFixedDPFuncts,
         (True, "chebyshev", True): PruneCircChebyshevComplexDPFuncts,
         (True, "chebyshev", False): PruneCircChebyshevDPFuncts,
         (False, "taylor", True): PrunePolyTaylorComplexDPFuncts,
         (False, "taylor", False): PrunePolyTaylorDPFuncts,
-        (False, "taylor_fixed", True): PrunePolyTaylorFixedComplexDPFuncts,
-        (False, "taylor_fixed", False): PrunePolyTaylorFixedDPFuncts,
         (False, "chebyshev", True): PrunePolyChebyshevComplexDPFuncts,
         (False, "chebyshev", False): PrunePolyChebyshevDPFuncts,
     }
@@ -383,14 +375,17 @@ class Pruning:
         threshold_scheme: np.ndarray,
         max_sugg: int = 2**17,
         batch_size: int = 1024,
-        kind: str = "taylor",
+        poly_basis: str = "taylor",
+        *,
+        use_moving_grid: bool = True,
         logger: logging.Logger | None = None,
     ) -> None:
         self._dyp = dyp
         self._threshold_scheme = threshold_scheme
         self._max_sugg = max_sugg
         self._batch_size = batch_size
-        self._setup_pruning(kind)
+        self._use_moving_grid = use_moving_grid
+        self._setup_pruning(poly_basis, use_moving_grid)
         self._logger = logger or get_logger(__name__)
 
     @property
@@ -408,6 +403,10 @@ class Pruning:
     @property
     def batch_size(self) -> int:
         return self._batch_size
+
+    @property
+    def use_moving_grid(self) -> bool:
+        return self._use_moving_grid
 
     @property
     def prune_funcs(self) -> DP_FUNCS_TYPE:
@@ -584,10 +583,13 @@ class Pruning:
         threshold = self.threshold_scheme[self.prune_level - 1]
         # Get the useful precomputed values: coord_next := coord_cur + coord_add
         coord_init = self.scheme.get_coord(0)
-        coord_prev = self.scheme.get_coord(self.prune_level - 1)
+        if self.use_moving_grid:
+            coord_cur = self.scheme.get_current_coord(self.prune_level)
+            coord_prev = self.scheme.get_coord(self.prune_level - 1)
+        else:
+            coord_cur = self.scheme.get_current_coord_fixed(self.prune_level)
+            coord_prev = self.scheme.get_current_coord_fixed(self.prune_level - 1)
         coord_next = self.scheme.get_coord(self.prune_level)
-        coord_cur = self.scheme.get_current_coord(self.prune_level)
-        coord_cur_fixed = self.scheme.get_current_coord_fixed(self.prune_level)
         coord_add = self.scheme.get_segment_coord(self.prune_level)
         suggestion, stats_dict, timers = pruning_iteration_batched(
             self.suggestion,
@@ -596,7 +598,6 @@ class Pruning:
             coord_next,
             coord_init,
             coord_cur,
-            coord_cur_fixed,
             coord_add,
             self.prune_funcs,
             threshold,
@@ -624,13 +625,17 @@ class Pruning:
         self._backtrack_arr[: suggestion.size] = suggestion.backtracks.copy()
         self._suggestion = suggestion
 
-    def _setup_pruning(self, kind: str) -> None:
+    def _setup_pruning(self, poly_basis: str, use_moving_grid: bool) -> None:
         if self.dyp.fold.ndim > 8:
             msg = "Pruning currently supports initial data till 5 param dimensions."
             raise ValueError(msg)
         self._load_func = set_prune_load_func(self.dyp.fold.ndim - 3)
 
-        key = (self.dyp.cfg.prune_poly_order == 5, kind, self.dyp.cfg.use_fft_shifts)
+        key = (
+            self.dyp.cfg.prune_poly_order == 5,
+            poly_basis,
+            self.dyp.cfg.use_fft_shifts,
+        )
         prune_class = self._PRUNE_DISPATCH.get(key)
 
         if prune_class is None:
@@ -643,6 +648,7 @@ class Pruning:
             self.dyp.dparams_limited,
             self.dyp.tseg,
             self.dyp.cfg,
+            use_moving_grid,
         )
 
 
@@ -656,7 +662,9 @@ def _prune_dyp_seg(
     outdir: str | Path = "./",
     max_sugg: int = 2**18,
     batch_size: int = 1024,
-    kind: str = "taylor",
+    poly_basis: str = "taylor",
+    *,
+    use_moving_grid: bool = True,
     log_file: Path | None = None,
     result_file: Path | None = None,
 ) -> None:
@@ -667,7 +675,8 @@ def _prune_dyp_seg(
         threshold_scheme,
         max_sugg=max_sugg,
         batch_size=batch_size,
-        kind=kind,
+        poly_basis=poly_basis,
+        use_moving_grid=use_moving_grid,
         logger=logger,
     )
     prn.execute(
@@ -689,7 +698,9 @@ def prune_dyp_tree(
     batch_size: int = 1024,
     outdir: str | Path = "./",
     file_prefix: str = "test",
-    kind: str = "taylor",
+    poly_basis: str = "taylor",
+    *,
+    use_moving_grid: bool = True,
     n_workers: int = 4,
 ) -> str:
     if not isinstance(n_workers, int | np.integer):
@@ -728,7 +739,8 @@ def prune_dyp_tree(
             threshold_scheme,
             max_sugg=max_sugg,
             batch_size=batch_size,
-            kind=kind,
+            poly_basis=poly_basis,
+            use_moving_grid=use_moving_grid,
             logger=logger,
         )
         for ref_seg in ref_segs:
@@ -766,7 +778,8 @@ def prune_dyp_tree(
                     outdir,
                     max_sugg,
                     batch_size,
-                    kind,
+                    poly_basis,
+                    use_moving_grid=use_moving_grid,
                 )
                 futures_to_seg[future] = ref_seg
 

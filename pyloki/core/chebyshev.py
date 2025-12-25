@@ -46,7 +46,7 @@ def poly_chebyshev_leaves(
                     order is [alpha_poly_order, ..., alpha_1, alpha_0]
     leaf[:-1, 1] -> Grid size (error) on each coefficient,
     leaf[-1, 0]  -> Frequency at t_init (f0), assuming f=f0 at t_init
-    leaf[-1, 1]  -> Flag to indicate basis change (placeholder for now)
+    leaf[-1, 1]  -> Flag to indicate basis change (0: Polynomial, 1: Physical)
     """
     _, scale_init = coord_init
     leaves_taylor = get_leaves(param_arr, dparams)
@@ -65,6 +65,7 @@ def poly_chebyshev_leaves(
     leaves[:, :-1] = transforms.taylor_to_cheby_full(leaves_d, scale_init)
     # Store f0
     leaves[:, -1, 0] = f0_batch
+    leaves[:, -1, 1] = 0  # Polynomial basis
     return leaves
 
 
@@ -216,7 +217,7 @@ def poly_chebyshev_branch_batch(
     poly_order: int,
     param_limits: types.ListType[types.Tuple[float, float]],
     branch_max: int,
-    conservative_errors: bool,
+    use_conservative_tile: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Branch a parameter set to leaves.
 
@@ -236,6 +237,10 @@ def poly_chebyshev_branch_batch(
         The order of the Taylor polynomial.
     param_limits : types.ListType[types.Tuple[float, float]]
         The limits for each parameter in Taylor basis (reverse order).
+    branch_max : int
+        Maximum number of branches that can be generated.
+    use_conservative_tile : bool
+        Whether to use the conservative tile for the branching.
 
     Returns
     -------
@@ -246,13 +251,14 @@ def poly_chebyshev_branch_batch(
     _, scale_cur = coord_cur
     _, _ = coord_prev
     f0_batch = leaves_batch[:, -1, 0]
+    basis_flag_batch = leaves_batch[:, -1, 1]
 
     # Transform the parameters to coord_cur domain
     param_set_trans_batch = transforms.shift_cheby_full(
         leaves_batch[:, :-1],
         coord_cur,
         coord_prev,
-        conservative_errors,
+        use_conservative_tile,
     )
     cheb_cur_batch = param_set_trans_batch[:, :-1, 0]
     dcheb_cur_batch = param_set_trans_batch[:, :-1, 1]
@@ -319,6 +325,7 @@ def poly_chebyshev_branch_batch(
     leaves_branch_batch[:, :-2, 1] = pad_branched_dparams[batch_origins]
     leaves_branch_batch[:, -2, 0] = alpha0_cur_batch[batch_origins]
     leaves_branch_batch[:, -1, 0] = f0_batch[batch_origins]
+    leaves_branch_batch[:, -1, 1] = basis_flag_batch[batch_origins]
     return leaves_branch_batch, batch_origins
 
 
@@ -366,17 +373,17 @@ def poly_chebyshev_resolve_batch(
     t0_cur, scale_cur = coord_cur
     t0_init, _ = coord_init
     t0_add, _ = coord_add
-    param_set_batch = leaves_batch[:, :-1, 0]
+    param_vec_batch = leaves_batch[:, :-1, 0]
     f0_batch = leaves_batch[:, -1, 0]
 
     dvec_t_add = transforms.cheby_to_taylor_param_shift(
-        param_set_batch,
+        param_vec_batch,
         t0_cur,
         scale_cur,
         t0_add,
     )
     dvec_t_init = transforms.cheby_to_taylor_param_shift(
-        param_set_batch,
+        param_vec_batch,
         t0_cur,
         scale_cur,
         t0_init,
@@ -404,11 +411,56 @@ def poly_chebyshev_resolve_batch(
 
 
 @njit(cache=True, fastmath=True)
+def poly_chebyshev_fixed_resolve_batch(
+    leaves_batch: np.ndarray,
+    coord_add: tuple[float, float],
+    coord_cur_fixed: tuple[float, float],
+    coord_init: tuple[float, float],
+    param_arr: types.ListType[types.Array],
+    fold_bins: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve a batch of leaf params to find the closest grid index and phase shift."""
+    n_batch, _, _ = leaves_batch.shape
+    _, scale_cur_fixed = coord_cur_fixed
+    t0_init, _ = coord_init
+    t0_add, _ = coord_add
+    param_vec_batch = leaves_batch[:, :-1, 0]
+    f0_batch = leaves_batch[:, -1, 0]
+
+    dvec_t_add = transforms.cheby_to_taylor_param_shift(
+        param_vec_batch,
+        t0_init,
+        scale_cur_fixed,
+        t0_add,
+    )
+    accel_new_batch = dvec_t_add[:, -3]
+    vel_new_batch = dvec_t_add[:, -2]
+    freq_new_batch = f0_batch * (1 - vel_new_batch / C_VAL)
+    delay_batch = dvec_t_add[:, -1] / C_VAL
+    relative_phase_batch = psr_utils.get_phase_idx(
+        t0_add - t0_init,
+        f0_batch,
+        fold_bins,
+        delay_batch,
+    )
+    param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
+    param_idx_batch[:, -2] = np_utils.find_nearest_sorted_idx_vect(
+        param_arr[-2],
+        accel_new_batch,
+    )
+    param_idx_batch[:, -1] = np_utils.find_nearest_sorted_idx_vect(
+        param_arr[-1],
+        freq_new_batch,
+    )
+    return param_idx_batch, relative_phase_batch
+
+
+@njit(cache=True, fastmath=True)
 def poly_chebyshev_transform_batch(
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
-    conservative_errors: bool,
+    use_conservative_tile: bool,
 ) -> np.ndarray:
     """Re-center the leaves to the next segment reference time."""
     leaves_batch_trans = np.zeros_like(leaves_batch)
@@ -416,14 +468,14 @@ def poly_chebyshev_transform_batch(
         leaves_batch[:, :-1],
         coord_next,
         coord_cur,
-        conservative_errors,
+        use_conservative_tile,
     )
     leaves_batch_trans[:, -1] = leaves_batch[:, -1]
     return leaves_batch_trans
 
 
 @njit(cache=True, fastmath=True)
-def generate_bp_chebyshev_approx(
+def generate_bp_poly_chebyshev_approx(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
     param_limits: types.ListType[types.Tuple[float, float]],
@@ -433,7 +485,7 @@ def generate_bp_chebyshev_approx(
     tol_bins: float,
     ref_seg: int,
     isuggest: int = 0,
-    use_conservative_errors: bool = False,  # noqa: FBT002
+    use_use_conservative_tile: bool = False,
 ) -> np.ndarray:
     """Generate the approximate branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
@@ -454,21 +506,21 @@ def generate_bp_chebyshev_approx(
             poly_order,
             param_limits,
             branch_max,
-            use_conservative_errors,
+            use_use_conservative_tile,
         )
         branching_pattern[prune_level - 1] = len(leaves_arr)
         leaves_arr_trans = poly_chebyshev_transform_batch(
             leaves_arr,
             coord_next,
             coord_cur,
-            use_conservative_errors,
+            use_use_conservative_tile,
         )
         leaf = leaves_arr_trans[0]
     return np.array(branching_pattern)
 
 
 @njit(cache=True, fastmath=True)
-def generate_bp_chebyshev(
+def generate_bp_poly_chebyshev(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
     param_limits: types.ListType[types.Tuple[float, float]],
@@ -477,7 +529,7 @@ def generate_bp_chebyshev(
     fold_bins: int,
     tol_bins: float,
     ref_seg: int,
-    use_conservative_errors: bool = False,  # noqa: FBT002
+    use_use_conservative_tile: bool = False,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
@@ -515,7 +567,7 @@ def generate_bp_chebyshev(
             dcheb_cur_batch,
             coord_cur,
             coord_prev,
-            use_conservative_errors,
+            use_use_conservative_tile,
         )
 
         param_limits_cheby_d0 = np.zeros((n_freqs, poly_order + 1, 2), dtype=np.float64)
@@ -563,13 +615,13 @@ def generate_bp_chebyshev(
             dcheb_cur_next,
             coord_next,
             coord_cur,
-            use_conservative_errors,
+            use_use_conservative_tile,
         )
     return branching_pattern
 
 
 @njit(cache=True, fastmath=True)
-def generate_bp_chebyshev_fixed(
+def generate_bp_poly_chebyshev_fixed(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
     param_limits: types.ListType[types.Tuple[float, float]],
@@ -578,22 +630,23 @@ def generate_bp_chebyshev_fixed(
     fold_bins: int,
     tol_bins: float,
     ref_seg: int,
-    use_conservative_errors: bool = False,  # noqa: FBT002
+    use_use_conservative_tile: bool = False,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
     f0_batch = param_arr[-1]
     n_freqs = len(f0_batch)
-
     snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
-    coord_init = snail_scheme.get_coord(0)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
+
     # Keep poly_order+1 for d0
     dparam_cur_batch = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
     for i in range(n_freqs):
         dparam_cur_batch[i, :-1] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -2] = dparam_cur_batch[:, -2] * (C_VAL / f0_batch)
+
+    coord_init = snail_scheme.get_coord(0)
     dcheb_cur_batch = transforms.taylor_to_cheby_errors(
         dparam_cur_batch,
         coord_init[1],
@@ -615,7 +668,7 @@ def generate_bp_chebyshev_fixed(
             dcheb_cur_batch,
             coord_cur_fixed,
             coord_prev_fixed,
-            use_conservative_errors,
+            use_use_conservative_tile,
         )
 
         param_limits_cheby_d0 = np.zeros((n_freqs, poly_order + 1, 2), dtype=np.float64)

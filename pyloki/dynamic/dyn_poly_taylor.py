@@ -35,6 +35,7 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
         dparams: np.ndarray,
         tseg_ffa: float,
         cfg: PulsarSearchConfig,
+        use_moving_grid: bool = True,
     ) -> Self:
         """Create a new instance of PrunePolyTaylorDPFuncts."""
         return prune_poly_taylor_dp_functs_init(
@@ -48,11 +49,41 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            cfg.use_conservative_grid,
+            cfg.use_conservative_tile,
+            use_moving_grid,
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
         return load_func(self, fold, seg_idx)
+
+    def suggest(
+        self,
+        fold_segment: np.ndarray,
+        coord_init: tuple[float, float],
+    ) -> SuggestionStruct:
+        return suggest_func(self, fold_segment, coord_init)
+
+    def branch(
+        self,
+        leaves_batch: np.ndarray,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
+
+    def validate(
+        self,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
+        coord_cur: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
+
+    def get_validation_params(
+        self,
+        coord_add: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        return get_validation_params_func(self, coord_add)
 
     def resolve(
         self,
@@ -62,28 +93,6 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
         coord_init: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
         return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
-
-    def branch(
-        self,
-        leaves_batch: np.ndarray,
-        coord_cur: tuple[float, float],
-        coord_prev: tuple[float, float],
-        coord_cur_fixed: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
-
-    def suggest(
-        self,
-        fold_segment: np.ndarray,
-        coord_init: tuple[float, float],
-    ) -> SuggestionStruct:
-        return suggest_func(self, fold_segment, coord_init)
-
-    def score(self, combined_res_batch: np.ndarray) -> np.ndarray:
-        return score_func(self, combined_res_batch)
-
-    def pack(self, data: np.ndarray) -> np.ndarray:
-        return pack_func(self, data)
 
     def shift_add(
         self,
@@ -100,6 +109,9 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
             isuggest_batch,
         )
 
+    def score(self, combined_res_batch: np.ndarray) -> np.ndarray:
+        return score_func(self, combined_res_batch)
+
     def transform(
         self,
         leaves_batch: np.ndarray,
@@ -115,6 +127,53 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
     ) -> np.ndarray:
         return get_transform_matrix_func(self, coord_next, coord_prev)
 
+    def pack(self, data: np.ndarray) -> np.ndarray:
+        return pack_func(self, data)
+
+
+class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
+    def __new__(
+        cls,
+        param_arr: list[np.ndarray],
+        dparams: np.ndarray,
+        tseg_ffa: float,
+        cfg: PulsarSearchConfig,
+        use_moving_grid: bool = True,
+    ) -> Self:
+        """Create a new instance of PrunePolyTaylorComplexDPFuncts."""
+        return prune_poly_taylor_complex_dp_functs_init(
+            param_arr,
+            dparams,
+            tseg_ffa,
+            cfg.nbins,
+            cfg.tol_bins,
+            cfg.param_limits,
+            cfg.bseg_brute,
+            cfg.score_widths,
+            cfg.prune_poly_order,
+            cfg.branch_max,
+            cfg.use_conservative_tile,
+            use_moving_grid,
+        )
+
+    def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
+        return load_func(self, fold, seg_idx)
+
+    def suggest(
+        self,
+        fold_segment: np.ndarray,
+        coord_init: tuple[float, float],
+    ) -> SuggestionStructComplex:
+        return suggest_complex_func(self, fold_segment, coord_init)
+
+    def branch(
+        self,
+        leaves_batch: np.ndarray,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
+
     def validate(
         self,
         leaves_batch: np.ndarray,
@@ -129,33 +188,6 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
     ) -> tuple[np.ndarray, np.ndarray, float]:
         return get_validation_params_func(self, coord_add)
 
-
-class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
-    def __new__(
-        cls,
-        param_arr: list[np.ndarray],
-        dparams: np.ndarray,
-        tseg_ffa: float,
-        cfg: PulsarSearchConfig,
-    ) -> Self:
-        """Create a new instance of PrunePolyTaylorComplexDPFuncts."""
-        return prune_poly_taylor_complex_dp_functs_init(
-            param_arr,
-            dparams,
-            tseg_ffa,
-            cfg.nbins,
-            cfg.tol_bins,
-            cfg.param_limits,
-            cfg.bseg_brute,
-            cfg.score_widths,
-            cfg.prune_poly_order,
-            cfg.branch_max,
-            cfg.use_conservative_grid,
-        )
-
-    def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
-        return load_func(self, fold, seg_idx)
-
     def resolve(
         self,
         leaves_batch: np.ndarray,
@@ -164,28 +196,6 @@ class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
         coord_init: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
         return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
-
-    def branch(
-        self,
-        leaves_batch: np.ndarray,
-        coord_cur: tuple[float, float],
-        coord_prev: tuple[float, float],
-        coord_cur_fixed: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
-
-    def suggest(
-        self,
-        fold_segment: np.ndarray,
-        coord_init: tuple[float, float],
-    ) -> SuggestionStructComplex:
-        return suggest_complex_func(self, fold_segment, coord_init)
-
-    def score(self, batch_combined_res: np.ndarray) -> np.ndarray:
-        return score_complex_func(self, batch_combined_res)
-
-    def pack(self, data: np.ndarray) -> np.ndarray:
-        return pack_func(self, data)
 
     def shift_add(
         self,
@@ -202,6 +212,9 @@ class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
             isuggest_batch,
         )
 
+    def score(self, batch_combined_res: np.ndarray) -> np.ndarray:
+        return score_complex_func(self, batch_combined_res)
+
     def transform(
         self,
         leaves_batch: np.ndarray,
@@ -217,19 +230,8 @@ class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
     ) -> np.ndarray:
         return get_transform_matrix_func(self, coord_next, coord_prev)
 
-    def validate(
-        self,
-        leaves_batch: np.ndarray,
-        leaves_origins: np.ndarray,
-        coord_cur: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
-
-    def get_validation_params(
-        self,
-        coord_add: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, float]:
-        return get_validation_params_func(self, coord_add)
+    def pack(self, data: np.ndarray) -> np.ndarray:
+        return pack_func(self, data)
 
 
 fields_prune_poly_taylor_dp_funcs = [
@@ -243,7 +245,8 @@ fields_prune_poly_taylor_dp_funcs = [
     ("score_widths", types.i8[::1]),
     ("poly_order", types.i8),
     ("branch_max", types.i8),
-    ("grid_conservative", types.bool_),
+    ("use_conservative_tile", types.bool_),
+    ("use_moving_grid", types.bool_),
 ]
 
 structref.define_boxing(PrunePolyTaylorDPFunctsTemplate, PrunePolyTaylorDPFuncts)
@@ -272,7 +275,8 @@ def prune_poly_taylor_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    grid_conservative: bool,
+    use_conservative_tile: bool,
+    use_moving_grid: bool,
 ) -> PrunePolyTaylorDPFuncts:
     """Initialize the PrunePolyTaylorDPFuncts object."""
     self = cast("PrunePolyTaylorDPFuncts", structref.new(PrunePolyTaylorDPFunctsType))
@@ -286,7 +290,8 @@ def prune_poly_taylor_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.grid_conservative = grid_conservative
+    self.use_conservative_tile = use_conservative_tile
+    self.use_moving_grid = use_moving_grid
     return self
 
 
@@ -302,7 +307,8 @@ def prune_poly_taylor_complex_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    grid_conservative: bool,
+    use_conservative_tile: bool,
+    use_moving_grid: bool,
 ) -> PrunePolyTaylorComplexDPFuncts:
     """Initialize the PrunePolyTaylorComplexDPFuncts object."""
     self = cast(
@@ -319,7 +325,8 @@ def prune_poly_taylor_complex_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.grid_conservative = grid_conservative
+    self.use_conservative_tile = use_conservative_tile
+    self.use_moving_grid = use_moving_grid
     return self
 
 
@@ -330,43 +337,6 @@ def load_func(
     seg_idx: int,
 ) -> np.ndarray:
     return fold[seg_idx]
-
-
-@njit(cache=True, fastmath=True)
-def resolve_func(
-    self: PrunePolyTaylorDPFuncts,
-    leaves_batch: np.ndarray,
-    coord_add: tuple[float, float],
-    coord_cur: tuple[float, float],
-    coord_init: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray]:
-    return taylor.poly_taylor_resolve_batch(
-        leaves_batch,
-        coord_add,
-        coord_cur,
-        coord_init,
-        self.param_arr,
-        self.nbins,
-    )
-
-
-@njit(cache=True, fastmath=True)
-def branch_func(
-    self: PrunePolyTaylorDPFuncts,
-    leaves_batch: np.ndarray,
-    coord_cur: tuple[float, float],
-    coord_prev: tuple[float, float],
-    coord_cur_fixed: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray]:
-    return taylor.poly_taylor_branch_batch(
-        leaves_batch,
-        coord_cur,
-        self.nbins,
-        self.tol_bins,
-        self.poly_order,
-        self.param_limits,
-        self.branch_max,
-    )
 
 
 @njit(cache=True, fastmath=True)
@@ -402,24 +372,67 @@ def suggest_complex_func(
 
 
 @njit(cache=True, fastmath=True)
-def score_func(
+def branch_func(
     self: PrunePolyTaylorDPFuncts,
-    combined_res_batch: np.ndarray,
-) -> np.ndarray:
-    return scoring.snr_score_batch_func(combined_res_batch, self.score_widths)
+    leaves_batch: np.ndarray,
+    coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    # Pass coord_cur for moving grid, coord_cur_fixed for fixed grid
+    return taylor.poly_taylor_branch_batch(
+        leaves_batch,
+        coord_cur,
+        self.nbins,
+        self.tol_bins,
+        self.poly_order,
+        self.param_limits,
+        self.branch_max,
+    )
 
 
 @njit(cache=True, fastmath=True)
-def score_complex_func(
-    self: PrunePolyTaylorComplexDPFuncts,
-    combined_res_batch: np.ndarray,
-) -> np.ndarray:
-    return scoring.snr_score_batch_func_complex(combined_res_batch, self.score_widths)
+def validate_func(
+    self: PrunePolyTaylorDPFuncts,
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
+    coord_cur: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    return leaves_batch, leaves_origins
 
 
 @njit(cache=True, fastmath=True)
-def pack_func(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> np.ndarray:
-    return common.pack(data)
+def get_validation_params_func(
+    self: PrunePolyTaylorDPFuncts,
+    coord_add: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray, float]:
+    return common.get_validation_params(coord_add)
+
+
+@njit(cache=True, fastmath=True)
+def resolve_func(
+    self: PrunePolyTaylorDPFuncts,
+    leaves_batch: np.ndarray,
+    coord_add: tuple[float, float],
+    coord_cur: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    if self.use_moving_grid:
+        return taylor.poly_taylor_resolve_batch(
+            leaves_batch,
+            coord_add,
+            coord_cur,
+            coord_init,
+            self.param_arr,
+            self.nbins,
+        )
+    return taylor.poly_taylor_fixed_resolve_batch(
+        leaves_batch,
+        coord_add,
+        coord_cur,
+        coord_init,
+        self.param_arr,
+        self.nbins,
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -450,18 +463,36 @@ def shift_add_complex_func(
 
 
 @njit(cache=True, fastmath=True)
+def score_func(
+    self: PrunePolyTaylorDPFuncts,
+    combined_res_batch: np.ndarray,
+) -> np.ndarray:
+    return scoring.snr_score_batch_func(combined_res_batch, self.score_widths)
+
+
+@njit(cache=True, fastmath=True)
+def score_complex_func(
+    self: PrunePolyTaylorComplexDPFuncts,
+    combined_res_batch: np.ndarray,
+) -> np.ndarray:
+    return scoring.snr_score_batch_func_complex(combined_res_batch, self.score_widths)
+
+
+@njit(cache=True, fastmath=True)
 def transform_func(
     self: PrunePolyTaylorDPFuncts,
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
 ) -> np.ndarray:
-    return taylor.poly_taylor_transform_batch(
-        leaves_batch,
-        coord_next,
-        coord_cur,
-        self.grid_conservative,
-    )
+    if self.use_moving_grid:
+        return taylor.poly_taylor_transform_batch(
+            leaves_batch,
+            coord_next,
+            coord_cur,
+            self.use_conservative_tile,
+        )
+    return leaves_batch
 
 
 @njit(cache=True, fastmath=True)
@@ -474,21 +505,8 @@ def get_transform_matrix_func(
 
 
 @njit(cache=True, fastmath=True)
-def validate_func(
-    self: PrunePolyTaylorDPFuncts,
-    leaves_batch: np.ndarray,
-    leaves_origins: np.ndarray,
-    coord_cur: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray]:
-    return leaves_batch, leaves_origins
-
-
-@njit(cache=True, fastmath=True)
-def get_validation_params_func(
-    self: PrunePolyTaylorDPFuncts,
-    coord_add: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray, float]:
-    return common.get_validation_params(coord_add)
+def pack_func(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> np.ndarray:
+    return common.pack(data)
 
 
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "load")
@@ -503,6 +521,72 @@ def ol_load_func(
         seg_idx: int,
     ) -> np.ndarray:
         return load_func(self, fold, seg_idx)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PrunePolyTaylorDPFunctsTemplate, "suggest")
+def ol_suggest_func(
+    self: PrunePolyTaylorDPFuncts,
+    fold_segment: np.ndarray,
+    coord_init: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorDPFuncts,
+        fold_segment: np.ndarray,
+        coord_init: tuple[float, float],
+    ) -> SuggestionStruct:
+        return suggest_func(self, fold_segment, coord_init)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PrunePolyTaylorDPFunctsTemplate, "branch")
+def ol_branch_func(
+    self: PrunePolyTaylorDPFuncts,
+    leaves_batch: np.ndarray,
+    coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorDPFuncts,
+        leaves_batch: np.ndarray,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PrunePolyTaylorDPFunctsTemplate, "validate")
+def ol_validate_func(
+    self: PrunePolyTaylorDPFuncts,
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
+    coord_cur: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorDPFuncts,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
+        coord_cur: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PrunePolyTaylorDPFunctsTemplate, "get_validation_params")
+def ol_get_validation_params_func(
+    self: PrunePolyTaylorDPFuncts,
+    coord_add: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorDPFuncts,
+        coord_add: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        return get_validation_params_func(self, coord_add)
 
     return cast("types.FunctionType", impl)
 
@@ -527,64 +611,6 @@ def ol_resolve_func(
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PrunePolyTaylorDPFunctsTemplate, "branch")
-def ol_branch_func(
-    self: PrunePolyTaylorDPFuncts,
-    leaves_batch: np.ndarray,
-    coord_cur: tuple[float, float],
-    coord_prev: tuple[float, float],
-    coord_cur_fixed: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PrunePolyTaylorDPFuncts,
-        leaves_batch: np.ndarray,
-        coord_cur: tuple[float, float],
-        coord_prev: tuple[float, float],
-        coord_cur_fixed: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PrunePolyTaylorDPFunctsTemplate, "suggest")
-def ol_suggest_func(
-    self: PrunePolyTaylorDPFuncts,
-    fold_segment: np.ndarray,
-    coord_init: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PrunePolyTaylorDPFuncts,
-        fold_segment: np.ndarray,
-        coord_init: tuple[float, float],
-    ) -> SuggestionStruct:
-        return suggest_func(self, fold_segment, coord_init)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PrunePolyTaylorDPFunctsTemplate, "score")
-def ol_score_func(
-    self: PrunePolyTaylorDPFuncts,
-    combined_res_batch: np.ndarray,
-) -> types.FunctionType:
-    def impl(
-        self: PrunePolyTaylorDPFuncts,
-        combined_res_batch: np.ndarray,
-    ) -> np.ndarray:
-        return score_func(self, combined_res_batch)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PrunePolyTaylorDPFunctsTemplate, "pack")
-def ol_pack_func(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> types.FunctionType:
-    def impl(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> np.ndarray:
-        return pack_func(self, data)
-
-    return cast("types.FunctionType", impl)
-
-
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "shift_add")
 def ol_shift_add_func(
     self: PrunePolyTaylorDPFuncts,
@@ -601,6 +627,20 @@ def ol_shift_add_func(
         isuggest_batch: np.ndarray,
     ) -> np.ndarray:
         return shift_add_func(self, segment_batch, shift_batch, folds, isuggest_batch)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PrunePolyTaylorDPFunctsTemplate, "score")
+def ol_score_func(
+    self: PrunePolyTaylorDPFuncts,
+    combined_res_batch: np.ndarray,
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorDPFuncts,
+        combined_res_batch: np.ndarray,
+    ) -> np.ndarray:
+        return score_func(self, combined_res_batch)
 
     return cast("types.FunctionType", impl)
 
@@ -639,34 +679,10 @@ def ol_get_transform_matrix_func(
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PrunePolyTaylorDPFunctsTemplate, "validate")
-def ol_validate_func(
-    self: PrunePolyTaylorDPFuncts,
-    leaves_batch: np.ndarray,
-    leaves_origins: np.ndarray,
-    coord_cur: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PrunePolyTaylorDPFuncts,
-        leaves_batch: np.ndarray,
-        leaves_origins: np.ndarray,
-        coord_cur: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PrunePolyTaylorDPFunctsTemplate, "get_validation_params")
-def ol_get_validation_params_func(
-    self: PrunePolyTaylorDPFuncts,
-    coord_add: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PrunePolyTaylorDPFuncts,
-        coord_add: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, float]:
-        return get_validation_params_func(self, coord_add)
+@overload_method(PrunePolyTaylorDPFunctsTemplate, "pack")
+def ol_pack_func(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> types.FunctionType:
+    def impl(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> np.ndarray:
+        return pack_func(self, data)
 
     return cast("types.FunctionType", impl)
 
@@ -687,46 +703,6 @@ def ol_load_complex_func(
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "resolve")
-def ol_resolve_complex_func(
-    self: PrunePolyTaylorComplexDPFuncts,
-    leaves_batch: np.ndarray,
-    coord_add: tuple[float, float],
-    coord_cur: tuple[float, float],
-    coord_init: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PrunePolyTaylorComplexDPFuncts,
-        leaves_batch: np.ndarray,
-        coord_add: tuple[float, float],
-        coord_cur: tuple[float, float],
-        coord_init: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "branch")
-def ol_branch_complex_func(
-    self: PrunePolyTaylorComplexDPFuncts,
-    leaves_batch: np.ndarray,
-    coord_cur: tuple[float, float],
-    coord_prev: tuple[float, float],
-    coord_cur_fixed: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PrunePolyTaylorComplexDPFuncts,
-        leaves_batch: np.ndarray,
-        coord_cur: tuple[float, float],
-        coord_prev: tuple[float, float],
-        coord_cur_fixed: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return branch_func(self, leaves_batch, coord_cur, coord_prev, coord_cur_fixed)
-
-    return cast("types.FunctionType", impl)
-
-
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "suggest")
 def ol_suggest_complex_func(
     self: PrunePolyTaylorComplexDPFuncts,
@@ -743,27 +719,72 @@ def ol_suggest_complex_func(
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "score")
-def ol_score_complex_func(
+@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "branch")
+def ol_branch_complex_func(
     self: PrunePolyTaylorComplexDPFuncts,
-    combined_res_batch: np.ndarray,
+    leaves_batch: np.ndarray,
+    coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyTaylorComplexDPFuncts,
-        combined_res_batch: np.ndarray,
-    ) -> np.ndarray:
-        return score_complex_func(self, combined_res_batch)
+        leaves_batch: np.ndarray,
+        coord_cur: tuple[float, float],
+        coord_prev: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "pack")
-def ol_pack_complex_func(
+@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "validate")
+def ol_validate_complex_func(
     self: PrunePolyTaylorComplexDPFuncts,
-    data: np.ndarray,
+    leaves_batch: np.ndarray,
+    leaves_origins: np.ndarray,
+    coord_cur: tuple[float, float],
 ) -> types.FunctionType:
-    def impl(self: PrunePolyTaylorComplexDPFuncts, data: np.ndarray) -> np.ndarray:
-        return pack_func(self, data)
+    def impl(
+        self: PrunePolyTaylorComplexDPFuncts,
+        leaves_batch: np.ndarray,
+        leaves_origins: np.ndarray,
+        coord_cur: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "get_validation_params")
+def ol_get_validation_params_complex_func(
+    self: PrunePolyTaylorComplexDPFuncts,
+    coord_add: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorComplexDPFuncts,
+        coord_add: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        return get_validation_params_func(self, coord_add)
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "resolve")
+def ol_resolve_complex_func(
+    self: PrunePolyTaylorComplexDPFuncts,
+    leaves_batch: np.ndarray,
+    coord_add: tuple[float, float],
+    coord_cur: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorComplexDPFuncts,
+        leaves_batch: np.ndarray,
+        coord_add: tuple[float, float],
+        coord_cur: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
     return cast("types.FunctionType", impl)
 
@@ -790,6 +811,20 @@ def ol_shift_add_complex_func(
             folds,
             isuggest_batch,
         )
+
+    return cast("types.FunctionType", impl)
+
+
+@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "score")
+def ol_score_complex_func(
+    self: PrunePolyTaylorComplexDPFuncts,
+    combined_res_batch: np.ndarray,
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorComplexDPFuncts,
+        combined_res_batch: np.ndarray,
+    ) -> np.ndarray:
+        return score_complex_func(self, combined_res_batch)
 
     return cast("types.FunctionType", impl)
 
@@ -828,33 +863,12 @@ def ol_get_transform_matrix_complex_func(
     return cast("types.FunctionType", impl)
 
 
-@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "validate")
-def ol_validate_complex_func(
+@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "pack")
+def ol_pack_complex_func(
     self: PrunePolyTaylorComplexDPFuncts,
-    leaves_batch: np.ndarray,
-    leaves_origins: np.ndarray,
-    coord_cur: tuple[float, float],
+    data: np.ndarray,
 ) -> types.FunctionType:
-    def impl(
-        self: PrunePolyTaylorComplexDPFuncts,
-        leaves_batch: np.ndarray,
-        leaves_origins: np.ndarray,
-        coord_cur: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
-
-    return cast("types.FunctionType", impl)
-
-
-@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "get_validation_params")
-def ol_get_validation_params_complex_func(
-    self: PrunePolyTaylorComplexDPFuncts,
-    coord_add: tuple[float, float],
-) -> types.FunctionType:
-    def impl(
-        self: PrunePolyTaylorComplexDPFuncts,
-        coord_add: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, float]:
-        return get_validation_params_func(self, coord_add)
+    def impl(self: PrunePolyTaylorComplexDPFuncts, data: np.ndarray) -> np.ndarray:
+        return pack_func(self, data)
 
     return cast("types.FunctionType", impl)
