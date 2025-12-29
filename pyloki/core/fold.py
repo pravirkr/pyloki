@@ -498,7 +498,7 @@ def ffa_taylor_init(
     ts_v: np.ndarray,
     param_arr: types.ListType[types.Array],
     bseg_brute: int,
-    fold_bins: int,
+    nbins: int,
     tsamp: float,
 ) -> np.ndarray:
     """Initialize the fold for the FFA search.
@@ -513,7 +513,7 @@ def ffa_taylor_init(
         Parameter grid array for each search parameter dimension.
     bseg_brute : int
         Brute force segment size in bins.
-    fold_bins : int
+    nbins : int
         Number of bins in the folded profile.
     tsamp : float
         Sampling time of the data.
@@ -531,7 +531,7 @@ def ffa_taylor_init(
         ts_v,
         freq_arr,
         bseg_brute,
-        fold_bins,
+        nbins,
         tsamp,
         t_ref,
     )
@@ -543,7 +543,7 @@ def ffa_taylor_init_complex(
     ts_v: np.ndarray,
     param_arr: types.ListType[types.Array],
     bseg_brute: int,
-    fold_bins: int,
+    nbins: int,
     tsamp: float,
 ) -> np.ndarray:
     """Initialize the fold for the FFA search (complex-domain).
@@ -558,7 +558,7 @@ def ffa_taylor_init_complex(
         Parameter grid array for each search parameter dimension.
     bseg_brute : int
         Brute force segment size in bins.
-    fold_bins : int
+    nbins : int
         Number of bins in the folded profile.
     tsamp : float
         Sampling time of the data.
@@ -576,7 +576,7 @@ def ffa_taylor_init_complex(
         ts_v,
         freq_arr,
         bseg_brute,
-        fold_bins,
+        nbins,
         tsamp,
         t_ref,
     )
@@ -589,7 +589,7 @@ def ffa_taylor_resolve(
     ffa_level: int,
     latter: int,
     tseg_brute: float,
-    fold_bins: int,
+    nbins: int,
 ) -> tuple[np.ndarray, float]:
     """Resolve the params to find the closest index in grid and absolute phase shift.
 
@@ -605,7 +605,7 @@ def ffa_taylor_resolve(
         Switch for the two halves of the previous iteration segments (0 or 1).
     tseg_brute : float
         Duration of the brute force segment.
-    fold_bins : int
+    nbins : int
         Number of bins in the folded profile.
 
     Returns
@@ -627,7 +627,7 @@ def ffa_taylor_resolve(
     else:
         delta_t = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
         pset_new, delay = transforms.shift_taylor_params_d_f(pset_cur, delta_t)
-    relative_phase = psr_utils.get_phase_idx(delta_t, pset_cur[-1], fold_bins, delay)
+    relative_phase = psr_utils.get_phase_idx(delta_t, pset_cur[-1], nbins, delay)
     pindex_prev = np.zeros(nparams, dtype=np.int64)
     for ip in range(nparams):
         pindex_prev[ip] = np_utils.find_nearest_sorted_idx(param_arr[ip], pset_new[ip])

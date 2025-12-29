@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from numba import njit, typed, types
 
-from pyloki.core.common import get_leaves
+from pyloki.core.common import get_leaves, propagate_bp_state_deterministic
 from pyloki.detection.scoring import snr_score_func, snr_score_func_complex
 from pyloki.utils import np_utils, psr_utils, transforms
 from pyloki.utils.misc import C_VAL
@@ -157,8 +157,8 @@ def poly_taylor_suggest_complex(
 def poly_taylor_branch(
     leaf: np.ndarray,
     coord_cur: tuple[float, float],
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     poly_order: int,
     param_limits: types.ListType[types.Tuple[float, float]],
 ) -> np.ndarray:
@@ -170,9 +170,9 @@ def poly_taylor_branch(
         Parameter set (leaf) to branch. Shape: (n_params + 2, 2).
     coord_cur : tuple[float, float]
         Coordinates for the accumulated segment in the current stage.
-    fold_bins : int
+    nbins : int
         Number of bins in the folded profile.
-    tol_bins : float
+    eta : float
         Tolerance for the parameter step size in bins.
     poly_order : int
         The order of the Taylor polynomial.
@@ -200,8 +200,8 @@ def poly_taylor_branch(
     dparam_new = psr_utils.poly_taylor_step_d(
         poly_order,
         t_obs_minus_t_ref,
-        fold_bins,
-        tol_bins,
+        nbins,
+        eta,
         f0,
         t_ref=0,
     )
@@ -209,7 +209,7 @@ def poly_taylor_branch(
         dparam_cur,
         dparam_new,
         t_obs_minus_t_ref,
-        fold_bins,
+        nbins,
         f0,
         t_ref=0,
     )
@@ -221,7 +221,7 @@ def poly_taylor_branch(
     shapes = np.empty(poly_order, dtype=np.int64)
     for i in range(poly_order):
         param_min, param_max = param_limits_d[i]
-        if shift_bins[i] >= (tol_bins - eps):
+        if shift_bins[i] >= (eta - eps):
             leaf_param_arr, dparam_act = psr_utils.branch_param(
                 param_cur[i],
                 dparam_cur[i],
@@ -261,8 +261,8 @@ def poly_taylor_branch(
 def poly_taylor_branch_batch(
     leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     poly_order: int,
     param_limits: types.ListType[types.Tuple[float, float]],
     branch_max: int,
@@ -286,8 +286,8 @@ def poly_taylor_branch_batch(
     dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
         poly_order,
         t_obs_minus_t_ref,
-        fold_bins,
-        tol_bins,
+        nbins,
+        eta,
         f0_batch,
         t_ref=0,
     )
@@ -295,7 +295,7 @@ def poly_taylor_branch_batch(
         dparam_cur_batch,
         dparam_new_batch,
         t_obs_minus_t_ref,
-        fold_bins,
+        nbins,
         f0_batch,
         t_ref=0,
     )
@@ -319,7 +319,7 @@ def poly_taylor_branch_batch(
 
     # --- Vectorized Selection ---
     eps = 1e-6  # Small tolerance for floating-point comparison
-    needs_branching = shift_bins_batch >= (tol_bins - eps)
+    needs_branching = shift_bins_batch >= (eta - eps)
     for i in range(n_batch):
         for j in range(poly_order):
             if not needs_branching[i, j]:
@@ -351,7 +351,7 @@ def poly_taylor_resolve(
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
     param_arr: types.ListType[types.Array],
-    fold_bins: int,
+    nbins: int,
 ) -> tuple[np.ndarray, float]:
     """Resolve the leaf params to find the closest index in grid and phase shift.
 
@@ -367,7 +367,7 @@ def poly_taylor_resolve(
         The coordinates for the initial pruning suggestion tree.
     param_arr : types.ListType[types.Array]
         Parameter grid array for the ``coord_add`` segment (dim: 2)
-    fold_bins : int
+    nbins : int
         Number of bins in the folded profile.
 
     Returns
@@ -395,7 +395,7 @@ def poly_taylor_resolve(
     vel_new = dvec_t_add[-2] - dvec_t_init[-2]
     freq_new = f0 * (1 - vel_new / C_VAL)
     delay = (dvec_t_add[-1] - dvec_t_init[-1]) / C_VAL
-    relative_phase = psr_utils.get_phase_idx(t0_add - t0_init, f0, fold_bins, delay)
+    relative_phase = psr_utils.get_phase_idx(t0_add - t0_init, f0, nbins, delay)
     param_idx = np.zeros(len(param_arr), dtype=np.int64)
     param_idx[-2] = np_utils.find_nearest_sorted_idx(param_arr[-2], accel_new)
     param_idx[-1] = np_utils.find_nearest_sorted_idx(param_arr[-1], freq_new)
@@ -409,7 +409,7 @@ def poly_taylor_resolve_batch(
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
     param_arr: types.ListType[types.Array],
-    fold_bins: int,
+    nbins: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
     n_batch, _, _ = leaves_batch.shape
@@ -428,7 +428,7 @@ def poly_taylor_resolve_batch(
     relative_phase_batch = psr_utils.get_phase_idx(
         t0_add - t0_init,
         f0_batch,
-        fold_bins,
+        nbins,
         delay_batch,
     )
     param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
@@ -450,7 +450,7 @@ def poly_taylor_fixed_resolve_batch(
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
     param_arr: types.ListType[types.Array],
-    fold_bins: int,
+    nbins: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
     n_batch, _, _ = leaves_batch.shape
@@ -468,7 +468,7 @@ def poly_taylor_fixed_resolve_batch(
     relative_phase_batch = psr_utils.get_phase_idx(
         t0_add - t0_init,
         f0_batch,
-        fold_bins,
+        nbins,
         delay_batch,
     )
     param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
@@ -509,8 +509,8 @@ def generate_bp_poly_taylor_approx(
     param_limits: types.ListType[types.Tuple[float, float]],
     tseg_ffa: float,
     nsegments: int,
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     ref_seg: int,
     isuggest: int = 0,
     use_conservative_tile: bool = False,
@@ -527,8 +527,8 @@ def generate_bp_poly_taylor_approx(
         leaves_arr = poly_taylor_branch(
             leaf,
             coord_cur,
-            fold_bins,
-            tol_bins,
+            nbins,
+            eta,
             poly_order,
             param_limits,
         )
@@ -550,77 +550,105 @@ def generate_bp_poly_taylor(
     param_limits: types.ListType[types.Tuple[float, float]],
     tseg_ffa: float,
     nsegments: int,
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     ref_seg: int,
     use_conservative_tile: bool = False,
+    max_track_size: int = 10000,
 ) -> np.ndarray:
-    """Generate the exact branching pattern for the Taylor pruning search."""
+    """Deterministic branching pattern estimator with fixed memory cap."""
     poly_order = len(dparams_lim)
     f0_batch = param_arr[-1]
-    n_freqs = len(f0_batch)
+    n0 = len(f0_batch)
+    # Ensure we don't downsample below the initial size
+    max_track_size = max(max_track_size, n0)
     snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
+
+    # Track velocity
+    d1_batch = np.zeros(n0, dtype=np.float64)
+    weights = np.ones(n0, dtype=np.float64)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
-    dparam_cur_batch = np.empty((n_freqs, poly_order), dtype=np.float64)
-    for i in range(n_freqs):
+    dparam_cur_batch = np.empty((n0, poly_order), dtype=np.float64)
+    for i in range(n0):
         dparam_cur_batch[i] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -1] = dparam_cur_batch[:, -1] * (C_VAL / f0_batch)
 
-    param_limits_d = np.empty((n_freqs, poly_order, 2), dtype=np.float64)
-    for i in range(poly_order):
-        param_limits_d[:, i, 0] = param_limits[i][0]
-        param_limits_d[:, i, 1] = param_limits[i][1]
-    param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
-    param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
-    param_ranges = (param_limits_d[:, :, 1] - param_limits_d[:, :, 0]) / 2
+    # Precompute constant parameter ranges for non-velocity parameters
+    param_ranges_const = np.empty(poly_order - 1, dtype=np.float64)
+    for i in range(poly_order - 1):
+        param_ranges_const[i] = (param_limits[i][1] - param_limits[i][0]) / 2
 
+    # Frequency limits for velocity conversion
+    f_min, f_max = param_limits[poly_order - 1]
+
+    eps = 1e-12
     for prune_level in range(1, nsegments):
         coord_next = snail_scheme.get_coord(prune_level)
         coord_cur = snail_scheme.get_current_coord(prune_level)
         _, t_obs_minus_t_ref = coord_cur
+        f_cur_batch = f0_batch * (1.0 - d1_batch / C_VAL)
         dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
             poly_order,
             t_obs_minus_t_ref,
-            fold_bins,
-            tol_bins,
-            f0_batch,
+            nbins,
+            eta,
+            f_cur_batch,
             t_ref=0,
         )
         shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
             dparam_cur_batch,
             dparam_new_batch,
             t_obs_minus_t_ref,
-            fold_bins,
-            f0_batch,
+            nbins,
+            f_cur_batch,
             t_ref=0,
         )
 
-        dparam_cur_next = np.empty((n_freqs, poly_order), dtype=np.float64)
-        n_branches = np.ones(n_freqs, dtype=np.int64)
+        nfreqs = len(f0_batch)
+        dparam_next_tmp = np.empty((nfreqs, poly_order), dtype=np.float64)
+        n_branch_d1 = np.ones(nfreqs, dtype=np.int64)
+        n_branch_other = np.ones(nfreqs, dtype=np.int64)
 
+        v_ranges = (f_max - f_min) / f0_batch * C_VAL / 2
         # Vectorized branching decision
-        eps = 1e-6
-        needs_branching = shift_bins_batch >= (tol_bins - eps)
-        too_large_step = dparam_new_batch > (param_ranges + eps)
+        needs_branching = shift_bins_batch >= (eta - eps)
 
-        for i in range(n_freqs):
+        for i in range(nfreqs):
             for j in range(poly_order):
-                if not needs_branching[i, j] or too_large_step[i, j]:
-                    dparam_cur_next[i, j] = dparam_cur_batch[i, j]
+                # Bounds check
+                limit = v_ranges[i] if j == poly_order - 1 else param_ranges_const[j]
+                too_large_step = dparam_new_batch[i, j] > (limit + eps)
+                if not needs_branching[i, j] or too_large_step:
+                    dparam_next_tmp[i, j] = dparam_cur_batch[i, j]
                     continue
                 ratio = (dparam_cur_batch[i, j] + eps) / dparam_new_batch[i, j]
                 num_points = max(1, int(np.ceil(ratio - eps)))
-                n_branches[i] *= num_points
-                dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
-        # Compute average branching factor
-        branching_pattern[prune_level - 1] = np.sum(n_branches) / n_freqs
+                if j == poly_order - 1:  # Velocity dimension
+                    n_branch_d1[i] = num_points
+                else:
+                    n_branch_other[i] *= num_points
+                dparam_next_tmp[i, j] = dparam_cur_batch[i, j] / num_points
+
+        (f0_batch, d1_batch, weights, dparam_cur_batch_raw, avg_bp) = (
+            propagate_bp_state_deterministic(
+                f0_batch,
+                d1_batch,
+                weights,
+                dparam_cur_batch,
+                dparam_next_tmp,
+                n_branch_d1,
+                n_branch_other,
+                max_track_size,
+            )
+        )
+        branching_pattern[prune_level - 1] = avg_bp
 
         # Transform dparams to the next segment
         delta_t = coord_next[0] - coord_cur[0]
-        dparam_d_vec = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
-        dparam_d_vec[:, :-1] = dparam_cur_next
+        dparam_d_vec = np.zeros((len(f0_batch), poly_order + 1), dtype=np.float64)
+        dparam_d_vec[:, :-1] = dparam_cur_batch_raw
         dparam_d_vec_new = transforms.shift_taylor_errors(
             dparam_d_vec,
             delta_t,
@@ -638,70 +666,98 @@ def generate_bp_poly_taylor_fixed(
     param_limits: types.ListType[types.Tuple[float, float]],
     tseg_ffa: float,
     nsegments: int,
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     ref_seg: int,
+    max_track_size: int = 10000,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor fixed pruning search."""
     poly_order = len(dparams_lim)
     f0_batch = param_arr[-1]
-    n_freqs = len(f0_batch)
+    n0 = len(f0_batch)
+    # Ensure we don't downsample below the initial size
+    max_track_size = max(max_track_size, n0)
     snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
+
+    # Track velocity
+    d1_batch = np.zeros(n0, dtype=np.float64)
+    weights = np.ones(n0, dtype=np.float64)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
-    dparam_cur_batch = np.empty((n_freqs, poly_order), dtype=np.float64)
-    for i in range(n_freqs):
+    dparam_cur_batch = np.empty((n0, poly_order), dtype=np.float64)
+    for i in range(n0):
         dparam_cur_batch[i] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -1] = dparam_cur_batch[:, -1] * (C_VAL / f0_batch)
 
-    param_limits_d = np.empty((n_freqs, poly_order, 2), dtype=np.float64)
-    for i in range(poly_order):
-        param_limits_d[:, i, 0] = param_limits[i][0]
-        param_limits_d[:, i, 1] = param_limits[i][1]
-    param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
-    param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
-    param_ranges = (param_limits_d[:, :, 1] - param_limits_d[:, :, 0]) / 2
+    # Precompute constant parameter ranges for non-velocity parameters
+    param_ranges_const = np.empty(poly_order - 1, dtype=np.float64)
+    for i in range(poly_order - 1):
+        param_ranges_const[i] = (param_limits[i][1] - param_limits[i][0]) / 2
 
+    # Frequency limits for velocity conversion
+    f_min, f_max = param_limits[poly_order - 1]
+
+    eps = 1e-12
     for prune_level in range(1, nsegments):
         coord_cur_fixed = snail_scheme.get_current_coord_fixed(prune_level)
         _, t_obs_minus_t_ref = coord_cur_fixed
+        f_cur_batch = f0_batch * (1.0 - d1_batch / C_VAL)
         dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
             poly_order,
             t_obs_minus_t_ref,
-            fold_bins,
-            tol_bins,
-            f0_batch,
+            nbins,
+            eta,
+            f_cur_batch,
             t_ref=0,
         )
         shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
             dparam_cur_batch,
             dparam_new_batch,
             t_obs_minus_t_ref,
-            fold_bins,
-            f0_batch,
+            nbins,
+            f_cur_batch,
             t_ref=0,
         )
 
-        dparam_cur_next = np.empty((n_freqs, poly_order), dtype=np.float64)
-        n_branches = np.ones(n_freqs, dtype=np.int64)
+        nfreqs = len(f0_batch)
+        dparam_next_tmp = np.empty((nfreqs, poly_order), dtype=np.float64)
+        n_branch_d1 = np.ones(nfreqs, dtype=np.int64)
+        n_branch_other = np.ones(nfreqs, dtype=np.int64)
 
+        v_ranges = (f_max - f_min) / f0_batch * C_VAL / 2
         # Vectorized branching decision
-        eps = 1e-6
-        needs_branching = shift_bins_batch >= (tol_bins - eps)
-        too_large_step = dparam_new_batch > (param_ranges + eps)
+        needs_branching = shift_bins_batch >= (eta - eps)
 
-        for i in range(n_freqs):
+        for i in range(nfreqs):
             for j in range(poly_order):
-                if not needs_branching[i, j] or too_large_step[i, j]:
-                    dparam_cur_next[i, j] = dparam_cur_batch[i, j]
+                # Bounds check
+                limit = v_ranges[i] if j == poly_order - 1 else param_ranges_const[j]
+                too_large_step = dparam_new_batch[i, j] > (limit + eps)
+                if not needs_branching[i, j] or too_large_step:
+                    dparam_next_tmp[i, j] = dparam_cur_batch[i, j]
                     continue
                 ratio = (dparam_cur_batch[i, j] + eps) / dparam_new_batch[i, j]
                 num_points = max(1, int(np.ceil(ratio - eps)))
-                n_branches[i] *= num_points
-                dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
+                if j == poly_order - 1:  # Velocity dimension
+                    n_branch_d1[i] = num_points
+                else:
+                    n_branch_other[i] *= num_points
+                dparam_next_tmp[i, j] = dparam_cur_batch[i, j] / num_points
+
+        (f0_batch, d1_batch, weights, dparam_cur_batch, avg_bp) = (
+            propagate_bp_state_deterministic(
+                f0_batch,
+                d1_batch,
+                weights,
+                dparam_cur_batch,
+                dparam_next_tmp,
+                n_branch_d1,
+                n_branch_other,
+                max_track_size,
+            )
+        )
         # Compute average branching factor
-        branching_pattern[prune_level - 1] = np.sum(n_branches) / n_freqs
-        dparam_cur_batch = dparam_cur_next
+        branching_pattern[prune_level - 1] = avg_bp
 
     return branching_pattern

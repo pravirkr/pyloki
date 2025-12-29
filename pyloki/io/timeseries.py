@@ -90,7 +90,7 @@ class TimeSeries:
     def plot_fold(
         self,
         freq: float,
-        fold_bins: int,
+        nbins: int,
         nsubints: int = 64,
         mod_type: str = "derivative",
         mod_kwargs: dict | None = None,
@@ -101,7 +101,7 @@ class TimeSeries:
     ) -> plt.Figure:
         ephem_fold = self.fold_ephem(
             freq,
-            fold_bins,
+            nbins,
             nsubints=1,
             mod_type=mod_type,
             mod_kwargs=mod_kwargs,
@@ -109,7 +109,7 @@ class TimeSeries:
         )
         ephem_fold_subints = self.fold_ephem(
             freq,
-            fold_bins,
+            nbins,
             nsubints=nsubints,
             mod_tref=mod_tref,
         )
@@ -117,10 +117,10 @@ class TimeSeries:
             ephem_fold,
             loc_method="norm",
             scale_method="norm",
-            nbins_max=fold_bins // 2,
+            nbins_max=nbins // 2,
             spacing_factor=1,
         )
-        match_boxcar = boxcar_snr_1d(ephem_fold, np.arange(1, fold_bins // 2), 1.0)
+        match_boxcar = boxcar_snr_1d(ephem_fold, np.arange(1, nbins // 2), 1.0)
         if mod_kwargs is None:
             mod_kwargs = {"acc": 0, "jerk": 0, "snap": 0}
 
@@ -159,27 +159,27 @@ class TimeSeries:
             ephem_fold_subints,
             aspect="auto",
             interpolation="none",
-            extent=(0, fold_bins, 0, self.tobs),
+            extent=(0, nbins, 0, self.tobs),
             cmap=plt.get_cmap(cmap),
             origin="lower",
         )
         axsubints.set_ylabel("Time (seconds)")
         axsubints.set_xlabel("Phase bin")
         axprofile.plot(
-            range(fold_bins),
+            range(nbins),
             ephem_fold,
             color="#404040",
             label="Folded Profile",
         )
         axprofile.plot(
-            range(fold_bins),
+            range(nbins),
             sig_boxcar.best_model,
             color="#d62728",
             alpha=0.65,
             ls="--",
             label="Boxcar template",
         )
-        axprofile.set_xlim(0, fold_bins)
+        axprofile.set_xlim(0, nbins)
         axprofile.set_xlabel("Phase bin")
         axprofile.set_ylabel("Normalised amplitude")
 

@@ -136,7 +136,7 @@ fields_ffa_taylor_dp_funcs = [
     ("tsamp", types.float64),
     ("nbins", types.int64),
     ("bseg_brute", types.int64),
-    ("use_fft_shifts", types.bool_),
+    ("use_fourier", types.bool_),
 ]
 
 structref.define_boxing(FFATaylorDPFunctsTemplate, FFATaylorDPFuncts)

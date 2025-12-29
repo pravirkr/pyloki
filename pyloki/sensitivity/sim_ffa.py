@@ -36,9 +36,9 @@ def plot_sensitivity(filename: str | Path) -> plt.Figure:
         snr_inj = f.attrs["snr"]
         freq = 1 / f.attrs["period"]
         ds = f.attrs["ds"]
-        fold_bins_ideal = f.attrs["fold_bins_ideal"]
+        nbins_ideal = f.attrs["nbins_ideal"]
         ducy_arr = f["ducy_arr"][:]
-        tol_bins_arr = f["tol_bins_arr"][:]
+        eta_arr = f["eta_arr"][:]
         ds_arr = f["ds_arr"][:]
         losses_real = f["losses_real"][:]
         losses_complex = f["losses_complex"][:]
@@ -46,24 +46,24 @@ def plot_sensitivity(filename: str | Path) -> plt.Figure:
     set_seaborn(use_latex=True, font_size=16)
     fig, (axs) = plt.subplots(2, 2, figsize=(16, 10), layout="constrained")
     for ids in range(len(ds_arr)):
-        fold_bins = int(fold_bins_ideal / ds_arr[ids])
+        nbins = int(nbins_ideal / ds_arr[ids])
         axs[0, 0].plot(
             ducy_arr,
             losses_ds[ids],
             "o-",
             lw=2,
             markersize=8,
-            label=f"ds = {ds_arr[ids]:.2f}, " + r"$N_{b}$ = " + f"{fold_bins}",
+            label=f"ds = {ds_arr[ids]:.2f}, " + r"$N_{b}$ = " + f"{nbins}",
         )
         axs[0, 0].set_xlabel("Duty Cycle")
         axs[0, 0].set_ylabel("Recovered significance")
         axs[0, 0].set_title("Folding loss")
         axs[0, 0].legend()
 
-    palette = sns.color_palette("colorblind", n_colors=len(tol_bins_arr))
+    palette = sns.color_palette("colorblind", n_colors=len(eta_arr))
     titles = ["Shifting loss", "Dynamic FFA loss", "Empirical FFA loss"]
     for iax, ax in enumerate(axs.flat[1:]):
-        for itol_bin in range(len(tol_bins_arr)):
+        for itol_bin in range(len(eta_arr)):
             color = palette[itol_bin]
             ax.plot(
                 ducy_arr,
@@ -72,7 +72,7 @@ def plot_sensitivity(filename: str | Path) -> plt.Figure:
                 lw=2,
                 markersize=8,
                 color=color,
-                label=r"$\eta$ = " + f"{tol_bins_arr[itol_bin]:.1f}",
+                label=r"$\eta$ = " + f"{eta_arr[itol_bin]:.1f}",
             )
             if iax != 0:
                 ax.plot(
@@ -176,7 +176,7 @@ class TestFFASensitivity:
         cfg: PulseSignalConfig,
         param_limits: types.ListType[types.Tuple[float, float]],
         ducy_arr: np.ndarray | None = None,
-        tol_bins_arr: np.ndarray | None = None,
+        eta_arr: np.ndarray | None = None,
         ds_arr: np.ndarray | None = None,
         ducy_max: float = 0.5,
         wtsp: float = 1,
@@ -187,12 +187,12 @@ class TestFFASensitivity:
         self.param_limits = param_limits
         if ducy_arr is None:
             ducy_arr = np.linspace(0.01, 0.3, 15)
-        if tol_bins_arr is None:
-            tol_bins_arr = np.array([1, 2, 4, 8])
+        if eta_arr is None:
+            eta_arr = np.array([1, 2, 4, 8])
         if ds_arr is None:
             ds_arr = np.array([1, 1.25, 1.5, 1.75, 2])
         self.ducy_arr = ducy_arr
-        self.tol_bins_arr = tol_bins_arr
+        self.eta_arr = eta_arr
         self.ds_arr = ds_arr
         self.ducy_max = ducy_max
         self.wtsp = wtsp
@@ -208,7 +208,7 @@ class TestFFASensitivity:
 
     @property
     def ntols(self) -> int:
-        return len(self.tol_bins_arr)
+        return len(self.eta_arr)
 
     @property
     def nducy(self) -> int:
@@ -259,25 +259,25 @@ class TestFFASensitivity:
         losses_ds = np.zeros((self.nds), dtype=float)
         # Compute signal strength over different oversampling factors
         for ids in range(self.nds):
-            fold_bins = int(cfg.fold_bins_ideal / self.ds_arr[ids])
+            nbins = int(cfg.fold_bins_ideal / self.ds_arr[ids])
             fold_ds = tim_data.fold_ephem(
                 cfg.freq,
-                fold_bins,
+                nbins,
                 mod_kwargs=cfg.mod_kwargs,
             )
             losses_ds[ids] = get_best_snr(fold_ds, self.ducy_max, self.wtsp)
-        # Compute signal strength over different tol_bins
+        # Compute signal strength over different eta
         for itol in range(self.ntols):
             search_cfg_real = PulsarSearchConfig(
                 nsamps=cfg.nsamps,
                 tsamp=cfg.dt,
                 nbins=cfg.fold_bins,
-                tol_bins=self.tol_bins_arr[itol],
+                eta=self.eta_arr[itol],
                 param_limits=self.param_limits,
                 ducy_max=self.ducy_max,
                 wtsp=self.wtsp,
                 bseg_brute=cfg.nsamps // 16384,
-                use_fft_shifts=False,
+                use_fourier=False,
             )
             losses_real[:, itol] = test_sensitivity_ffa(
                 tim_data,
@@ -289,12 +289,12 @@ class TestFFASensitivity:
                 nsamps=cfg.nsamps,
                 tsamp=cfg.dt,
                 nbins=cfg.fold_bins,
-                tol_bins=self.tol_bins_arr[itol],
+                eta=self.eta_arr[itol],
                 param_limits=self.param_limits,
                 ducy_max=self.ducy_max,
                 wtsp=self.wtsp,
                 bseg_brute=cfg.nsamps // 16384,
-                use_fft_shifts=True,
+                use_fourier=True,
             )
             losses_complex[:, itol] = test_sensitivity_ffa(
                 tim_data,
@@ -311,11 +311,11 @@ class TestFFASensitivity:
     def _save(self, outpath: Path) -> str:
         outfile = outpath / f"pyloki_ffa_sensitivity_{self.file_id}.h5"
         with h5py.File(outfile, "w") as f:
-            for attr in ["period", "ds", "nsamps", "fold_bins_ideal", "dt", "snr"]:
+            for attr in ["period", "ds", "nsamps", "nbins_ideal", "dt", "snr"]:
                 f.attrs[attr] = getattr(self.cfg, attr)
             for arr in [
                 "ducy_arr",
-                "tol_bins_arr",
+                "eta_arr",
                 "ds_arr",
                 "losses_real",
                 "losses_complex",

@@ -139,4 +139,5 @@ include = [
 
 [tool.ty.overrides.rules]
 invalid-assignment = "ignore"
+invalid-return-type = "ignore"
 unresolved-attribute = "ignore"

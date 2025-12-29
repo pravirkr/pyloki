@@ -9,7 +9,7 @@ from pyloki.utils import maths, np_utils
 
 @njit(cache=True, fastmath=True)
 def generate_box_width_trials(
-    fold_bins: int,
+    nbins: int,
     ducy_max: float = 0.2,
     wtsp: float = 1.5,
 ) -> npt.NDArray[np.int64]:
@@ -17,7 +17,7 @@ def generate_box_width_trials(
 
     Parameters
     ----------
-    fold_bins : int
+    nbins : int
         Number of bins in the folded profile.
     ducy_max : float, optional
         Maximum ducy cycle, by default 0.2
@@ -29,7 +29,7 @@ def generate_box_width_trials(
     np.ndarray
         Width trials for matched filtering.
     """
-    wmax = int(max(1, ducy_max * fold_bins))
+    wmax = int(max(1, ducy_max * nbins))
     widths = [1]
     while widths[-1] <= wmax:
         next_width = int(max(widths[-1] + 1, int(wtsp * widths[-1])))

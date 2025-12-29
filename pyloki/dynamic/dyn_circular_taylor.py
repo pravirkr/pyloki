@@ -43,7 +43,7 @@ class PruneCircTaylorDPFuncts(structref.StructRefProxy):
             dparams,
             tseg_ffa,
             cfg.nbins,
-            cfg.tol_bins,
+            cfg.eta,
             cfg.param_limits,
             cfg.bseg_brute,
             cfg.score_widths,
@@ -149,7 +149,7 @@ class PruneCircTaylorComplexDPFuncts(structref.StructRefProxy):
             dparams,
             tseg_ffa,
             cfg.nbins,
-            cfg.tol_bins,
+            cfg.eta,
             cfg.param_limits,
             cfg.bseg_brute,
             cfg.score_widths,
@@ -245,7 +245,7 @@ fields_prune_circ_taylor_dp_funcs = [
     ("dparams", types.f8[:]),
     ("tseg_ffa", types.f8),
     ("nbins", types.int64),
-    ("tol_bins", types.f8),
+    ("eta", types.f8),
     ("param_limits", types.ListType(types.Tuple([types.f8, types.f8]))),
     ("bseg_brute", types.int64),
     ("score_widths", types.i8[::1]),
@@ -278,7 +278,7 @@ def prune_circ_taylor_dp_functs_init(
     dparams: np.ndarray,
     tseg_ffa: float,
     nbins: int,
-    tol_bins: float,
+    eta: float,
     param_limits: list[tuple[float, float]],
     bseg_brute: int,
     score_widths: np.ndarray,
@@ -296,7 +296,7 @@ def prune_circ_taylor_dp_functs_init(
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
     self.nbins = nbins
-    self.tol_bins = tol_bins
+    self.eta = eta
     self.param_limits = typed.List(param_limits)
     self.bseg_brute = bseg_brute
     self.score_widths = score_widths
@@ -321,7 +321,7 @@ def prune_circ_taylor_complex_dp_functs_init(
     dparams: np.ndarray,
     tseg_ffa: float,
     nbins: int,
-    tol_bins: float,
+    eta: float,
     param_limits: list[tuple[float, float]],
     bseg_brute: int,
     score_widths: np.ndarray,
@@ -342,7 +342,7 @@ def prune_circ_taylor_complex_dp_functs_init(
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
     self.nbins = nbins
-    self.tol_bins = tol_bins
+    self.eta = eta
     self.param_limits = typed.List(param_limits)
     self.bseg_brute = bseg_brute
     self.score_widths = score_widths
@@ -414,10 +414,11 @@ def branch_func(
         leaves_batch,
         coord_cur,
         self.nbins,
-        self.tol_bins,
+        self.eta,
         self.poly_order,
         self.param_limits,
         self.branch_max,
+        self.minimum_snap_cells,
     )
 
 

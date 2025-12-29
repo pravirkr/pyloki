@@ -202,11 +202,12 @@ def get_circ_taylor_mask_branch(
 def circ_taylor_branch_batch(
     leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     poly_order: int,
     param_limits: types.ListType[types.Tuple[float, float]],
     branch_max: int,
+    minimum_snap_cells: float = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Branch a batch of parameter sets to leaves."""
     n_batch, _, _ = leaves_batch.shape
@@ -227,8 +228,8 @@ def circ_taylor_branch_batch(
     dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
         poly_order,
         t_obs_minus_t_ref,
-        fold_bins,
-        tol_bins,
+        nbins,
+        eta,
         f0_batch,
         t_ref=0,
     )
@@ -236,7 +237,7 @@ def circ_taylor_branch_batch(
         dparam_cur_batch,
         dparam_new_batch,
         t_obs_minus_t_ref,
-        fold_bins,
+        nbins,
         f0_batch,
         t_ref=0,
     )
@@ -260,7 +261,7 @@ def circ_taylor_branch_batch(
 
     # --- Vectorized Selection (mask non-crackle branched params)---
     eps = 1e-6  # Small tolerance for floating-point comparison
-    needs_branching = shift_bins_batch >= (tol_bins - eps)
+    needs_branching = shift_bins_batch >= (eta - eps)
     for i in range(n_batch):
         for j in range(poly_order):
             if not needs_branching[i, j] or j == 0:
@@ -285,7 +286,7 @@ def circ_taylor_branch_batch(
         leaves_branch_taylor_batch,
         leaves_branched_dparams,
         batch_needs_crackle,
-        minimum_snap_cells=5,
+        minimum_snap_cells=minimum_snap_cells,
     )
     n_keep = len(idx_keep)
     n_crackle_expand = len(idx_expand_crackle)
@@ -413,7 +414,7 @@ def circ_taylor_resolve_batch(
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
     param_arr: types.ListType[types.Array],
-    fold_bins: int,
+    nbins: int,
     minimum_snap_cells: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
@@ -433,11 +434,11 @@ def circ_taylor_resolve_batch(
     dvec_t_init = np.empty((n_batch, 6), dtype=np.float64)
 
     if idx_circular_snap.size > 0:
-        dvec_t_add_circ_snap = transforms.shift_taylor_params_circular_batch(
+        dvec_t_add_circ_snap = transforms.shift_taylor_circular_params(
             param_vec_batch[idx_circular_snap],
             t0_add - t0_cur,
         )
-        dvec_t_init_circ_snap = transforms.shift_taylor_params_circular_batch(
+        dvec_t_init_circ_snap = transforms.shift_taylor_circular_params(
             param_vec_batch[idx_circular_snap],
             t0_init - t0_cur,
         )
@@ -445,15 +446,13 @@ def circ_taylor_resolve_batch(
         dvec_t_init[idx_circular_snap] = dvec_t_init_circ_snap
 
     if idx_circular_crackle.size > 0:
-        dvec_t_add_circ_crackle = transforms.shift_taylor_params_circular_crackle_batch(
+        dvec_t_add_circ_crackle = transforms.shift_taylor_circular_crackle_params(
             param_vec_batch[idx_circular_crackle],
             t0_add - t0_cur,
         )
-        dvec_t_init_circ_crackle = (
-            transforms.shift_taylor_params_circular_crackle_batch(
-                param_vec_batch[idx_circular_crackle],
-                t0_init - t0_cur,
-            )
+        dvec_t_init_circ_crackle = transforms.shift_taylor_circular_crackle_params(
+            param_vec_batch[idx_circular_crackle],
+            t0_init - t0_cur,
         )
         dvec_t_add[idx_circular_crackle] = dvec_t_add_circ_crackle
         dvec_t_init[idx_circular_crackle] = dvec_t_init_circ_crackle
@@ -477,7 +476,7 @@ def circ_taylor_resolve_batch(
     relative_phase_batch = psr_utils.get_phase_idx(
         t0_add - t0_init,
         f0_batch,
-        fold_bins,
+        nbins,
         delay_batch,
     )
     param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
@@ -499,7 +498,7 @@ def circ_taylor_fixed_resolve_batch(
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
     param_arr: types.ListType[types.Array],
-    fold_bins: int,
+    nbins: int,
     minimum_snap_cells: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
@@ -516,14 +515,14 @@ def circ_taylor_fixed_resolve_batch(
     )
     dvec_t_add = np.empty((n_batch, 6), dtype=np.float64)
     if idx_circular_snap.size > 0:
-        dvec_t_add_circ_snap = transforms.shift_taylor_params_circular_batch(
+        dvec_t_add_circ_snap = transforms.shift_taylor_circular_params(
             param_vec_batch[idx_circular_snap],
             t0_add - t0_init,
         )
         dvec_t_add[idx_circular_snap] = dvec_t_add_circ_snap
 
     if idx_circular_crackle.size > 0:
-        dvec_t_add_circ_crackle = transforms.shift_taylor_params_circular_crackle_batch(
+        dvec_t_add_circ_crackle = transforms.shift_taylor_circular_crackle_params(
             param_vec_batch[idx_circular_crackle],
             t0_add - t0_init,
         )
@@ -543,7 +542,7 @@ def circ_taylor_fixed_resolve_batch(
     relative_phase_batch = psr_utils.get_phase_idx(
         t0_add - t0_init,
         f0_batch,
-        fold_bins,
+        nbins,
         delay_batch,
     )
     param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
@@ -575,7 +574,7 @@ def circ_taylor_transform_batch(
     leaves_batch_trans = leaves_batch.copy()
     if idx_circular_snap.size > 0:
         leaves_batch_trans[idx_circular_snap, :-1] = (
-            transforms.shift_taylor_full_circular_batch(
+            transforms.shift_taylor_circular_full(
                 leaves_batch[idx_circular_snap, :-1],
                 delta_t,
                 use_conservative_tile,
@@ -583,7 +582,7 @@ def circ_taylor_transform_batch(
         )
     if idx_circular_crackle.size > 0:
         leaves_batch_trans[idx_circular_crackle, :-1] = (
-            transforms.shift_taylor_full_circular_crackle_batch(
+            transforms.shift_taylor_circular_crackle_full(
                 leaves_batch[idx_circular_crackle, :-1],
                 delta_t,
                 use_conservative_tile,
@@ -644,7 +643,6 @@ def get_circ_chebyshev_mask(
         accel,
         minimum_snap_cells=minimum_snap_cells,
     )
-
 
 
 @njit(cache=True, fastmath=True)
@@ -715,7 +713,7 @@ def circ_chebyshev_resolve_batch(
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
     param_arr: types.ListType[types.Array],
-    fold_bins: int,
+    nbins: int,
     minimum_snap_cells: float = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve the leaf parameters to find the closest grid index and phase shift."""
@@ -742,11 +740,11 @@ def circ_chebyshev_resolve_batch(
             param_vec_batch_circ,
             scale_cur,
         )
-        dvec_t_add_circ_snap = transforms.shift_taylor_params_circular_batch(
+        dvec_t_add_circ_snap = transforms.shift_taylor_circular_params(
             taylor_param_vec_circ,
             t0_add - t0_cur,
         )
-        dvec_t_init_circ_snap = transforms.shift_taylor_params_circular_batch(
+        dvec_t_init_circ_snap = transforms.shift_taylor_circular_params(
             taylor_param_vec_circ,
             t0_init - t0_cur,
         )
@@ -760,15 +758,13 @@ def circ_chebyshev_resolve_batch(
             param_vec_batch_circ,
             scale_cur,
         )
-        dvec_t_add_circ_crackle = transforms.shift_taylor_params_circular_crackle_batch(
+        dvec_t_add_circ_crackle = transforms.shift_taylor_circular_crackle_params(
             taylor_param_vec_circ,
             t0_add - t0_cur,
         )
-        dvec_t_init_circ_crackle = (
-            transforms.shift_taylor_params_circular_crackle_batch(
-                taylor_param_vec_circ,
-                t0_init - t0_cur,
-            )
+        dvec_t_init_circ_crackle = transforms.shift_taylor_circular_crackle_params(
+            taylor_param_vec_circ,
+            t0_init - t0_cur,
         )
         dvec_t_add[idx_circular_crackle] = dvec_t_add_circ_crackle
         dvec_t_init[idx_circular_crackle] = dvec_t_init_circ_crackle
@@ -796,7 +792,7 @@ def circ_chebyshev_resolve_batch(
     relative_phase_batch = psr_utils.get_phase_idx(
         t0_add - t0_init,
         f0_batch,
-        fold_bins,
+        nbins,
         delay_batch,
     )
     param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
@@ -818,7 +814,7 @@ def circ_chebyshev_fixed_resolve_batch(
     coord_cur_fixed: tuple[float, float],
     coord_init: tuple[float, float],
     param_arr: types.ListType[types.Array],
-    fold_bins: int,
+    nbins: int,
     minimum_snap_cells: float = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve the leaf parameters to find the closest grid index and phase shift."""
@@ -844,7 +840,7 @@ def circ_chebyshev_fixed_resolve_batch(
             param_vec_batch_circ,
             scale_cur_fixed,
         )
-        dvec_t_add_circ_snap = transforms.shift_taylor_params_circular_batch(
+        dvec_t_add_circ_snap = transforms.shift_taylor_circular_params(
             taylor_param_vec_circ,
             t0_add - t0_init,
         )
@@ -857,7 +853,7 @@ def circ_chebyshev_fixed_resolve_batch(
             param_vec_batch_circ,
             scale_cur_fixed,
         )
-        dvec_t_add_circ_crackle = transforms.shift_taylor_params_circular_crackle_batch(
+        dvec_t_add_circ_crackle = transforms.shift_taylor_circular_crackle_params(
             taylor_param_vec_circ,
             t0_add - t0_init,
         )
@@ -879,7 +875,7 @@ def circ_chebyshev_fixed_resolve_batch(
     relative_phase_batch = psr_utils.get_phase_idx(
         t0_add - t0_init,
         f0_batch,
-        fold_bins,
+        nbins,
         delay_batch,
     )
     param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
@@ -919,7 +915,7 @@ def circ_chebyshev_transform_batch(
             scale_cur,
         )
         # Shift the taylor parameters in circular orbit
-        dvec_t_add_circ = transforms.shift_taylor_full_circular_batch(
+        dvec_t_add_circ = transforms.shift_taylor_circular_full(
             leaves_batch_circ_taylor,
             coord_next[0] - coord_cur[0],
             use_conservative_tile,
@@ -937,7 +933,7 @@ def circ_chebyshev_transform_batch(
             scale_cur,
         )
         # Shift the taylor parameters in circular orbit
-        dvec_t_add_circ = transforms.shift_taylor_full_circular_crackle_batch(
+        dvec_t_add_circ = transforms.shift_taylor_circular_crackle_full(
             leaves_batch_circ_taylor,
             coord_next[0] - coord_cur[0],
             use_conservative_tile,
@@ -963,7 +959,7 @@ def poly_circular_resolve_batch(
     coord_add: tuple[float, float],
     coord_init: tuple[float, float],
     param_arr: types.ListType[types.Array],
-    fold_bins: int,
+    nbins: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
     n_leaves = len(leaf_batch)
@@ -991,7 +987,7 @@ def poly_circular_resolve_batch(
     relative_phase_batch = psr_utils.get_phase_idx(
         delta_t,
         f_cur_batch,
-        fold_bins,
+        nbins,
         delay_batch,
     )
     param_idx_batch = np.zeros((n_leaves, nparams), dtype=np.int64)
@@ -1010,8 +1006,8 @@ def poly_circular_resolve_batch(
 def poly_circular_branch_batch(
     param_vec_batch: np.ndarray,
     coord_cur: tuple[float, float],
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     poly_order: int,
     param_limits: types.ListType[types.Tuple[float, float]],
     branch_max: int = 16,
@@ -1038,15 +1034,15 @@ def poly_circular_branch_batch(
     domega_opt_batch = psr_utils.poly_taylor_step_d_vec(
         nparams,
         tseg_cur,
-        fold_bins,
-        tol_bins,
+        nbins,
+        eta,
         x_cur_batch,
     )
     dfreq_opt_batch = psr_utils.poly_taylor_step_f(
         1,
         tseg_cur,
-        fold_bins,
-        tol_bins,
+        nbins,
+        eta,
         t_ref=tseg_cur / 2,
     )
     dparam_opt_batch[:, 0] = domega_opt_batch
@@ -1056,7 +1052,7 @@ def poly_circular_branch_batch(
         dparam_cur_batch,
         dparam_opt_batch,
         tseg_cur,
-        fold_bins,
+        nbins,
         x_cur_batch,
         t_ref=tseg_cur / 2,
     )
@@ -1081,7 +1077,7 @@ def poly_circular_branch_batch(
 
     # --- Vectorized Selection ---
     # Select based on mask: shape (n_batch, nparams, 1)
-    mask_2d = shift_bins_batch > tol_bins  # Shape (n_batch, nparams)
+    mask_2d = shift_bins_batch > eta  # Shape (n_batch, nparams)
     for i in range(n_batch):
         for j in range(nparams):
             if not mask_2d[i, j]:
@@ -1118,9 +1114,11 @@ def generate_bp_circ_taylor(
     param_limits: types.ListType[types.Tuple[float, float]],
     tseg_ffa: float,
     nsegments: int,
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     ref_seg: int,
+    p_orb_min: float,
+    minimum_snap_cells: float = 5,
     use_conservative_tile: bool = False,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor circular pruning search."""
@@ -1149,6 +1147,7 @@ def generate_bp_circ_taylor(
 
     # Track when first snap branching occurs for each frequency
     snap_first_branched = np.zeros(n_freqs, dtype=np.bool_)
+    eps = 1e-6
     for prune_level in range(1, nsegments):
         coord_next = snail_scheme.get_coord(prune_level)
         coord_cur = snail_scheme.get_current_coord(prune_level)
@@ -1156,8 +1155,8 @@ def generate_bp_circ_taylor(
         dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
             poly_order,
             t_obs_minus_t_ref,
-            fold_bins,
-            tol_bins,
+            nbins,
+            eta,
             f0_batch,
             t_ref=0,
         )
@@ -1165,20 +1164,17 @@ def generate_bp_circ_taylor(
             dparam_cur_batch,
             dparam_new_batch,
             t_obs_minus_t_ref,
-            fold_bins,
+            nbins,
             f0_batch,
             t_ref=0,
         )
 
         dparam_cur_next = np.empty((n_freqs, poly_order), dtype=np.float64)
-        n_branch_accel = np.ones(n_freqs, dtype=np.int64)
         n_branch_snap = np.ones(n_freqs, dtype=np.int64)
         n_branches = np.ones(n_freqs, dtype=np.int64)
-        validation_fractions = np.ones(n_freqs, dtype=np.float64)
 
         # Vectorized branching decision
-        eps = 1e-6
-        needs_branching = shift_bins_batch >= (tol_bins - eps)
+        needs_branching = shift_bins_batch >= (eta - eps)
         too_large_step = dparam_new_batch > (param_ranges + eps)
 
         for i in range(n_freqs):
@@ -1190,32 +1186,18 @@ def generate_bp_circ_taylor(
                 num_points = max(1, int(np.ceil(ratio - eps)))
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
-
                 if j == 1:
                     n_branch_snap[i] = num_points
-                if j == 3:
-                    n_branch_accel[i] = num_points
 
-            # Determine validation fraction
-            snap_branches_now = n_branch_snap[i] > 1
-            accel_branches_now = n_branch_accel[i] > 1
-            if snap_branches_now and not snap_first_branched[i]:
-                # First time snap branches - apply validation filtering
-                # Since we start at snap=0, branching creates symmetric positive
-                # negative values. Validation removes same-sign combinations with accel
-                # If accel is also branching or non-zero, expect ~50% filtering
-                if accel_branches_now or dparam_cur_batch[i, 2] != 0:
-                    validation_fractions[i] = 0.5
-                else:
-                    # If accel is exactly 0, all combinations are valid
-                    validation_fractions[i] = 1.0
-                snap_first_branched[i] = True
-            else:
-                # Either snap doesn't branch this level, or it has branched before
-                # If it branched before, symmetry is broken and no further filtering
-                validation_fractions[i] = 1.0
-            n_branches[i] *= validation_fractions[i]
-
+        # Determine validation fraction
+        snap_active = n_branch_snap[i] > minimum_snap_cells
+        # Apply 0.5x if this is the first time snap becomes active
+        just_active = snap_active & (~snap_first_branched)
+        # Correction factor array
+        val_factor = np.ones(n_freqs, dtype=np.float64)
+        val_factor[just_active] = 0.5
+        n_branches *= val_factor
+        snap_first_branched |= just_active
         # Compute average branching factor
         branching_pattern[prune_level - 1] = np.sum(n_branches) / n_freqs
 
@@ -1223,9 +1205,10 @@ def generate_bp_circ_taylor(
         delta_t = coord_next[0] - coord_cur[0]
         dparam_d_vec = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
         dparam_d_vec[:, :-1] = dparam_cur_next
-        dparam_d_vec_new = transforms.shift_taylor_errors(
+        dparam_d_vec_new = transforms.shift_taylor_circular_errors(
             dparam_d_vec,
             delta_t,
+            p_orb_min,
             use_conservative_tile,
         )
         dparam_cur_batch = dparam_d_vec_new[:, :-1]
@@ -1239,9 +1222,10 @@ def generate_bp_circ_taylor_fixed(
     param_limits: types.ListType[types.Tuple[float, float]],
     tseg_ffa: float,
     nsegments: int,
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     ref_seg: int,
+    minimum_snap_cells: float = 5,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor fixed circular pruning."""
     poly_order = len(dparams_lim)
@@ -1269,14 +1253,15 @@ def generate_bp_circ_taylor_fixed(
 
     # Track when first snap branching occurs for each frequency
     snap_first_branched = np.zeros(n_freqs, dtype=np.bool_)
+    eps = 1e-6
     for prune_level in range(1, nsegments):
         coord_cur_fixed = snail_scheme.get_current_coord_fixed(prune_level)
         _, t_obs_minus_t_ref = coord_cur_fixed
         dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
             poly_order,
             t_obs_minus_t_ref,
-            fold_bins,
-            tol_bins,
+            nbins,
+            eta,
             f0_batch,
             t_ref=0,
         )
@@ -1284,20 +1269,16 @@ def generate_bp_circ_taylor_fixed(
             dparam_cur_batch,
             dparam_new_batch,
             t_obs_minus_t_ref,
-            fold_bins,
+            nbins,
             f0_batch,
             t_ref=0,
         )
 
         dparam_cur_next = np.empty((n_freqs, poly_order), dtype=np.float64)
-        n_branch_accel = np.ones(n_freqs, dtype=np.int64)
         n_branch_snap = np.ones(n_freqs, dtype=np.int64)
         n_branches = np.ones(n_freqs, dtype=np.int64)
-        validation_fractions = np.ones(n_freqs, dtype=np.float64)
-
         # Vectorized branching decision
-        eps = 1e-6
-        needs_branching = shift_bins_batch >= (tol_bins - eps)
+        needs_branching = shift_bins_batch >= (eta - eps)
         too_large_step = dparam_new_batch > (param_ranges + eps)
 
         for i in range(n_freqs):
@@ -1311,28 +1292,16 @@ def generate_bp_circ_taylor_fixed(
 
                 if j == 1:
                     n_branch_snap[i] = num_points
-                if j == 3:
-                    n_branch_accel[i] = num_points
 
-            # Determine validation fraction
-            snap_branches_now = n_branch_snap[i] > 1
-            accel_branches_now = n_branch_accel[i] > 1
-            if snap_branches_now and not snap_first_branched[i]:
-                # First time snap branches - apply validation filtering
-                # Since we start at snap=0, branching creates symmetric positive
-                # negative values. Validation removes same-sign combinations with accel
-                # If accel is also branching or non-zero, expect ~50% filtering
-                if accel_branches_now or dparam_cur_batch[i, 2] != 0:
-                    validation_fractions[i] = 0.5
-                else:
-                    # If accel is exactly 0, all combinations are valid
-                    validation_fractions[i] = 1.0
-                snap_first_branched[i] = True
-            else:
-                # Either snap doesn't branch this level, or it has branched before
-                # If it branched before, symmetry is broken and no further filtering
-                validation_fractions[i] = 1.0
-            n_branches[i] *= validation_fractions[i]
+        # Determine validation fraction
+        snap_active = n_branch_snap[i] > minimum_snap_cells
+        # Apply 0.5x if this is the first time snap becomes active
+        just_active = snap_active & (~snap_first_branched)
+        # Correction factor array
+        val_factor = np.ones(n_freqs, dtype=np.float64)
+        val_factor[just_active] = 0.5
+        n_branches *= val_factor
+        snap_first_branched |= just_active
 
         # Compute average branching factor
         branching_pattern[prune_level - 1] = np.sum(n_branches) / n_freqs

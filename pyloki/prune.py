@@ -634,7 +634,7 @@ class Pruning:
         key = (
             self.dyp.cfg.prune_poly_order == 5,
             poly_basis,
-            self.dyp.cfg.use_fft_shifts,
+            self.dyp.cfg.use_fourier,
         )
         prune_class = self._PRUNE_DISPATCH.get(key)
 

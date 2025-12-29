@@ -364,7 +364,7 @@ class PulsarSearchConfig:
             attrs.validators.gt(0),
         ],
     )
-    tol_bins: float = attrs.field(validator=attrs.validators.gt(0))
+    eta: float = attrs.field(validator=attrs.validators.gt(0))
     param_limits: list[tuple[float, float]] = attrs.field(
         validator=_param_limits_validator,
     )
@@ -386,7 +386,7 @@ class PulsarSearchConfig:
         default=0,
         validator=[attrs.validators.instance_of(int | np.integer), _is_power_of_two],
     )
-    use_fft_shifts: bool = attrs.field(default=True)
+    use_fourier: bool = attrs.field(default=True)
     branch_max: int = attrs.field(  # ty: ignore[no-matching-overload]
         default=16,
         validator=[
@@ -394,8 +394,11 @@ class PulsarSearchConfig:
             attrs.validators.gt(10),
         ],
     )
-    snap_threshold: float = attrs.field(default=5.0, validator=attrs.validators.gt(0.0))
-    use_conservative_grid: bool = attrs.field(default=False)
+    minimum_snap_cells: float = attrs.field(
+        default=5.0,
+        validator=attrs.validators.gt(0.0),
+    )
+    use_conservative_tile: bool = attrs.field(default=False)
 
     def __attrs_post_init__(self) -> None:
         if self.bseg_brute == 0:
@@ -479,7 +482,7 @@ class PulsarSearchConfig:
             self.nparams,
             tseg_cur,
             self.nbins,
-            self.tol_bins,
+            self.eta,
             t_ref=t_ref,
         )
 
@@ -502,7 +505,7 @@ class PulsarSearchConfig:
             self.nparams,
             tseg_cur,
             self.nbins,
-            self.tol_bins,
+            self.eta,
             self.f_max,
             t_ref=t_ref,
         )
@@ -571,10 +574,10 @@ class PulsarSearchConfig:
                 self.tseg_ffa,
                 nsegments_ffa,
                 self.nbins,
-                self.tol_bins,
+                self.eta,
                 ref_seg,
                 isuggest,
-                self.use_conservative_grid,
+                self.use_conservative_tile,
             )
         if kind == "chebyshev":
             return generate_bp_poly_chebyshev_approx(
@@ -584,10 +587,10 @@ class PulsarSearchConfig:
                 self.tseg_ffa,
                 nsegments_ffa,
                 self.nbins,
-                self.tol_bins,
+                self.eta,
                 ref_seg,
                 isuggest,
-                self.use_conservative_grid,
+                self.use_conservative_tile,
             )
         msg = f"Invalid kind: {kind}"
         raise ValueError(msg)
@@ -626,9 +629,9 @@ class PulsarSearchConfig:
                 self.tseg_ffa,
                 nsegments_ffa,
                 self.nbins,
-                self.tol_bins,
+                self.eta,
                 ref_seg,
-                self.use_conservative_grid,
+                self.use_conservative_tile,
             )
         if kind == "chebyshev":
             return generate_bp_poly_chebyshev(
@@ -638,9 +641,9 @@ class PulsarSearchConfig:
                 self.tseg_ffa,
                 nsegments_ffa,
                 self.nbins,
-                self.tol_bins,
+                self.eta,
                 ref_seg,
-                self.use_conservative_grid,
+                self.use_conservative_tile,
             )
         if kind == "taylor_fixed":
             return generate_bp_poly_taylor_fixed(
@@ -650,7 +653,7 @@ class PulsarSearchConfig:
                 self.tseg_ffa,
                 nsegments_ffa,
                 self.nbins,
-                self.tol_bins,
+                self.eta,
                 ref_seg,
             )
         if kind == "chebyshev_fixed":
@@ -661,9 +664,9 @@ class PulsarSearchConfig:
                 self.tseg_ffa,
                 nsegments_ffa,
                 self.nbins,
-                self.tol_bins,
+                self.eta,
                 ref_seg,
-                self.use_conservative_grid,
+                self.use_conservative_tile,
             )
         msg = f"Invalid kind: {kind}"
         raise ValueError(msg)
@@ -702,9 +705,9 @@ class PulsarSearchConfig:
                 self.tseg_ffa,
                 nsegments_ffa,
                 self.nbins,
-                self.tol_bins,
+                self.eta,
                 ref_seg,
-                self.use_conservative_grid,
+                self.use_conservative_tile,
             )
         if kind == "taylor_fixed":
             return generate_bp_circ_taylor_fixed(
@@ -714,7 +717,7 @@ class PulsarSearchConfig:
                 self.tseg_ffa,
                 nsegments_ffa,
                 self.nbins,
-                self.tol_bins,
+                self.eta,
                 ref_seg,
             )
         msg = f"Invalid kind: {kind}"

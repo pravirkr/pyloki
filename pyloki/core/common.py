@@ -481,3 +481,81 @@ def shift_3d_complex_batch(
             phase *= delta
 
     return res
+
+
+@njit(cache=True, fastmath=True)
+def propagate_bp_state_deterministic(
+    f0_batch: np.ndarray,
+    d1_batch: np.ndarray,
+    weights: np.ndarray,
+    dparam_cur_batch: np.ndarray,  # Current grid widths (used for velocity delta)
+    dparam_next_dims: np.ndarray,  # Proposed new grid widths
+    n_branch_d1: np.ndarray,
+    n_branch_other: np.ndarray,
+    max_track_size: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """Propagate the state deterministically."""
+    n_freqs = len(f0_batch)
+    poly_order = dparam_cur_batch.shape[1]
+    weighted_sum = 0.0
+    total_weight = 0.0
+    virtual_d1_branches = 0
+
+    for i in range(n_freqs):
+        w = weights[i]
+        node_factor = float(n_branch_other[i] * n_branch_d1[i])
+        weighted_sum += w * node_factor
+        total_weight += w
+        virtual_d1_branches += n_branch_d1[i]
+
+    avg_branching = weighted_sum / total_weight
+
+    if virtual_d1_branches <= max_track_size and virtual_d1_branches == n_freqs:
+        # Update weights in-place for non-velocity branching
+        new_weights = weights * n_branch_other.astype(np.float64)
+        return f0_batch, d1_batch, new_weights, dparam_next_dims, avg_branching
+
+    target_size = min(virtual_d1_branches, max_track_size)
+    target_stride = virtual_d1_branches / target_size
+    f0_next = np.empty(target_size, dtype=np.float64)
+    d1_next = np.empty(target_size, dtype=np.float64)
+    weights_next = np.empty(target_size, dtype=np.float64)
+    dparam_next = np.empty((target_size, poly_order), dtype=np.float64)
+
+    pos = 0
+    next_selection = target_stride / 2.0  # Center selection
+    virtual_idx = 0.0
+    for i in range(n_freqs):
+        n_d1 = n_branch_d1[i]
+        # Skip if no virtual indices for this parent overlap the selection
+        if virtual_idx + n_d1 > next_selection:
+            # Accumulate weight from non-velocity branches, multiply by stride
+            # Stride compensates for the particles we skip.
+            weight = (weights[i] * n_branch_other[i]) * target_stride
+            # Branch velocity: create n_d1 new velocity centers
+            dparam_cur_vel = dparam_cur_batch[i, poly_order - 1]
+            delta = 0.25 * dparam_cur_vel
+
+            for k in range(n_d1):
+                if virtual_idx >= next_selection and pos < target_size:
+                    offset = (k - (n_d1 - 1) / 2) * delta
+                    f0_next[pos] = f0_batch[i]  # f0 stays same (bookkeeping)
+                    d1_next[pos] = d1_batch[i] + offset  # velocity evolves
+                    weights_next[pos] = weight
+                    dparam_next[pos] = dparam_next_dims[i]
+                    pos += 1
+                    next_selection += target_stride
+                virtual_idx += 1.0
+        else:
+            virtual_idx += float(n_d1)
+
+        if pos >= target_size:
+            break
+
+    return (
+        f0_next[:pos],
+        d1_next[:pos],
+        weights_next[:pos],
+        dparam_next[:pos],
+        avg_branching,
+    )

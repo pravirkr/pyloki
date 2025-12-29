@@ -184,7 +184,7 @@ class DynamicProgramming:
     def __init__(self, ts_data: TimeSeries, cfg: PulsarSearchConfig) -> None:
         self._ts_data = ts_data
         self._cfg = cfg
-        if cfg.use_fft_shifts:
+        if cfg.use_fourier:
             self._data_type = np.complex64
             self._dp_funcs = PicklableStructRefWrapper[DP_FUNCS_TYPE](
                 FFATaylorComplexDPFuncts,
@@ -369,7 +369,7 @@ class DynamicProgramming:
         np.ndarray
             Normalized fold for the given segment and parameter index.
         """
-        if self.cfg.use_fft_shifts:
+        if self.cfg.use_fourier:
             logger.info("Using FFT for phase shifts: Inverse FFTing the fold")
             logger.info(f"Fold shape: {self.fold.shape}")
             fold_t = np.fft.irfft(self.fold).astype(np.float32)

@@ -56,8 +56,8 @@ def get_phase_idx_int(proper_time: float, freq: float, nbins: int, delay: float)
 def poly_taylor_step_f(
     nparams: int,
     tobs: float,
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     t_ref: float = 0,
 ) -> np.ndarray:
     """Grid size for frequency and its derivatives {f_k, ..., f}.
@@ -68,9 +68,9 @@ def poly_taylor_step_f(
         Number of parameters in the Taylor expansion.
     tobs : float
         Total observation time in seconds.
-    fold_bins : int
+    nbins : int
         Number of bins in the folded profile.
-    tol_bins : float, optional
+    eta : float, optional
         Tolerance parameter, eta in bins, by default 1.
     t_ref : float, optional
         Reference time in segment e.g. tobs/2, etc., by default 0.
@@ -80,7 +80,7 @@ def poly_taylor_step_f(
     float
         Optimal frequency and its derivative step size in reverse order.
     """
-    dphi = tol_bins / fold_bins
+    dphi = eta / nbins
     k = np.arange(nparams)
     dparams_f = dphi * maths.fact(k + 1) / (tobs - t_ref) ** (k + 1)
     dparams_f_opt = 2**k * dparams_f
@@ -91,13 +91,13 @@ def poly_taylor_step_f(
 def poly_taylor_step_d_f(
     nparams: int,
     tobs: float,
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     f_max: float,
     t_ref: float = 0,
 ) -> np.ndarray:
     """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion (scalar)."""
-    dparams_f = poly_taylor_step_f(nparams, tobs, fold_bins, tol_bins, t_ref)
+    dparams_f = poly_taylor_step_f(nparams, tobs, nbins, eta, t_ref)
     dparams = np.zeros(nparams, dtype=np.float64)
     dparams[:-1] = dparams_f[:-1] * C_VAL / f_max
     dparams[-1] = dparams_f[-1]
@@ -108,13 +108,13 @@ def poly_taylor_step_d_f(
 def poly_taylor_step_d(
     poly_order: int,
     tobs: float,
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     f_max: float,
     t_ref: float = 0,
 ) -> np.ndarray:
     """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (scalar)."""
-    dparams_f = poly_taylor_step_f(poly_order, tobs, fold_bins, tol_bins, t_ref)
+    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref)
     return dparams_f * C_VAL / f_max
 
 
@@ -122,13 +122,13 @@ def poly_taylor_step_d(
 def poly_taylor_step_d_vec(
     poly_order: int,
     tobs: float,
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     f_max: np.ndarray,
     t_ref: float = 0,
 ) -> np.ndarray:
     """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (vector)."""
-    dparams_f = poly_taylor_step_f(poly_order, tobs, fold_bins, tol_bins, t_ref)
+    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref)
     return dparams_f[np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
 
 
@@ -136,13 +136,13 @@ def poly_taylor_step_d_vec(
 def poly_taylor_step_d_f_vec(
     nparams: int,
     tobs: float,
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     f_max: np.ndarray,
     t_ref: float = 0,
 ) -> np.ndarray:
     """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion (vector)."""
-    dparams_f = poly_taylor_step_f(nparams, tobs, fold_bins, tol_bins, t_ref)
+    dparams_f = poly_taylor_step_f(nparams, tobs, nbins, eta, t_ref)
     dparams = np.zeros((len(f_max), nparams), dtype=np.float64)
     dparams[:, :-1] = dparams_f[:-1][np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
     dparams[:, -1] = dparams_f[-1]
@@ -154,14 +154,14 @@ def poly_taylor_shift_d_f_vec(
     dparam_old: np.ndarray,
     dparam_new: np.ndarray,
     tobs_new: float,
-    fold_bins: int,
+    nbins: int,
     f_cur: np.ndarray,
     t_ref: float = 0,
 ) -> np.ndarray:
     """Compute the bin shift for parameters {d_k,... d_2, f} (vector)."""
     nbatch, nparams = dparam_old.shape
     k = np.arange(nparams - 1, -1, -1)
-    factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
+    factors = (tobs_new - t_ref) ** (k + 1) * nbins / maths.fact(k + 1)
     factors_opt = factors / 2**k
     factors_broadcast = np.empty((nbatch, nparams), dtype=dparam_old.dtype)
     for i in range(nbatch):
@@ -178,15 +178,15 @@ def split_f(
     df_new: float,
     tobs_new: float,
     k: int,
-    fold_bins: float,
-    tol_bins: float,
+    nbins: float,
+    eta: float,
     t_ref: float = 0,
 ) -> bool:
     """Check if a parameter {f_k} should be split."""
-    factor = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
+    factor = (tobs_new - t_ref) ** (k + 1) * nbins / maths.fact(k + 1)
     factor_opt = factor / 2**k
     eps = 1e-6
-    return abs(df_old - df_new) * factor_opt > (tol_bins - eps)
+    return abs(df_old - df_new) * factor_opt > (eta - eps)
 
 
 @njit(cache=True, fastmath=True)
@@ -194,14 +194,14 @@ def poly_taylor_shift_d(
     dparam_old: np.ndarray,
     dparam_new: np.ndarray,
     tobs_new: float,
-    fold_bins: int,
+    nbins: int,
     f_cur: float,
     t_ref: float = 0,
 ) -> np.ndarray:
     """Bin shift for parameters {d_k_max,... d_2, d_1} (scalar)."""
     n_params = len(dparam_old)
     k = np.arange(n_params - 1, -1, -1)
-    factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
+    factors = (tobs_new - t_ref) ** (k + 1) * nbins / maths.fact(k + 1)
     factors_opt = factors / 2**k
     factors_opt *= f_cur / C_VAL
     return np.abs(dparam_old - dparam_new) * factors_opt
@@ -212,14 +212,14 @@ def poly_taylor_shift_d_vec(
     dparam_old: np.ndarray,
     dparam_new: np.ndarray,
     tobs_new: float,
-    fold_bins: int,
+    nbins: int,
     f_cur: np.ndarray,
     t_ref: float = 0,
 ) -> np.ndarray:
     """Bin shift for parameters {d_k_max,... d_2, d_1} (vector)."""
     n_batch, n_params = dparam_old.shape
     k = np.arange(n_params - 1, -1, -1)
-    factors = (tobs_new - t_ref) ** (k + 1) * fold_bins / maths.fact(k + 1)
+    factors = (tobs_new - t_ref) ** (k + 1) * nbins / maths.fact(k + 1)
     factors_opt = factors / 2**k
     factors_broadcast = np.empty((n_batch, n_params), dtype=dparam_old.dtype)
     for i in range(n_batch):
@@ -239,11 +239,11 @@ def period_step(tobs: float, nbins: int, p_min: float, tol: float) -> float:
 @njit(cache=True, fastmath=True)
 def poly_cheb_step_vec(
     nparams: int,
-    fold_bins: int,
-    tol_bins: float,
+    nbins: int,
+    eta: float,
     f_max: np.ndarray,
 ) -> np.ndarray:
-    dphi = tol_bins / fold_bins
+    dphi = eta / nbins
     dparams_f = np.zeros(nparams, np.float64) + dphi
     return dparams_f[np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
 
@@ -252,10 +252,10 @@ def poly_cheb_step_vec(
 def poly_cheb_shift_vec(
     dparam_old: np.ndarray,
     dparam_new: np.ndarray,
-    fold_bins: int,
+    nbins: int,
     f_cur: np.ndarray,
 ) -> np.ndarray:
-    scale_factors = fold_bins * (f_cur / C_VAL)[:, np.newaxis]
+    scale_factors = nbins * (f_cur / C_VAL)[:, np.newaxis]
     return np.abs(dparam_old - dparam_new) * scale_factors
 
 
