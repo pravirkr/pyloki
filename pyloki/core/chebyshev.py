@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from numba import njit, types
 
-from pyloki.core.common import get_leaves, propagate_bp_state_deterministic
+from pyloki.core.common import get_leaves
 from pyloki.detection.scoring import snr_score_func, snr_score_func_complex
 from pyloki.utils import np_utils, psr_utils, transforms
 from pyloki.utils.misc import C_VAL
@@ -482,26 +482,20 @@ def generate_bp_poly_chebyshev(
     nbins: int,
     eta: float,
     ref_seg: int,
-    use_conservative_tile: bool = False,
-    max_track_size: int = 10000,
+    use_use_conservative_tile: bool = False,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
     f0_batch = param_arr[-1]
-    n0 = len(f0_batch)
-    # Ensure we don't downsample below the initial size
-    max_track_size = max(max_track_size, n0)
-    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
-
-    # Track velocity (alpha1)
-    alpha1_batch = np.zeros(n0, dtype=np.float64)
-    weights = np.ones(n0, dtype=np.float64)
-    branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
+    n_freqs = len(f0_batch)
+    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
     coord_init = snail_scheme.get_coord(0)
+    weights = np.ones(n_freqs, dtype=np.float64)
+    branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
     # Keep poly_order+1 for d0
-    dparam_cur_batch = np.zeros((n0, poly_order + 1), dtype=np.float64)
-    for i in range(n0):
+    dparam_cur_batch = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
+    for i in range(n_freqs):
         dparam_cur_batch[i, :-1] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -2] = dparam_cur_batch[:, -2] * (C_VAL / f0_batch)
@@ -510,13 +504,12 @@ def generate_bp_poly_chebyshev(
         coord_init[1],
     )
 
-    param_limits_const = np.empty((poly_order - 1, 2), dtype=np.float64)
-    for i in range(poly_order - 1):
-        param_limits_const[i, 0] = param_limits[i][0]
-        param_limits_const[i, 1] = param_limits[i][1]
-
-    # Frequency limits for velocity conversion
-    f_min, f_max = param_limits[poly_order - 1]
+    param_limits_d = np.empty((n_freqs, poly_order, 2), dtype=np.float64)
+    for i in range(poly_order):
+        param_limits_d[:, i, 0] = param_limits[i][0]
+        param_limits_d[:, i, 1] = param_limits[i][1]
+    param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
+    param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
 
     eps = 1e-12
     for prune_level in range(1, nsegments):
@@ -529,93 +522,60 @@ def generate_bp_poly_chebyshev(
             dcheb_cur_batch,
             coord_cur,
             coord_prev,
-            use_conservative_tile,
+            use_use_conservative_tile,
         )
 
-        dparam_cur_batch = transforms.cheby_to_taylor(
-            dcheb_cur_batch,
+        param_limits_cheby_d0 = np.zeros((n_freqs, poly_order + 1, 2), dtype=np.float64)
+        param_limits_cheby = transforms.taylor_to_chebyshev_limits_full(
+            param_limits_d,
             coord_cur[1],
         )
-        d1_batch = dparam_cur_batch[:, -2]
-        f_cur_batch = f0_batch * (1.0 - d1_batch / C_VAL)
+        param_limits_cheby_d0[:, :-1] = param_limits_cheby
+        param_ranges = (
+            param_limits_cheby_d0[:, :, 1] - param_limits_cheby_d0[:, :, 0]
+        ) / 2
         dcheb_new_batch = psr_utils.poly_cheb_step_vec(
             poly_order + 1,
             nbins,
             eta,
-            f_cur_batch,
+            f0_batch,
         )
         shift_bins_batch = psr_utils.poly_cheb_shift_vec(
             dcheb_cur_batch,
             dcheb_new_batch,
             nbins,
-            f_cur_batch,
+            f0_batch,
         )
 
-        nfreqs = len(f0_batch)
-        dcheb_next_tmp = np.empty((nfreqs, poly_order + 1), dtype=np.float64)
-        n_branch_alpha1 = np.ones(nfreqs, dtype=np.int64)
-        n_branch_other = np.ones(nfreqs, dtype=np.int64)
+        dcheb_cur_next = np.empty((n_freqs, poly_order + 1), dtype=np.float64)
+        n_branches = np.ones(n_freqs, dtype=np.int64)
 
-        cheby_limits_upto_d2 = transforms.taylor_to_chebyshev_limits_upto_d2(
-            param_limits_const,
-            coord_cur[1],
-        )
-        cheby_ranges_upto_d2 = (
-            cheby_limits_upto_d2[:, 1] - cheby_limits_upto_d2[:, 0]
-        ) / 2
-
-        d1_limits = np.empty((nfreqs, 2), dtype=np.float64)
-        d1_limits[:, 0] = (1 - f_max / f0_batch) * C_VAL
-        d1_limits[:, 1] = (1 - f_min / f0_batch) * C_VAL
-
-        # Convert velocity limits to Chebyshev
-        alpha1_limits = transforms.taylor_to_chebyshev_limits_d1(
-            d1_limits,
-            param_limits_const,
-            coord_cur[1],
-        )
-        alpha1_ranges = (alpha1_limits[:, 1] - alpha1_limits[:, 0]) / 2
         # Vectorized branching decision
         needs_branching = shift_bins_batch >= (eta - eps)
+        too_large_step = dcheb_new_batch > (param_ranges + eps)
 
-        for i in range(nfreqs):
-            for j in range(poly_order):  # skip d0
-                # Bounds check
-                limit = (
-                    alpha1_ranges[i] if j == poly_order - 1 else cheby_ranges_upto_d2[j]
-                )
-                too_large_step = dcheb_new_batch[i, j] > (limit + eps)
-                if not needs_branching[i, j] or too_large_step:
-                    dcheb_next_tmp[i, j] = dcheb_cur_batch[i, j]
+        for i in range(n_freqs): # skip d0
+            for j in range(poly_order):
+                if not needs_branching[i, j] or too_large_step[i, j]:
+                    dcheb_cur_next[i, j] = dcheb_cur_batch[i, j]
                     continue
                 ratio = (dcheb_cur_batch[i, j] + eps) / dcheb_new_batch[i, j]
                 num_points = max(1, int(np.ceil(ratio - eps)))
-                if j == poly_order - 1:  # alpha1 dimension
-                    n_branch_alpha1[i] = num_points
-                else:
-                    n_branch_other[i] *= num_points
-                dcheb_next_tmp[i, j] = dcheb_cur_batch[i, j] / num_points
-
-        (f0_batch, alpha1_batch, weights, dcheb_cur_batch_raw, avg_bp) = (
-            propagate_bp_state_deterministic(
-                f0_batch,
-                alpha1_batch,
-                weights,
-                dcheb_cur_batch,
-                dcheb_next_tmp,
-                n_branch_alpha1,
-                n_branch_other,
-                max_track_size,
-            )
-        )
-        branching_pattern[prune_level - 1] = avg_bp
+                n_branches[i] *= num_points
+                dcheb_cur_next[i, j] = dcheb_cur_batch[i, j] / num_points
+        # Compute average branching factor
+        children = np.sum(weights * n_branches)
+        parents = np.sum(weights)
+        branching_pattern[prune_level - 1] = children / parents
+        # Update weights and dparams
+        weights *= n_branches
 
         # Transform dparams to the next segment
         dcheb_cur_batch = transforms.shift_cheby_errors(
-            dcheb_cur_batch_raw,
+            dcheb_cur_next,
             coord_next,
             coord_cur,
-            use_conservative_tile,
+            use_use_conservative_tile,
         )
     return branching_pattern
 
@@ -630,26 +590,20 @@ def generate_bp_poly_chebyshev_fixed(
     nbins: int,
     eta: float,
     ref_seg: int,
-    use_use_conservative_tile: bool = False,
-    max_track_size: int = 10000,
+    use_conservative_tile: bool,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
     f0_batch = param_arr[-1]
-    n0 = len(f0_batch)
-    # Ensure we don't downsample below the initial size
-    max_track_size = max(max_track_size, n0)
-    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
-
-    # Track velocity (alpha1)
-    alpha1_batch = np.zeros(n0, dtype=np.float64)
-    weights = np.ones(n0, dtype=np.float64)
-    branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
+    n_freqs = len(f0_batch)
+    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
     coord_init = snail_scheme.get_coord(0)
+    weights = np.ones(n_freqs, dtype=np.float64)
+    branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
     # Keep poly_order+1 for d0
-    dparam_cur_batch = np.zeros((n0, poly_order + 1), dtype=np.float64)
-    for i in range(n0):
+    dparam_cur_batch = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
+    for i in range(n_freqs):
         dparam_cur_batch[i, :-1] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -2] = dparam_cur_batch[:, -2] * (C_VAL / f0_batch)
@@ -658,13 +612,12 @@ def generate_bp_poly_chebyshev_fixed(
         coord_init[1],
     )
 
-    param_limits_const = np.empty((poly_order - 1, 2), dtype=np.float64)
-    for i in range(poly_order - 1):
-        param_limits_const[i, 0] = param_limits[i][0]
-        param_limits_const[i, 1] = param_limits[i][1]
-
-    # Frequency limits for velocity conversion
-    f_min, f_max = param_limits[poly_order - 1]
+    param_limits_d = np.empty((n_freqs, poly_order, 2), dtype=np.float64)
+    for i in range(poly_order):
+        param_limits_d[:, i, 0] = param_limits[i][0]
+        param_limits_d[:, i, 1] = param_limits[i][1]
+    param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
+    param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
 
     eps = 1e-12
     for prune_level in range(1, nsegments):
@@ -676,92 +629,52 @@ def generate_bp_poly_chebyshev_fixed(
             dcheb_cur_batch,
             coord_cur_fixed,
             coord_prev_fixed,
-            use_use_conservative_tile,
+            use_conservative_tile,
         )
 
-        dparam_cur_batch = transforms.cheby_to_taylor(
-            dcheb_cur_batch,
+        param_limits_cheby_d0 = np.zeros((n_freqs, poly_order + 1, 2), dtype=np.float64)
+        param_limits_cheby = transforms.taylor_to_chebyshev_limits_full(
+            param_limits_d,
             coord_cur_fixed[1],
         )
-        nfreqs = len(f0_batch)
-        # Convert alpha1 to d1
-        alpha1_batch_tmp = np.zeros((nfreqs, 2), dtype=np.float64)
-        alpha1_batch_tmp[:, 0] = alpha1_batch
-        alpha1_batch_tmp = transforms.taylor_to_chebyshev_limits_d1(
-            d1_limits,
-            param_limits_const,
-            coord_cur_fixed[1],
-        )
-        d1_batch = dparam_cur_batch[:, -2]
-        f_cur_batch = f0_batch * (1.0 - d1_batch / C_VAL)
+        param_limits_cheby_d0[:, :-1] = param_limits_cheby
+        param_ranges = (
+            param_limits_cheby_d0[:, :, 1] - param_limits_cheby_d0[:, :, 0]
+        ) / 2
         dcheb_new_batch = psr_utils.poly_cheb_step_vec(
             poly_order + 1,
             nbins,
             eta,
-            f_cur_batch,
+            f0_batch,
         )
         shift_bins_batch = psr_utils.poly_cheb_shift_vec(
             dcheb_cur_batch,
             dcheb_new_batch,
             nbins,
-            f_cur_batch,
+            f0_batch,
         )
 
-        dcheb_next_tmp = np.empty((nfreqs, poly_order + 1), dtype=np.float64)
-        n_branch_alpha1 = np.ones(nfreqs, dtype=np.int64)
-        n_branch_other = np.ones(nfreqs, dtype=np.int64)
+        dcheb_cur_next = np.empty((n_freqs, poly_order + 1), dtype=np.float64)
+        n_branches = np.ones(n_freqs, dtype=np.int64)
 
-        cheby_limits_upto_d2 = transforms.taylor_to_chebyshev_limits_upto_d2(
-            param_limits_const,
-            coord_cur_fixed[1],
-        )
-        cheby_ranges_upto_d2 = (
-            cheby_limits_upto_d2[:, 1] - cheby_limits_upto_d2[:, 0]
-        ) / 2
-
-        d1_limits = np.empty((nfreqs, 2), dtype=np.float64)
-        d1_limits[:, 0] = (1 - f_max / f0_batch) * C_VAL
-        d1_limits[:, 1] = (1 - f_min / f0_batch) * C_VAL
-
-        # Convert velocity limits to Chebyshev
-        alpha1_limits = transforms.taylor_to_chebyshev_limits_d1(
-            d1_limits,
-            param_limits_const,
-            coord_cur_fixed[1],
-        )
-        alpha1_ranges = (alpha1_limits[:, 1] - alpha1_limits[:, 0]) / 2
         # Vectorized branching decision
         needs_branching = shift_bins_batch >= (eta - eps)
+        too_large_step = dcheb_new_batch > (param_ranges + eps)
 
-        for i in range(nfreqs):  # skip d0
+        for i in range(n_freqs):  # skip d0
             for j in range(poly_order):
-                # Bounds check
-                limit = (
-                    alpha1_ranges[i] if j == poly_order - 1 else cheby_ranges_upto_d2[j]
-                )
-                too_large_step = dcheb_new_batch[i, j] > (limit + eps)
-                if not needs_branching[i, j] or too_large_step:
-                    dcheb_next_tmp[i, j] = dcheb_cur_batch[i, j]
+                if not needs_branching[i, j] or too_large_step[i, j]:
+                    dcheb_cur_next[i, j] = dcheb_cur_batch[i, j]
                     continue
                 ratio = (dcheb_cur_batch[i, j] + eps) / dcheb_new_batch[i, j]
                 num_points = max(1, int(np.ceil(ratio - eps)))
-                if j == poly_order - 1:  # alpha1 dimension
-                    n_branch_alpha1[i] = num_points
-                else:
-                    n_branch_other[i] *= num_points
-                dcheb_next_tmp[i, j] = dcheb_cur_batch[i, j] / num_points
-
-        (f0_batch, alpha1_batch, weights, dcheb_cur_batch, avg_bp) = (
-            propagate_bp_state_deterministic(
-                f0_batch,
-                alpha1_batch,
-                weights,
-                dcheb_cur_batch,
-                dcheb_next_tmp,
-                n_branch_alpha1,
-                n_branch_other,
-                max_track_size,
-            )
-        )
-        branching_pattern[prune_level - 1] = avg_bp
+                n_branches[i] *= num_points
+                dcheb_cur_next[i, j] = dcheb_cur_batch[i, j] / num_points
+        # Compute average branching factor
+        children = np.sum(weights * n_branches)
+        parents = np.sum(weights)
+        branching_pattern[prune_level - 1] = children / parents
+        # Update weights and dparams
+        weights *= n_branches
+        dcheb_cur_batch = dcheb_cur_next
     return branching_pattern

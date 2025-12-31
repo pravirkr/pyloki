@@ -9,8 +9,6 @@ from numba import njit, types
 
 from pyloki.core import set_prune_load_func
 from pyloki.dynamic import (
-    PruneCircChebyshevComplexDPFuncts,
-    PruneCircChebyshevDPFuncts,
     PruneCircTaylorComplexDPFuncts,
     PruneCircTaylorDPFuncts,
     PrunePolyChebyshevComplexDPFuncts,
@@ -47,8 +45,6 @@ if TYPE_CHECKING:
 DP_FUNCS_TYPE = (
     PruneCircTaylorComplexDPFuncts
     | PruneCircTaylorDPFuncts
-    | PruneCircChebyshevComplexDPFuncts
-    | PruneCircChebyshevDPFuncts
     | PrunePolyTaylorComplexDPFuncts
     | PrunePolyTaylorDPFuncts
     | PrunePolyChebyshevComplexDPFuncts
@@ -361,8 +357,6 @@ class Pruning:
         # (is_circular, poly_basis, use_complex): Class
         (True, "taylor", True): PruneCircTaylorComplexDPFuncts,
         (True, "taylor", False): PruneCircTaylorDPFuncts,
-        (True, "chebyshev", True): PruneCircChebyshevComplexDPFuncts,
-        (True, "chebyshev", False): PruneCircChebyshevDPFuncts,
         (False, "taylor", True): PrunePolyTaylorComplexDPFuncts,
         (False, "taylor", False): PrunePolyTaylorDPFuncts,
         (False, "chebyshev", True): PrunePolyChebyshevComplexDPFuncts,

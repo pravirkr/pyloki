@@ -30,9 +30,15 @@ class MiddleOutScheme(structref.StructRefProxy):
         The duration of each segment in seconds, default is 1.0.
     """
 
-    def __new__(cls, nsegments: int, ref_idx: int, tsegment: float = 1.0) -> Self:
+    def __new__(
+        cls,
+        nsegments: int,
+        ref_idx: int,
+        tsegment: float = 1.0,
+        stride: int = 1,
+    ) -> Self:
         """Create a new instance of MiddleOutScheme."""
-        return middle_out_scheme_init_func(nsegments, ref_idx, tsegment)
+        return middle_out_scheme_init_func(nsegments, ref_idx, tsegment, stride)
 
     @property
     @njit(cache=True, fastmath=True)
@@ -48,6 +54,11 @@ class MiddleOutScheme(structref.StructRefProxy):
     @njit(cache=True, fastmath=True)
     def tsegment(self) -> float:
         return self.tsegment
+
+    @property
+    @njit(cache=True, fastmath=True)
+    def stride(self) -> int:
+        return self.stride
 
     @property
     @njit(cache=True, fastmath=True)
@@ -97,6 +108,11 @@ class MiddleOutScheme(structref.StructRefProxy):
         return get_coord_func(self, level)
 
     @njit(cache=True, fastmath=True)
+    def get_anchor_level(self, level: int) -> int:
+        """Determine which previous level defines the current grid anchor."""
+        return get_anchor_level_func(self, level)
+
+    @njit(cache=True, fastmath=True)
     def get_segment_coord(self, level: int) -> tuple[float, float]:
         """Get the ref and scale for the segment (to be added) at the given level.
 
@@ -116,6 +132,16 @@ class MiddleOutScheme(structref.StructRefProxy):
     def get_current_coord(self, level: int) -> tuple[float, float]:
         """Get current ref, scale for an adaptive grid."""
         return get_current_coord_func(self, level)
+
+    @njit(cache=True, fastmath=True)
+    def get_current_coord_stride(self, level: int) -> tuple[float, float]:
+        """Get current ref, scale for an adaptive grid with stride."""
+        return get_current_coord_stride_func(self, level)
+
+    @njit(cache=True, fastmath=True)
+    def do_transform(self, level: int) -> bool:
+        """Determine if the current level requires a transform."""
+        return do_transform_func(self, level)
 
     @njit(cache=True, fastmath=True)
     def get_current_coord_fixed(self, level: int) -> tuple[float, float]:
@@ -149,6 +175,7 @@ fields_middle_out_scheme = [
     ("nsegments", types.i8),
     ("ref_idx", types.i8),
     ("tsegment", types.f8),
+    ("stride", types.i8),
     ("data", types.i8[:]),
 ]
 
@@ -161,6 +188,7 @@ def middle_out_scheme_init_func(
     nsegments: int,
     ref_idx: int,
     tsegment: float,
+    stride: int,
 ) -> MiddleOutScheme:
     self = structref.new(MiddleOutSchemeType)
     if nsegments <= 0:
@@ -172,9 +200,13 @@ def middle_out_scheme_init_func(
     if tsegment <= 0:
         msg = f"tsegment must be greater than 0, got {tsegment}."
         raise ValueError(msg)
+    if stride <= 0:
+        msg = f"stride must be greater than 0, got {stride}."
+        raise ValueError(msg)
     self.nsegments = nsegments
     self.ref_idx = ref_idx
     self.tsegment = tsegment
+    self.stride = stride
     self.data = np.argsort(np.abs(np.arange(nsegments) - ref_idx), kind="mergesort")
     return self
 
@@ -209,6 +241,21 @@ def get_segment_coord_func(self: MiddleOutScheme, level: int) -> tuple[float, fl
 
 
 @njit(cache=True, fastmath=True)
+def get_anchor_level_func(self: MiddleOutScheme, level: int) -> int:
+    if level < 0 or level >= self.nsegments:
+        msg = f"level must be in [0, {self.nsegments - 1}], got {level}."
+        raise ValueError(msg)
+    if self.stride == 1:
+        return level - 1
+    # We are at 'level'. The grid state was last updated at 'last_transform'
+    # If we are processing level L, the grid was prepared after L-1.
+    # We find the largest multiple of stride <= L-1.
+    if level == 0:
+        return 0
+    return ((level - 1) // self.stride) * self.stride
+
+
+@njit(cache=True, fastmath=True)
 def get_current_coord_func(self: MiddleOutScheme, level: int) -> tuple[float, float]:
     if level < 0 or level >= self.nsegments:
         msg = f"level must be in [0, {self.nsegments - 1}], got {level}."
@@ -219,6 +266,41 @@ def get_current_coord_func(self: MiddleOutScheme, level: int) -> tuple[float, fl
     prev_ref, _ = self.get_coord(level - 1)
     _, cur_scale = self.get_coord(level)
     return prev_ref, cur_scale
+
+
+@njit(cache=True, fastmath=True)
+def get_current_coord_stride_func(
+    self: MiddleOutScheme,
+    level: int,
+) -> tuple[float, float]:
+    if level < 0 or level >= self.nsegments:
+        msg = f"level must be in [0, {self.nsegments - 1}], got {level}."
+        raise ValueError(msg)
+
+    if level == 0:
+        return self.get_coord(level)
+
+    # Identify the stale anchor we are stuck with
+    _, scale_init = self.get_coord(0)
+    anchor_lvl = self.get_anchor_level(level)
+    anchor_ref, _ = self.get_coord(anchor_lvl)
+
+    t0_next, scale_next = self.get_coord(level)
+    left_edge = t0_next - scale_next
+    right_edge = t0_next + scale_next
+    cur_scale = max(abs(left_edge - anchor_ref), abs(right_edge - anchor_ref))
+
+    return anchor_ref, cur_scale - scale_init
+
+
+@njit(cache=True, fastmath=True)
+def do_transform_func(self: MiddleOutScheme, level: int) -> bool:
+    if level < 0 or level >= self.nsegments:
+        msg = f"level must be in [0, {self.nsegments - 1}], got {level}."
+        raise ValueError(msg)
+    if level == 0:
+        return False
+    return level % self.stride == 0
 
 
 @njit(cache=True, fastmath=True)
@@ -255,9 +337,15 @@ def overload_middle_out_scheme_construct(
     nsegments: int,
     ref_idx: int,
     tsegment: float,
+    stride: int,
 ) -> types.FunctionType:
-    def impl(nsegments: int, ref_idx: int, tsegment: float) -> MiddleOutScheme:
-        return middle_out_scheme_init_func(nsegments, ref_idx, tsegment)
+    def impl(
+        nsegments: int,
+        ref_idx: int,
+        tsegment: float,
+        stride: int,
+    ) -> MiddleOutScheme:
+        return middle_out_scheme_init_func(nsegments, ref_idx, tsegment, stride)
 
     return impl
 
@@ -290,6 +378,33 @@ def ol_get_segment_coord_func(self: MiddleOutScheme, level: int) -> types.Functi
 def ol_get_current_coord_func(self: MiddleOutScheme, level: int) -> types.FunctionType:
     def impl(self: MiddleOutScheme, level: int) -> tuple[float, float]:
         return get_current_coord_func(self, level)
+
+    return impl
+
+
+@overload_method(MiddleOutSchemeTemplate, "get_current_coord_stride")
+def ol_get_current_coord_stride_func(
+    self: MiddleOutScheme,
+    level: int,
+) -> types.FunctionType:
+    def impl(self: MiddleOutScheme, level: int) -> tuple[float, float]:
+        return get_current_coord_stride_func(self, level)
+
+    return impl
+
+
+@overload_method(MiddleOutSchemeTemplate, "get_anchor_level")
+def ol_get_anchor_level_func(self: MiddleOutScheme, level: int) -> types.FunctionType:
+    def impl(self: MiddleOutScheme, level: int) -> int:
+        return get_anchor_level_func(self, level)
+
+    return impl
+
+
+@overload_method(MiddleOutSchemeTemplate, "do_transform")
+def ol_do_transform_func(self: MiddleOutScheme, level: int) -> types.FunctionType:
+    def impl(self: MiddleOutScheme, level: int) -> bool:
+        return do_transform_func(self, level)
 
     return impl
 

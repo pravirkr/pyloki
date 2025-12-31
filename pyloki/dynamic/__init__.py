@@ -1,7 +1,3 @@
-from .dyn_circular_cheby import (
-    PruneCircChebyshevComplexDPFuncts,
-    PruneCircChebyshevDPFuncts,
-)
 from .dyn_circular_taylor import (
     PruneCircTaylorComplexDPFuncts,
     PruneCircTaylorDPFuncts,
@@ -16,8 +12,6 @@ from .dyn_poly_taylor import PrunePolyTaylorComplexDPFuncts, PrunePolyTaylorDPFu
 __all__ = [
     "FFATaylorComplexDPFuncts",
     "FFATaylorDPFuncts",
-    "PruneCircChebyshevComplexDPFuncts",
-    "PruneCircChebyshevDPFuncts",
     "PruneCircTaylorComplexDPFuncts",
     "PruneCircTaylorDPFuncts",
     "PrunePolyChebyshevComplexDPFuncts",

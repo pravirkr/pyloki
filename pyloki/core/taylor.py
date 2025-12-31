@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from numba import njit, typed, types
 
-from pyloki.core.common import get_leaves, propagate_bp_state_deterministic
+from pyloki.core.common import get_leaves
 from pyloki.detection.scoring import snr_score_func, snr_score_func_complex
 from pyloki.utils import np_utils, psr_utils, transforms
 from pyloki.utils.misc import C_VAL
@@ -214,7 +214,7 @@ def poly_taylor_branch(
         t_ref=0,
     )
 
-    eps = 1e-6
+    eps = 1e-12
     total_size = 1
     leaf_branch_params = typed.List.empty_list(types.float64[::1])
     leaf_branch_dparams = np.empty(poly_order, dtype=np.float64)
@@ -318,7 +318,7 @@ def poly_taylor_branch_batch(
             branched_counts[i, j] = count
 
     # --- Vectorized Selection ---
-    eps = 1e-6  # Small tolerance for floating-point comparison
+    eps = 1e-12  # Small tolerance for floating-point comparison
     needs_branching = shift_bins_batch >= (eta - eps)
     for i in range(n_batch):
         for j in range(poly_order):
@@ -553,48 +553,41 @@ def generate_bp_poly_taylor(
     nbins: int,
     eta: float,
     ref_seg: int,
-    use_conservative_tile: bool = False,
-    max_track_size: int = 10000,
+    use_conservative_tile: bool,
 ) -> np.ndarray:
-    """Deterministic branching pattern estimator with fixed memory cap."""
+    """Generate the exact branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
     f0_batch = param_arr[-1]
-    n0 = len(f0_batch)
-    # Ensure we don't downsample below the initial size
-    max_track_size = max(max_track_size, n0)
-    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
-
-    # Track velocity
-    d1_batch = np.zeros(n0, dtype=np.float64)
-    weights = np.ones(n0, dtype=np.float64)
+    n_freqs = len(f0_batch)
+    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
+    weights = np.ones(n_freqs, dtype=np.float64)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
-    dparam_cur_batch = np.empty((n0, poly_order), dtype=np.float64)
-    for i in range(n0):
+    dparam_cur_batch = np.empty((n_freqs, poly_order), dtype=np.float64)
+    for i in range(n_freqs):
         dparam_cur_batch[i] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -1] = dparam_cur_batch[:, -1] * (C_VAL / f0_batch)
 
-    # Precompute constant parameter ranges for non-velocity parameters
-    param_ranges_const = np.empty(poly_order - 1, dtype=np.float64)
-    for i in range(poly_order - 1):
-        param_ranges_const[i] = (param_limits[i][1] - param_limits[i][0]) / 2
-
-    # Frequency limits for velocity conversion
-    f_min, f_max = param_limits[poly_order - 1]
+    param_limits_d = np.empty((n_freqs, poly_order, 2), dtype=np.float64)
+    for i in range(poly_order):
+        param_limits_d[:, i, 0] = param_limits[i][0]
+        param_limits_d[:, i, 1] = param_limits[i][1]
+    param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
+    param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
+    param_ranges = (param_limits_d[:, :, 1] - param_limits_d[:, :, 0]) / 2
 
     eps = 1e-12
     for prune_level in range(1, nsegments):
         coord_next = snail_scheme.get_coord(prune_level)
         coord_cur = snail_scheme.get_current_coord(prune_level)
         _, t_obs_minus_t_ref = coord_cur
-        f_cur_batch = f0_batch * (1.0 - d1_batch / C_VAL)
         dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
             poly_order,
             t_obs_minus_t_ref,
             nbins,
             eta,
-            f_cur_batch,
+            f0_batch,
             t_ref=0,
         )
         shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
@@ -602,60 +595,43 @@ def generate_bp_poly_taylor(
             dparam_new_batch,
             t_obs_minus_t_ref,
             nbins,
-            f_cur_batch,
+            f0_batch,
             t_ref=0,
         )
 
-        nfreqs = len(f0_batch)
-        dparam_next_tmp = np.empty((nfreqs, poly_order), dtype=np.float64)
-        n_branch_d1 = np.ones(nfreqs, dtype=np.int64)
-        n_branch_other = np.ones(nfreqs, dtype=np.int64)
+        dparam_cur_next = np.empty((n_freqs, poly_order), dtype=np.float64)
+        n_branches = np.ones(n_freqs, dtype=np.int64)
 
-        v_ranges = (f_max - f_min) / f0_batch * C_VAL / 2
         # Vectorized branching decision
         needs_branching = shift_bins_batch >= (eta - eps)
+        too_large_step = dparam_new_batch > (param_ranges + eps)
 
-        for i in range(nfreqs):
+        for i in range(n_freqs):
             for j in range(poly_order):
-                # Bounds check
-                limit = v_ranges[i] if j == poly_order - 1 else param_ranges_const[j]
-                too_large_step = dparam_new_batch[i, j] > (limit + eps)
-                if not needs_branching[i, j] or too_large_step:
-                    dparam_next_tmp[i, j] = dparam_cur_batch[i, j]
+                if not needs_branching[i, j] or too_large_step[i, j]:
+                    dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
                 ratio = (dparam_cur_batch[i, j] + eps) / dparam_new_batch[i, j]
                 num_points = max(1, int(np.ceil(ratio - eps)))
-                if j == poly_order - 1:  # Velocity dimension
-                    n_branch_d1[i] = num_points
-                else:
-                    n_branch_other[i] *= num_points
-                dparam_next_tmp[i, j] = dparam_cur_batch[i, j] / num_points
+                n_branches[i] *= num_points
+                dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
+        # Compute average branching factor
+        children = np.sum(weights * n_branches)
+        parents = np.sum(weights)
+        branching_pattern[prune_level - 1] = children / parents
+        # Update weights and dparams
+        weights *= n_branches
 
-        (f0_batch, d1_batch, weights, dparam_cur_batch_raw, avg_bp) = (
-            propagate_bp_state_deterministic(
-                f0_batch,
-                d1_batch,
-                weights,
-                dparam_cur_batch,
-                dparam_next_tmp,
-                n_branch_d1,
-                n_branch_other,
-                max_track_size,
-            )
-        )
-        branching_pattern[prune_level - 1] = avg_bp
-
-        # Transform dparams to the next segment
+        # Transform dparams to the new optimal center
         delta_t = coord_next[0] - coord_cur[0]
-        dparam_d_vec = np.zeros((len(f0_batch), poly_order + 1), dtype=np.float64)
-        dparam_d_vec[:, :-1] = dparam_cur_batch_raw
+        dparam_d_vec = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
+        dparam_d_vec[:, :-1] = dparam_cur_next
         dparam_d_vec_new = transforms.shift_taylor_errors(
             dparam_d_vec,
             delta_t,
             use_conservative_tile,
         )
         dparam_cur_batch = dparam_d_vec_new[:, :-1]
-
     return branching_pattern
 
 
@@ -669,46 +645,39 @@ def generate_bp_poly_taylor_fixed(
     nbins: int,
     eta: float,
     ref_seg: int,
-    max_track_size: int = 10000,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor fixed pruning search."""
     poly_order = len(dparams_lim)
     f0_batch = param_arr[-1]
-    n0 = len(f0_batch)
-    # Ensure we don't downsample below the initial size
-    max_track_size = max(max_track_size, n0)
-    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
-
-    # Track velocity
-    d1_batch = np.zeros(n0, dtype=np.float64)
-    weights = np.ones(n0, dtype=np.float64)
+    n_freqs = len(f0_batch)
+    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
+    weights = np.ones(n_freqs, dtype=np.float64)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
-    dparam_cur_batch = np.empty((n0, poly_order), dtype=np.float64)
-    for i in range(n0):
+    dparam_cur_batch = np.empty((n_freqs, poly_order), dtype=np.float64)
+    for i in range(n_freqs):
         dparam_cur_batch[i] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -1] = dparam_cur_batch[:, -1] * (C_VAL / f0_batch)
 
-    # Precompute constant parameter ranges for non-velocity parameters
-    param_ranges_const = np.empty(poly_order - 1, dtype=np.float64)
-    for i in range(poly_order - 1):
-        param_ranges_const[i] = (param_limits[i][1] - param_limits[i][0]) / 2
-
-    # Frequency limits for velocity conversion
-    f_min, f_max = param_limits[poly_order - 1]
+    param_limits_d = np.empty((n_freqs, poly_order, 2), dtype=np.float64)
+    for i in range(poly_order):
+        param_limits_d[:, i, 0] = param_limits[i][0]
+        param_limits_d[:, i, 1] = param_limits[i][1]
+    param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
+    param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
+    param_ranges = (param_limits_d[:, :, 1] - param_limits_d[:, :, 0]) / 2
 
     eps = 1e-12
     for prune_level in range(1, nsegments):
         coord_cur_fixed = snail_scheme.get_current_coord_fixed(prune_level)
         _, t_obs_minus_t_ref = coord_cur_fixed
-        f_cur_batch = f0_batch * (1.0 - d1_batch / C_VAL)
         dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
             poly_order,
             t_obs_minus_t_ref,
             nbins,
             eta,
-            f_cur_batch,
+            f0_batch,
             t_ref=0,
         )
         shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
@@ -716,48 +685,32 @@ def generate_bp_poly_taylor_fixed(
             dparam_new_batch,
             t_obs_minus_t_ref,
             nbins,
-            f_cur_batch,
+            f0_batch,
             t_ref=0,
         )
 
-        nfreqs = len(f0_batch)
-        dparam_next_tmp = np.empty((nfreqs, poly_order), dtype=np.float64)
-        n_branch_d1 = np.ones(nfreqs, dtype=np.int64)
-        n_branch_other = np.ones(nfreqs, dtype=np.int64)
+        dparam_cur_next = np.empty((n_freqs, poly_order), dtype=np.float64)
+        n_branches = np.ones(n_freqs, dtype=np.int64)
 
-        v_ranges = (f_max - f_min) / f0_batch * C_VAL / 2
         # Vectorized branching decision
         needs_branching = shift_bins_batch >= (eta - eps)
+        too_large_step = dparam_new_batch > (param_ranges + eps)
 
-        for i in range(nfreqs):
+        for i in range(n_freqs):
             for j in range(poly_order):
-                # Bounds check
-                limit = v_ranges[i] if j == poly_order - 1 else param_ranges_const[j]
-                too_large_step = dparam_new_batch[i, j] > (limit + eps)
-                if not needs_branching[i, j] or too_large_step:
-                    dparam_next_tmp[i, j] = dparam_cur_batch[i, j]
+                if not needs_branching[i, j] or too_large_step[i, j]:
+                    dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
                 ratio = (dparam_cur_batch[i, j] + eps) / dparam_new_batch[i, j]
                 num_points = max(1, int(np.ceil(ratio - eps)))
-                if j == poly_order - 1:  # Velocity dimension
-                    n_branch_d1[i] = num_points
-                else:
-                    n_branch_other[i] *= num_points
-                dparam_next_tmp[i, j] = dparam_cur_batch[i, j] / num_points
-
-        (f0_batch, d1_batch, weights, dparam_cur_batch, avg_bp) = (
-            propagate_bp_state_deterministic(
-                f0_batch,
-                d1_batch,
-                weights,
-                dparam_cur_batch,
-                dparam_next_tmp,
-                n_branch_d1,
-                n_branch_other,
-                max_track_size,
-            )
-        )
+                n_branches[i] *= num_points
+                dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
         # Compute average branching factor
-        branching_pattern[prune_level - 1] = avg_bp
+        children = np.sum(weights * n_branches)
+        parents = np.sum(weights)
+        branching_pattern[prune_level - 1] = children / parents
+        # Update weights and dparams
+        weights *= n_branches
+        dparam_cur_batch = dparam_cur_next
 
     return branching_pattern

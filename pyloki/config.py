@@ -707,6 +707,8 @@ class PulsarSearchConfig:
                 self.nbins,
                 self.eta,
                 ref_seg,
+                self.p_orb_min,
+                self.minimum_snap_cells,
                 self.use_conservative_tile,
             )
         if kind == "taylor_fixed":
@@ -719,6 +721,7 @@ class PulsarSearchConfig:
                 self.nbins,
                 self.eta,
                 ref_seg,
+                self.minimum_snap_cells,
             )
         msg = f"Invalid kind: {kind}"
         raise ValueError(msg)
