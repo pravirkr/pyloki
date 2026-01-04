@@ -378,6 +378,8 @@ class PulsarSearchConfig:
         ],
     )
     p_orb_min: float = attrs.field(default=0)
+    m_c_max: float = attrs.field(default=10.0)
+    m_p_min: float = attrs.field(default=1.4)
     bseg_brute: int = attrs.field(
         default=0,
         validator=[attrs.validators.instance_of(int | np.integer), _is_power_of_two],
@@ -453,6 +455,16 @@ class PulsarSearchConfig:
     def f_max(self) -> float:
         """:obj:`float`: Maximum frequency value to search."""
         return self.param_limits[-1][1]
+
+    @property
+    def x_mass_const(self) -> float:
+        """:obj:`float`: Mass constant for the search."""
+        return (
+            0.005
+            * (self.m_p_min + self.m_c_max) ** (1 / 3)
+            * self.m_c_max
+            / (self.m_p_min + self.m_c_max)
+        )
 
     @property
     def score_widths(self) -> np.ndarray:

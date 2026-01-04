@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Self, cast
+from typing import Self
 
 import h5py
 import numpy as np
@@ -226,7 +226,7 @@ def folds_init(
     folds_h1: npt.NDArray[np.float32],
     variance: float = 1.0,
 ) -> Folds:
-    self = cast("Folds", structref.new(FoldsType))
+    self = structref.new(FoldsType)
     self.folds_h0 = folds_h0
     self.folds_h1 = folds_h1
     self.variance = variance
@@ -247,7 +247,7 @@ def overload_folds(
     ) -> Folds:
         return folds_init(folds_h0, folds_h1, variance)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @njit(cache=True, fastmath=True)

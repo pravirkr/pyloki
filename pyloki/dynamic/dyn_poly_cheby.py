@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, Self
 
 from numba import njit, typed, types
 from numba.experimental import structref
@@ -418,10 +418,7 @@ def prune_chebyshev_dp_functs_init(
     use_moving_grid: bool,
 ) -> PrunePolyChebyshevDPFuncts:
     """Initialize the PrunePolyChebyshevDPFuncts struct."""
-    self = cast(
-        "PrunePolyChebyshevDPFuncts",
-        structref.new(PrunePolyChebyshevDPFunctsType),
-    )
+    self = structref.new(PrunePolyChebyshevDPFunctsType)
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
@@ -453,10 +450,7 @@ def prune_chebyshev_complex_dp_functs_init(
     use_moving_grid: bool,
 ) -> PrunePolyChebyshevComplexDPFuncts:
     """Initialize the PrunePolyChebyshevComplexDPFuncts struct."""
-    self = cast(
-        "PrunePolyChebyshevComplexDPFuncts",
-        structref.new(PrunePolyChebyshevComplexDPFunctsType),
-    )
+    self = structref.new(PrunePolyChebyshevComplexDPFunctsType)
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.tseg_ffa = tseg_ffa
@@ -668,7 +662,7 @@ def ol_load_func(
     ) -> np.ndarray:
         return load_func(self, fold, seg_idx)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "suggest")
@@ -684,7 +678,7 @@ def ol_suggest_func(
     ) -> SuggestionStruct:
         return suggest_func(self, fold_segment, coord_init)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "branch")
@@ -702,7 +696,7 @@ def ol_branch_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "validate")
@@ -720,7 +714,7 @@ def ol_validate_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "get_validation_params")
@@ -734,7 +728,7 @@ def ol_get_validation_params_func(
     ) -> tuple[np.ndarray, np.ndarray, float]:
         return get_validation_params_func(self, coord_add)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "resolve")
@@ -754,7 +748,7 @@ def ol_resolve_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "shift_add")
@@ -774,7 +768,7 @@ def ol_shift_add_func(
     ) -> np.ndarray:
         return shift_add_func(self, segment_batch, shift_batch, folds, isuggest_batch)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "score")
@@ -785,7 +779,7 @@ def ol_score_func(
     def impl(self: PrunePolyChebyshevDPFuncts, combined_res_batch: np.ndarray) -> float:
         return score_func(self, combined_res_batch)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "transform")
@@ -803,7 +797,7 @@ def ol_transform_func(
     ) -> np.ndarray:
         return transform_func(self, leaves_batch, coord_next, coord_cur)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "get_transform_matrix")
@@ -819,7 +813,7 @@ def ol_get_transform_matrix_func(
     ) -> np.ndarray:
         return get_transform_matrix_func(self, coord_next, coord_prev)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "pack")
@@ -830,7 +824,7 @@ def ol_pack_func(
     def impl(self: PrunePolyChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "load")
@@ -846,7 +840,7 @@ def ol_load_complex_func(
     ) -> np.ndarray:
         return load_func(self, fold, seg_idx)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "suggest")
@@ -862,7 +856,7 @@ def ol_suggest_complex_func(
     ) -> SuggestionStructComplex:
         return suggest_complex_func(self, fold_segment, coord_init)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "branch")
@@ -880,7 +874,7 @@ def ol_branch_complex_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "validate")
@@ -898,7 +892,7 @@ def ol_validate_complex_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "get_validation_params")
@@ -912,7 +906,7 @@ def ol_get_validation_params_complex_func(
     ) -> tuple[np.ndarray, np.ndarray, float]:
         return get_validation_params_func(self, coord_add)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "resolve")
@@ -932,7 +926,7 @@ def ol_resolve_complex_func(
     ) -> tuple[np.ndarray, np.ndarray]:
         return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "shift_add")
@@ -958,7 +952,7 @@ def ol_shift_add_complex_func(
             isuggest_batch,
         )
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "score")
@@ -972,7 +966,7 @@ def ol_score_complex_func(
     ) -> np.ndarray:
         return score_complex_func(self, combined_res_batch)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "transform")
@@ -990,7 +984,7 @@ def ol_transform_complex_func(
     ) -> np.ndarray:
         return transform_func(self, leaves_batch, coord_next, coord_cur)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "get_transform_matrix")
@@ -1006,7 +1000,7 @@ def ol_get_transform_matrix_complex_func(
     ) -> np.ndarray:
         return get_transform_matrix_func(self, coord_next, coord_prev)
 
-    return cast("types.FunctionType", impl)
+    return impl
 
 
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "pack")
@@ -1017,4 +1011,4 @@ def ol_pack_complex_func(
     def impl(self: PrunePolyChebyshevComplexDPFuncts, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
 
-    return cast("types.FunctionType", impl)
+    return impl
