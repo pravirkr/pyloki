@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from numba import njit, vectorize
 
@@ -36,12 +38,11 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
     if nbins <= 0:
         msg = "Number of bins must be positive."
         raise ValueError(msg)
-    phase = ((proper_time - delay) * freq) % 1.0
-    iphase = phase * float(nbins)
-    # Clamp to ensure iphase ∈ [0, nbins)
-    eps = 1e-12
-    if iphase >= (nbins - eps):
-        return iphase - nbins
+    phase = (proper_time - delay) * freq
+    phase -= math.floor(phase)
+    iphase = phase * nbins
+    if iphase >= nbins:
+        iphase = 0.0
     return iphase
 
 

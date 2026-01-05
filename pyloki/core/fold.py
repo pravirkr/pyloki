@@ -406,7 +406,39 @@ def brutefold_start_complex_opt(
     tsamp: float,
     t_ref: float = 0,
 ) -> np.ndarray:
-    """Optimized version of brutefold_start_complex using matrix multiplication."""
+    """Brute Force Folds a time series into the complex Fourier domain.
+
+    Optimized version of brutefold_start_complex using matrix multiplication.
+
+    Parameters
+    ----------
+    ts_e : np.ndarray
+        Time series signal (intensity).
+    ts_v : np.ndarray
+        Time series variance.
+    freq_arr : np.ndarray
+        Array of frequencies to fold the time series.
+    segment_len : int
+        Length of the segment (in samples) to fold.
+    nbins : int
+        Number of bins in the final time-domain folded profile.
+    tsamp : float
+        Sampling time of the time series.
+    t_ref : float, optional
+        Reference time in segment e.g. start, middle, etc. (default: 0).
+
+    Returns
+    -------
+    np.ndarray
+        Complex folded profiles with shape (nsegments, nfreqs, 2, nbins_f)
+        where nbins_f = (nbins // 2) + 1.
+
+    Notes
+    -----
+    - Internal parallelization comes from BLAS. Scales poorly with NUM_THREADS.
+    - For single-threaded case, this beats brutefold_start_complex.
+    - Be careful with this when t_ref is large, accumulates float errors.
+    """
     nfreqs = len(freq_arr)
     nsamples = len(ts_e)
     nsegments = int(np.ceil(nsamples / segment_len))
