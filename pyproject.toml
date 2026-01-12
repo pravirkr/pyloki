@@ -88,6 +88,10 @@ ignore = [
     "FIX",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"pyloki/**/*.py" = ["E402"]
+"examples/**/*.ipynb" = ["T201"]
+
 [tool.ruff.lint.mccabe]
 max-complexity = 20
 

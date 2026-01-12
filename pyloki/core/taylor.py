@@ -517,7 +517,7 @@ def generate_bp_poly_taylor_approx(
 ) -> np.ndarray:
     """Generate the approximate branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
-    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
+    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
     coord_init = snail_scheme.get_coord(0)
     leaf = poly_taylor_leaves(param_arr, dparams_lim, poly_order, coord_init)[isuggest]
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)

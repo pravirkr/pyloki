@@ -460,6 +460,7 @@ class Pruning:
             nsegments=self.dyp.nsegments,
             ref_idx=ref_seg,
             tsegment=self.dyp.tseg,
+            stride=1,
         )
         self._complete = False
         self._prune_level = 0

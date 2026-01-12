@@ -818,7 +818,7 @@ def generate_bp_circ_taylor(
         raise ValueError(msg)
     f0_batch = param_arr[-1]
     n_freqs = len(f0_batch)
-    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
+    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
     weights = np.ones(n_freqs, dtype=np.float64)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
@@ -943,7 +943,7 @@ def generate_bp_circ_taylor_fixed(
         raise ValueError(msg)
     f0_batch = param_arr[-1]
     n_freqs = len(f0_batch)
-    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
+    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
     weights = np.ones(n_freqs, dtype=np.float64)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 

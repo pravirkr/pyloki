@@ -443,7 +443,7 @@ def generate_bp_poly_chebyshev_approx(
     """Generate the approximate branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
     branch_max = 256
-    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa)
+    snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
     coord_init = snail_scheme.get_coord(0)
     leaves_init = poly_chebyshev_leaves(param_arr, dparams_lim, poly_order, coord_init)
     leaf = leaves_init[isuggest]
