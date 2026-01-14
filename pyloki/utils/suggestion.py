@@ -517,41 +517,58 @@ def add_batch_func(
     num_to_add = len(scores_batch)
     if num_to_add == 0:
         return current_threshold
-    effective_threshold = current_threshold
 
-    # Start with all candidates
-    mask = scores_batch >= effective_threshold
-    idxs = np.where(mask)[0]
+    space_left = self.size - self.valid_size
+    # If there is enough space, add all (fast path)
+    if num_to_add <= space_left:
+        pos = self.valid_size
+        self.param_sets[pos : pos + num_to_add] = param_sets_batch
+        self.folds[pos : pos + num_to_add] = folds_batch
+        self.scores[pos : pos + num_to_add] = scores_batch
+        self.backtracks[pos : pos + num_to_add] = backtracks_batch
+        self.valid_size += num_to_add
+        return current_threshold
+
+    # Overflow path (trim and add)
+    effective_threshold = current_threshold
+    idxs = np.arange(num_to_add)
 
     while len(idxs) > 0:
         space_left = self.size - self.valid_size
         if space_left == 0:
-            # Buffer is full, try to trim
+            # Buffer is full -> Trim -> Raise Threshold
             new_threshold_from_trim = self.trim_threshold()
             effective_threshold = max(effective_threshold, new_threshold_from_trim)
+            # Early exit if remaining batch is all too weak
+            if scores_batch[idxs].max() < effective_threshold:
+                break
             # Re-filter after new threshold
-            mask = scores_batch >= effective_threshold
-            idxs = np.where(mask)[0]
+            mask = scores_batch[idxs] >= effective_threshold
+            idxs = idxs[mask]
             continue  # Try again with new threshold
 
+        # Fill available space
         n_to_add = min(len(idxs), space_left)
+        # Get the subset of indices we are adding now
+        current_idxs = idxs[:n_to_add]
         pos = self.valid_size
         # Batched assignment
-        self.param_sets[pos : pos + n_to_add] = param_sets_batch[idxs[:n_to_add]]
-        self.folds[pos : pos + n_to_add] = folds_batch[idxs[:n_to_add]]
-        self.scores[pos : pos + n_to_add] = scores_batch[idxs[:n_to_add]]
-        self.backtracks[pos : pos + n_to_add] = backtracks_batch[idxs[:n_to_add]]
+        self.param_sets[pos : pos + n_to_add] = param_sets_batch[current_idxs]
+        self.folds[pos : pos + n_to_add] = folds_batch[current_idxs]
+        self.scores[pos : pos + n_to_add] = scores_batch[current_idxs]
+        self.backtracks[pos : pos + n_to_add] = backtracks_batch[current_idxs]
         self.valid_size += n_to_add
 
-        # Remove added candidates from idxs
+        # Advance (Remove added candidates from idxs)
         idxs = idxs[n_to_add:]
     return effective_threshold
 
 
 @njit(cache=True, fastmath=True)
 def trim_threshold_func(self: SuggestionStruct) -> float:
-    threshold = np.median(self.scores[: self.valid_size])
-    idx = self.scores[: self.valid_size] >= threshold
+    current_scores = self.scores[: self.valid_size]
+    threshold = np.median(current_scores)
+    idx = current_scores >= threshold
     self._keep(idx)
     return threshold
 

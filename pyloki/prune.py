@@ -280,7 +280,7 @@ def pruning_iteration_batched(
 
         # Thresholding & Filtering
         t_start = nb_time_now()
-        passing_mask = batch_scores >= threshold
+        passing_mask = batch_scores >= max(threshold, current_threshold)
         num_passing = np.sum(passing_mask)
         if num_passing == 0:
             timers[5] += nb_time_now() - t_start
