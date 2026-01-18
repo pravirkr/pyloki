@@ -4,21 +4,19 @@ import numpy as np
 from numba import njit, typed, types
 
 from pyloki.core.common import get_leaves
-from pyloki.detection.scoring import snr_score_func, snr_score_func_complex
 from pyloki.utils import np_utils, psr_utils, transforms
 from pyloki.utils.misc import C_VAL
 from pyloki.utils.snail import MiddleOutScheme
-from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
 
 @njit(cache=True, fastmath=True)
-def poly_taylor_leaves(
+def poly_taylor_seed(
     param_arr: types.ListType,
     dparams: np.ndarray,
     poly_order: int,
     coord_init: tuple[float, float],
 ) -> np.ndarray:
-    """Generate the leaf parameter sets for Taylor polynomial search.
+    """Generate the seed leaves for Taylor polynomial search.
 
     Parameters
     ----------
@@ -37,11 +35,11 @@ def poly_taylor_leaves(
     Returns
     -------
     np.ndarray
-        The leaf parameter sets. Shape is (n_param_sets, poly_order + 2, 2).
+        The seed leaves. Shape is (n_leaves, poly_order + 2, 2).
 
     Notes
     -----
-    Conventions for each leaf parameter set:
+    Conventions for each seed leaf:
     leaf[:-1, 0] -> Taylor polynomial coefficients,
                     order is [d_poly_order, ..., d_1, d_0]
     leaf[:-1, 1] -> Grid size (error) on each coefficient,
@@ -63,94 +61,6 @@ def poly_taylor_leaves(
     leaves[:, -1, 0] = f0_batch
     leaves[:, -1, 1] = 0  # Polynomial basis
     return leaves
-
-
-@njit(cache=True, fastmath=True)
-def poly_taylor_suggest(
-    fold_segment: np.ndarray,
-    coord_init: tuple[float, float],
-    param_arr: types.ListType,
-    dparams: np.ndarray,
-    poly_order: int,
-    score_widths: np.ndarray,
-) -> SuggestionStruct:
-    """Generate a Taylor suggestion struct from a fold segment.
-
-    Parameters
-    ----------
-    fold_segment : np.ndarray
-        The fold segment to generate suggestions for. The shape of the array is
-        (n_accel, n_freq, 2, n_bins). Parameter dimensions are first two.
-    coord_init : tuple[float, float]
-        The coordinates for the starting segment (level 0).
-    param_arr : types.ListType
-        Parameter values for each dimension (accel, freq).
-    dparams : np.ndarray
-        Parameter step (grid) sizes for each dimension in a 1D array.
-    poly_order : int
-        The order of the Taylor polynomial.
-    score_widths : np.ndarray
-        Boxcar widths for the score computation.
-
-    Returns
-    -------
-    SuggestionStruct
-        Suggestion struct
-        - param_sets: The parameter sets (n_param_sets, poly_order + 2, 2).
-        - data: The folded data for each leaf.
-        - scores: The scores for each leaf.
-        - backtracks: The backtracks for each leaf.
-    """
-    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
-    param_sets = poly_taylor_leaves(param_arr, dparams, poly_order, coord_init)
-    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
-    scores = np.zeros(n_param_sets, dtype=np.float32)
-    for iparam in range(n_param_sets):
-        scores[iparam] = snr_score_func(data[iparam], score_widths)
-    backtracks = np.zeros((n_param_sets, poly_order + 2), dtype=np.int32)
-    return SuggestionStruct(param_sets, data, scores, backtracks, "taylor")
-
-
-@njit(cache=True, fastmath=True)
-def poly_taylor_suggest_complex(
-    fold_segment: np.ndarray,
-    coord_init: tuple[float, float],
-    param_arr: types.ListType,
-    dparams: np.ndarray,
-    poly_order: int,
-    score_widths: np.ndarray,
-) -> SuggestionStructComplex:
-    """Generate a Taylor suggestion struct from a fold segment in Fourier domain.
-
-    Parameters
-    ----------
-    fold_segment : np.ndarray
-        The fold segment to generate suggestions for. The shape of the array is
-        (n_accel, n_freq, 2, n_bins_f). Parameter dimensions are first two.
-    coord_init : tuple[float, float]
-        The coordinates for the starting segment (level 0).
-    param_arr : types.ListType
-        Parameter values for each dimension (accel, freq).
-    dparams : np.ndarray
-        Parameter step (grid) sizes for each dimension in a 1D array.
-    poly_order : int
-        The order of the Taylor polynomial.
-    score_widths : np.ndarray
-        Boxcar widths for the score computation.
-
-    Returns
-    -------
-    SuggestionStructComplex
-        Suggestion struct in Fourier domain.
-    """
-    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
-    param_sets = poly_taylor_leaves(param_arr, dparams, poly_order, coord_init)
-    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
-    scores = np.zeros(n_param_sets, dtype=np.float32)
-    for iparam in range(n_param_sets):
-        scores[iparam] = snr_score_func_complex(data[iparam], score_widths)
-    backtracks = np.zeros((n_param_sets, poly_order + 2), dtype=np.int32)
-    return SuggestionStructComplex(param_sets, data, scores, backtracks, "taylor")
 
 
 @njit(cache=True, fastmath=True)
@@ -503,6 +413,47 @@ def poly_taylor_transform_batch(
 
 
 @njit(cache=True, fastmath=True)
+def poly_taylor_report_batch(leaves: np.ndarray) -> np.ndarray:
+    param_sets_batch = leaves[:, :-2, :]
+    v_final = leaves[:, -3, 0]
+    dv_final = leaves[:, -3, 1]
+    f0_batch = leaves[:, -1, 0]
+    s_factor = 1 - v_final / C_VAL
+    # Gauge transform + error propagation
+    param_sets_vals = param_sets_batch[:, :-1, 0]
+    param_sets_sigs = param_sets_batch[:, :-1, 1]
+    param_sets_batch[:, :-1, 0] = param_sets_vals / s_factor[:, None]
+    param_sets_batch[:, :-1, 1] = np.sqrt(
+        (param_sets_sigs / s_factor[:, None]) ** 2
+        + ((param_sets_vals / (C_VAL * s_factor[:, None] ** 2)) ** 2)
+        * (dv_final[:, None] ** 2),
+    )
+    param_sets_batch[:, -1, 0] = f0_batch * s_factor
+    param_sets_batch[:, -1, 1] = f0_batch * dv_final / C_VAL
+    return param_sets_batch
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_fixed_report_batch(
+    leaves: np.ndarray,
+    coord_mid: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> np.ndarray:
+    """Specialized version of shift_taylor_params_d_f_batch for final report."""
+    delta_t = coord_mid[0] - coord_init[0]
+    param_vec_batch = leaves[:, :-2]
+    n_batch, nparams, _ = param_vec_batch.shape
+    taylor_param_vec = np.zeros((n_batch, nparams + 1), dtype=param_vec_batch.dtype)
+    taylor_param_vec[:, :-2] = param_vec_batch[:, :-1, 0]  # till acceleration
+    taylor_param_vec_new = transforms.shift_taylor_params(taylor_param_vec, delta_t)
+    s_factor = 1 - taylor_param_vec_new[:, -2] / C_VAL
+    param_vec_new = param_vec_batch.copy()
+    param_vec_new[:, :-1, 0] = taylor_param_vec_new[:, :-2] / s_factor[:, None]
+    param_vec_new[:, -1, 0] = param_vec_batch[:, -1, 0] * s_factor
+    return param_vec_new
+
+
+@njit(cache=True, fastmath=True)
 def generate_bp_poly_taylor_approx(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
@@ -512,14 +463,15 @@ def generate_bp_poly_taylor_approx(
     nbins: int,
     eta: float,
     ref_seg: int,
-    isuggest: int = 0,
+    itree: int = 0,
     use_conservative_tile: bool = False,
 ) -> np.ndarray:
     """Generate the approximate branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
     snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
     coord_init = snail_scheme.get_coord(0)
-    leaf = poly_taylor_leaves(param_arr, dparams_lim, poly_order, coord_init)[isuggest]
+    leaves_init = poly_taylor_seed(param_arr, dparams_lim, poly_order, coord_init)
+    leaf = leaves_init[itree]
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
     for prune_level in range(1, nsegments):
         coord_next = snail_scheme.get_coord(prune_level)
@@ -540,7 +492,7 @@ def generate_bp_poly_taylor_approx(
             use_conservative_tile,
         )
         leaf = leaves_arr_trans[0]
-    return np.array(branching_pattern)
+    return branching_pattern
 
 
 @njit(cache=True, fastmath=True)

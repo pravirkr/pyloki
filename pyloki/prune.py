@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from queue import Queue
 
     from pyloki.ffa import DynamicProgramming
-    from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
+    from pyloki.utils.world_tree import WorldTree, WorldTreeComplex
 
 DP_FUNCS_TYPE = (
     PruneCircTaylorComplexDPFuncts
@@ -163,7 +163,7 @@ def pruning_iteration(
 # Cache is disabled because there are random fails becasue of callable args
 @njit(cache=False, fastmath=True)
 def pruning_iteration_batched(
-    sugg: SuggestionStruct,
+    tree: WorldTree,
     fold_segment: np.ndarray,
     coord_prev: tuple[float, float],
     coord_next: tuple[float, float],
@@ -176,7 +176,7 @@ def pruning_iteration_batched(
     sugg_max: int = 2**18,
     batch_size: int = 1024,
 ) -> tuple[
-    SuggestionStruct,
+    WorldTree,
     types.DictType[str, float],
     np.ndarray,
 ]:
@@ -184,8 +184,8 @@ def pruning_iteration_batched(
 
     Parameters
     ----------
-    sugg : SuggestionStruct
-        The suggestion structure to be pruned.
+    tree : WorldTree
+        The world tree to be pruned.
     fold_segment : np.ndarray
         The fold segment of the current pruning level to be used for pruning.
     prune_funcs : PruningTaylorDPFunctions
@@ -198,16 +198,16 @@ def pruning_iteration_batched(
         The current pruning level.
     load_func : Callable[[np.ndarray, np.ndarray], np.ndarray]
         A function to load the desired fold from the input structure.
-    sugg_max : int, optional
-        Maximum number of suggestions to keep in the output SuggestionStruct,
+    world_tree_max : int, optional
+        Maximum number of candidates to keep in the output WorldTree,
         by default 2**17
 
     Returns
     -------
-    tuple[SuggestionStruct, PruneStats]
-        The pruned suggestion structure and the statistics of the pruning iteration.
+    tuple[WorldTree, PruneStats]
+        The pruned world tree and the statistics of the pruning iteration.
     """
-    sugg_new = sugg.get_new(sugg_max)
+    tree_new = tree.get_new(sugg_max)
     n_leaves = 0
     n_leaves_phy = 0
     score_min = np.inf
@@ -215,7 +215,7 @@ def pruning_iteration_batched(
     timers = np.zeros(8, dtype=np.float32)
     current_threshold = threshold
 
-    n_branches = sugg.valid_size
+    n_branches = tree.valid_size
     batch_size = max(1, min(batch_size, n_branches))
 
     # Loop over branches in batches
@@ -226,7 +226,7 @@ def pruning_iteration_batched(
         # Branching
         t_start = nb_time_now()
         batch_leaves, batch_leaf_origins = prune_funcs.branch(
-            sugg.param_sets[i_batch_start:i_batch_end],
+            tree.leaves[i_batch_start:i_batch_end],
             coord_cur,
             coord_prev,
         )
@@ -265,7 +265,7 @@ def pruning_iteration_batched(
         batch_combined_res = prune_funcs.shift_add(
             batch_loaded_data,
             batch_phase_shift,
-            sugg.folds,
+            tree.folds,
             isuggest_batch,
         )
         timers[3] += nb_time_now() - t_start
@@ -306,11 +306,11 @@ def pruning_iteration_batched(
         t_start = nb_time_now()
         n_add = len(filtered_scores)
         bt_nparams = batch_param_idx.shape[1]
-        batch_backtrack = np.empty((n_add, sugg.backtracks.shape[1]), dtype=np.int32)
+        batch_backtrack = np.empty((n_add, tree.backtracks.shape[1]), dtype=np.int32)
         batch_backtrack[:, 0] = isuggest_batch[filtered_indices]
         batch_backtrack[:, 1 : bt_nparams + 1] = batch_param_idx[filtered_indices]
         batch_backtrack[:, -1] = batch_phase_shift[filtered_indices]
-        current_threshold = sugg_new.add_batch(
+        current_threshold = tree_new.add_batch(
             filtered_leaves_trans,
             filtered_combined_res,
             filtered_scores,
@@ -320,14 +320,14 @@ def pruning_iteration_batched(
         timers[7] += nb_time_now() - t_start
 
     # Finalize
-    sugg_new = sugg_new.trim_empty()
+    tree_new = tree_new.trim_empty()
     stats = {
         "n_leaves": float(n_leaves),
         "n_leaves_phy": float(n_leaves_phy),
         "score_min": score_min if np.isfinite(score_min) else 0.0,
         "score_max": score_max if np.isfinite(score_max) else 0.0,
     }
-    return sugg_new, stats, timers
+    return tree_new, stats, timers
 
 
 class Pruning:
@@ -335,7 +335,7 @@ class Pruning:
 
     Time is linearly advancing. The algorithm starts with a reference segment
     and iteratively prunes the parameter space based on the scores of the
-    suggestions.
+    candidates.
 
     Parameters
     ----------
@@ -345,7 +345,7 @@ class Pruning:
         An array of thresholds for each pruning level. Thresholds should
         maximise the Prob(detecting signal) / (computational complexity) ratio.
     max_sugg : int, optional
-        Maximum suggestions to store in memory (to avoid tree explosion),
+        Maximum candidates to store in memory (to avoid tree explosion),
         by default 2**17.
     poly_basis : {"taylor", "chebyshev"}, optional
         The polynomial coeffecient basis to use, by default "taylor".
@@ -427,8 +427,8 @@ class Pruning:
         return self._scheme
 
     @property
-    def suggestion(self) -> SuggestionStruct | SuggestionStructComplex:
-        return self._suggestion
+    def world_tree(self) -> WorldTree | WorldTreeComplex:
+        return self._world_tree
 
     @property
     def pstats(self) -> PruneStatsCollection:
@@ -470,9 +470,9 @@ class Pruning:
 
         fold_segment = self.prune_funcs.load(self.dyp.fold, self.scheme.ref_idx)
 
-        # Initialize the suggestions with the first segment
+        # Initialize the world tree with the first segment
         coord_init = self.scheme.get_coord(0)
-        self._suggestion = self.prune_funcs.suggest(fold_segment, coord_init)
+        self._world_tree = self.prune_funcs.seed(fold_segment, coord_init)
         # Records to track the numerical stability of the algorithm
         self._backtrack_arr = np.zeros(
             (self.max_sugg, self.dyp.cfg.prune_poly_order + 2),
@@ -493,12 +493,12 @@ class Pruning:
             level=self.prune_level,
             seg_idx=self.scheme.get_segment_idx(self.prune_level),
             threshold=0,
-            score_min=self.suggestion.score_min,
-            score_max=self.suggestion.score_max,
-            n_branches=self.suggestion.size,
-            n_leaves=self.suggestion.size,
-            n_leaves_phy=self.suggestion.size,
-            n_leaves_surv=self.suggestion.size,
+            score_min=self.world_tree.score_min,
+            score_max=self.world_tree.score_max,
+            n_branches=self.world_tree.size,
+            n_leaves=self.world_tree.size,
+            n_leaves_phy=self.world_tree.size,
+            n_leaves_surv=self.world_tree.size,
         )
         with log_file.open("a") as f:
             f.write(pstats_cur.get_summary())
@@ -547,19 +547,24 @@ class Pruning:
             shared_progress=shared_progress,
             task_id=task_id,
             total=self.dyp.nsegments - 1,
-            get_score=lambda: self.suggestion.score_max,
-            get_leaves=lambda: self.suggestion.size_lb,
+            get_score=lambda: self.world_tree.score_max,
+            get_leaves=lambda: self.world_tree.size_lb,
         ):
             self.execute_iter(log_file)
-        # Transform the suggestion params to middle of the data
+        # Transform the world tree params to middle of the data
         coord_init = self.scheme.get_coord(0)
         coord_mid = self.scheme.get_coord(self.prune_level)
+        leaves_report = self.prune_funcs.report(
+            self.world_tree.leaves,
+            coord_mid,
+            coord_init,
+        )
         with PruneResultWriter(result_file, mode="a") as writer:
             writer.write_run_results(
                 run_name,
                 self.scheme.data,
-                self.suggestion.get_transformed(coord_mid, coord_init),
-                self.suggestion.scores,
+                leaves_report,
+                self.world_tree.scores,
                 self.pstats,
             )
         with log_file.open("a") as f:
@@ -586,8 +591,8 @@ class Pruning:
             coord_prev = self.scheme.get_current_coord_fixed(self.prune_level - 1)
         coord_next = self.scheme.get_coord(self.prune_level)
         coord_add = self.scheme.get_segment_coord(self.prune_level)
-        suggestion, stats_dict, timers = pruning_iteration_batched(
-            self.suggestion,
+        world_tree, stats_dict, timers = pruning_iteration_batched(
+            self.world_tree,
             fold_segment,
             coord_prev,
             coord_next,
@@ -604,21 +609,21 @@ class Pruning:
             level=self.prune_level,
             seg_idx=seg_idx_cur,
             threshold=threshold,
-            n_branches=self.suggestion.valid_size,
-            n_leaves_surv=suggestion.valid_size,
+            n_branches=self.world_tree.valid_size,
+            n_leaves_surv=world_tree.valid_size,
             **stats_dict,
         )
         with log_file.open("a") as f:
             f.write(pstats_cur.get_summary())
         self._pstats.update_stats(pstats_cur, timers)
-        if suggestion.size == 0:
+        if world_tree.size == 0:
             self._complete = True
-            self._suggestion = suggestion
+            self._world_tree = world_tree
             self.logger.info(f"Pruning run complete at level: {self.prune_level}")
             return
-        self._best_intermediate_arr[self.prune_level - 1] = suggestion.get_best()
-        self._backtrack_arr[: suggestion.size] = suggestion.backtracks.copy()
-        self._suggestion = suggestion
+        self._best_intermediate_arr[self.prune_level - 1] = world_tree.get_best()
+        self._backtrack_arr[: world_tree.size] = world_tree.backtracks.copy()
+        self._world_tree = world_tree
 
     def _setup_pruning(self, poly_basis: str, use_moving_grid: bool) -> None:
         if self.dyp.fold.ndim > 8:

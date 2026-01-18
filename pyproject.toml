@@ -138,7 +138,7 @@ include = [
     "pyloki/dynamic/*.py",
     "pyloki/detection/thresholding.py",
     "pyloki/utils/snail.py",
-    "pyloki/utils/suggestion.py",
+    "pyloki/utils/world_tree.py",
 ]
 
 [tool.ty.overrides.rules]

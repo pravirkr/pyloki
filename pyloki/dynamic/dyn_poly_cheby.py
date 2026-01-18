@@ -4,18 +4,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Self
 
+import numpy as np
 from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
 from pyloki.core import chebyshev, common
 from pyloki.detection import scoring
+from pyloki.utils.world_tree import WorldTree, WorldTreeComplex
 
 if TYPE_CHECKING:
-    import numpy as np
-
     from pyloki.config import PulsarSearchConfig
-    from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
 
 @structref.register
@@ -81,12 +80,12 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
         """
         return load_func(self, fold, seg_idx)
 
-    def suggest(
+    def seed(
         self,
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
-    ) -> SuggestionStruct:
-        """Generate an initial suggestion struct for the starting segment.
+    ) -> WorldTree:
+        """Generate an initial World Tree for the starting segment.
 
         Parameters
         ----------
@@ -97,10 +96,10 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
 
         Returns
         -------
-        common.SuggestionStruct
-            The initial suggestion struct for the segment.
+        WorldTree
+            The initial world tree for the segment.
         """
-        return suggest_func(self, fold_segment, coord_init)
+        return seed_func(self, fold_segment, coord_init)
 
     def branch(
         self,
@@ -270,6 +269,14 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
     def pack(self, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
 
+    def report(
+        self,
+        leaves: np.ndarray,
+        coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> np.ndarray:
+        return report_func(self, leaves, coord_mid, coord_init)
+
 
 class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
     def __new__(
@@ -297,12 +304,12 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
         return load_func(self, fold, seg_idx)
 
-    def suggest(
+    def seed(
         self,
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
-    ) -> SuggestionStructComplex:
-        return suggest_complex_func(self, fold_segment, coord_init)
+    ) -> WorldTreeComplex:
+        return seed_complex_func(self, fold_segment, coord_init)
 
     def branch(
         self,
@@ -371,6 +378,14 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
 
     def pack(self, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
+
+    def report(
+        self,
+        leaves: np.ndarray,
+        coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> np.ndarray:
+        return report_func(self, leaves, coord_mid, coord_init)
 
 
 fields_prune_chebyshev_dp_funcs = [
@@ -476,35 +491,43 @@ def load_func(
 
 
 @njit(cache=True, fastmath=True)
-def suggest_func(
+def seed_func(
     self: PrunePolyChebyshevDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
-) -> SuggestionStruct:
-    return chebyshev.poly_chebyshev_suggest(
-        fold_segment,
-        coord_init,
+) -> WorldTree:
+    leaves = chebyshev.poly_chebyshev_seed(
         self.param_arr,
         self.dparams,
         self.poly_order,
-        self.score_widths,
+        coord_init,
     )
+    n_leaves = len(leaves)
+    folds = fold_segment.reshape((n_leaves, *fold_segment.shape[-2:]))
+    scores = np.zeros(n_leaves, dtype=np.float32)
+    scores = self.score(folds)
+    backtracks = np.zeros((n_leaves, self.poly_order + 2), dtype=np.int32)
+    return WorldTree(leaves, folds, scores, backtracks)
 
 
 @njit(cache=True, fastmath=True)
-def suggest_complex_func(
+def seed_complex_func(
     self: PrunePolyChebyshevComplexDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
-) -> SuggestionStructComplex:
-    return chebyshev.poly_chebyshev_suggest_complex(
-        fold_segment,
-        coord_init,
+) -> WorldTreeComplex:
+    leaves = chebyshev.poly_chebyshev_seed(
         self.param_arr,
         self.dparams,
         self.poly_order,
-        self.score_widths,
+        coord_init,
     )
+    n_leaves = len(leaves)
+    folds = fold_segment.reshape((n_leaves, *fold_segment.shape[-2:]))
+    scores = np.zeros(n_leaves, dtype=np.float32)
+    scores = self.score(folds)
+    backtracks = np.zeros((n_leaves, self.poly_order + 2), dtype=np.int32)
+    return WorldTreeComplex(leaves, folds, scores, backtracks)
 
 
 @njit(cache=True, fastmath=True)
@@ -649,6 +672,16 @@ def pack_func(self: PrunePolyChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
     return common.pack(data)
 
 
+@njit(cache=True, fastmath=True)
+def report_func(
+    self: PrunePolyChebyshevDPFuncts,
+    leaves: np.ndarray,
+    coord_mid: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> np.ndarray:
+    return chebyshev.poly_chebyshev_report_batch(leaves, coord_mid)
+
+
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "load")
 def ol_load_func(
     self: PrunePolyChebyshevDPFuncts,
@@ -665,8 +698,8 @@ def ol_load_func(
     return impl
 
 
-@overload_method(PrunePolyChebyshevDPFunctsTemplate, "suggest")
-def ol_suggest_func(
+@overload_method(PrunePolyChebyshevDPFunctsTemplate, "seed")
+def ol_seed_func(
     self: PrunePolyChebyshevDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
@@ -675,8 +708,8 @@ def ol_suggest_func(
         self: PrunePolyChebyshevDPFuncts,
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
-    ) -> SuggestionStruct:
-        return suggest_func(self, fold_segment, coord_init)
+    ) -> WorldTree:
+        return seed_func(self, fold_segment, coord_init)
 
     return impl
 
@@ -827,6 +860,24 @@ def ol_pack_func(
     return impl
 
 
+@overload_method(PrunePolyChebyshevDPFunctsTemplate, "report")
+def ol_report_func(
+    self: PrunePolyChebyshevDPFuncts,
+    leaves: np.ndarray,
+    coord_mid: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyChebyshevDPFuncts,
+        leaves: np.ndarray,
+        coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> np.ndarray:
+        return report_func(self, leaves, coord_mid, coord_init)
+
+    return impl
+
+
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "load")
 def ol_load_complex_func(
     self: PrunePolyChebyshevComplexDPFuncts,
@@ -843,8 +894,8 @@ def ol_load_complex_func(
     return impl
 
 
-@overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "suggest")
-def ol_suggest_complex_func(
+@overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "seed")
+def ol_seed_complex_func(
     self: PrunePolyChebyshevComplexDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
@@ -853,8 +904,8 @@ def ol_suggest_complex_func(
         self: PrunePolyChebyshevComplexDPFuncts,
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
-    ) -> SuggestionStructComplex:
-        return suggest_complex_func(self, fold_segment, coord_init)
+    ) -> WorldTreeComplex:
+        return seed_complex_func(self, fold_segment, coord_init)
 
     return impl
 
@@ -1010,5 +1061,23 @@ def ol_pack_complex_func(
 ) -> types.FunctionType:
     def impl(self: PrunePolyChebyshevComplexDPFuncts, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
+
+    return impl
+
+
+@overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "report")
+def ol_report_complex_func(
+    self: PrunePolyChebyshevComplexDPFuncts,
+    leaves: np.ndarray,
+    coord_mid: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyChebyshevComplexDPFuncts,
+        leaves: np.ndarray,
+        coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> np.ndarray:
+        return report_func(self, leaves, coord_mid, coord_init)
 
     return impl

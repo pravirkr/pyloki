@@ -646,6 +646,47 @@ def get_circ_chebyshev_mask(
 
 
 @njit(cache=True, fastmath=True)
+def circ_taylor_fixed_report_batch(
+    leaves: np.ndarray,
+    coord_mid: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> np.ndarray:
+    """Specialized version of shift_taylor_params_circular_d_f_batch for report."""
+    delta_t = coord_mid[0] - coord_init[0]
+    param_vec_batch = leaves[:, :-2]
+    _, nparams, _ = param_vec_batch.shape
+    if nparams != 4:
+        msg = "4 parameters are needed for circular orbit propagation."
+        raise ValueError(msg)
+    s_i = param_vec_batch[:, 0, 0]
+    j_i = param_vec_batch[:, 1, 0]
+    a_i = param_vec_batch[:, 2, 0]
+    f_i = param_vec_batch[:, 3, 0]
+
+    omega_orb_sq = -s_i / a_i
+    omega_orb = np.sqrt(omega_orb_sq)
+    # Evolve the phase to the new time t_j = t_i + delta_t
+    omega_dt = omega_orb * delta_t
+    cos_odt = np.cos(omega_dt)
+    sin_odt = np.sin(omega_dt)
+    # Pin-down {s, j, a}
+    a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
+    j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
+    s_j = -omega_orb_sq * a_j
+    # Integrate to get {v, d}
+    v_circ_i = -j_i / omega_orb_sq
+    v_circ_j = -j_j / omega_orb_sq
+    delta_v = v_circ_j - v_circ_i
+    s_factor = 1 - delta_v / C_VAL
+    out = param_vec_batch.copy()
+    out[:, 0, 0] = s_j / s_factor[:, None]
+    out[:, 1, 0] = j_j / s_factor[:, None]
+    out[:, 2, 0] = a_j / s_factor[:, None]
+    out[:, 3, 0] = f_i * s_factor
+    return out
+
+
+@njit(cache=True, fastmath=True)
 def cir_physical_branch_batch(
     param_vec_batch: np.ndarray,
     coord_cur: tuple[float, float],

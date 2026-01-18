@@ -4,18 +4,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Self
 
+import numpy as np
 from numba import njit, typed, types
 from numba.experimental import structref
 from numba.extending import overload_method
 
 from pyloki.core import common, taylor
 from pyloki.detection import scoring
+from pyloki.utils.world_tree import WorldTree, WorldTreeComplex
 
 if TYPE_CHECKING:
-    import numpy as np
-
     from pyloki.config import PulsarSearchConfig
-    from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
 
 @structref.register
@@ -56,12 +55,12 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
         return load_func(self, fold, seg_idx)
 
-    def suggest(
+    def seed(
         self,
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
-    ) -> SuggestionStruct:
-        return suggest_func(self, fold_segment, coord_init)
+    ) -> WorldTree:
+        return seed_func(self, fold_segment, coord_init)
 
     def branch(
         self,
@@ -130,6 +129,14 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
     def pack(self, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
 
+    def report(
+        self,
+        leaves: np.ndarray,
+        coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> np.ndarray:
+        return report_func(self, leaves, coord_mid, coord_init)
+
 
 class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
     def __new__(
@@ -159,12 +166,12 @@ class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
         return load_func(self, fold, seg_idx)
 
-    def suggest(
+    def seed(
         self,
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
-    ) -> SuggestionStructComplex:
-        return suggest_complex_func(self, fold_segment, coord_init)
+    ) -> WorldTreeComplex:
+        return seed_complex_func(self, fold_segment, coord_init)
 
     def branch(
         self,
@@ -232,6 +239,14 @@ class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
 
     def pack(self, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
+
+    def report(
+        self,
+        leaves: np.ndarray,
+        coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> np.ndarray:
+        return report_func(self, leaves, coord_mid, coord_init)
 
 
 fields_prune_poly_taylor_dp_funcs = [
@@ -337,35 +352,44 @@ def load_func(
 
 
 @njit(cache=True, fastmath=True)
-def suggest_func(
+def seed_func(
     self: PrunePolyTaylorDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
-) -> SuggestionStruct:
-    return taylor.poly_taylor_suggest(
-        fold_segment,
-        coord_init,
+) -> WorldTree:
+    """Generate a Taylor World Tree from a fold segment."""
+    leaves = taylor.poly_taylor_seed(
         self.param_arr,
         self.dparams,
         self.poly_order,
-        self.score_widths,
+        coord_init,
     )
+    n_leaves = len(leaves)
+    folds = fold_segment.reshape((n_leaves, *fold_segment.shape[-2:]))
+    scores = np.zeros(n_leaves, dtype=np.float32)
+    scores = self.score(folds)
+    backtracks = np.zeros((n_leaves, self.poly_order + 2), dtype=np.int32)
+    return WorldTree(leaves, folds, scores, backtracks)
 
 
 @njit(cache=True, fastmath=True)
-def suggest_complex_func(
+def seed_complex_func(
     self: PrunePolyTaylorComplexDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
-) -> SuggestionStructComplex:
-    return taylor.poly_taylor_suggest_complex(
-        fold_segment,
-        coord_init,
+) -> WorldTreeComplex:
+    leaves = taylor.poly_taylor_seed(
         self.param_arr,
         self.dparams,
         self.poly_order,
-        self.score_widths,
+        coord_init,
     )
+    n_leaves = len(leaves)
+    folds = fold_segment.reshape((n_leaves, *fold_segment.shape[-2:]))
+    scores = np.zeros(n_leaves, dtype=np.float32)
+    scores = self.score(folds)
+    backtracks = np.zeros((n_leaves, self.poly_order + 2), dtype=np.int32)
+    return WorldTreeComplex(leaves, folds, scores, backtracks)
 
 
 @njit(cache=True, fastmath=True)
@@ -506,6 +530,18 @@ def pack_func(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> np.ndarray:
     return common.pack(data)
 
 
+@njit(cache=True, fastmath=True)
+def report_func(
+    self: PrunePolyTaylorDPFuncts,
+    leaves: np.ndarray,
+    coord_mid: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> np.ndarray:
+    if self.use_moving_grid:
+        return taylor.poly_taylor_report_batch(leaves)
+    return taylor.poly_taylor_fixed_report_batch(leaves, coord_mid, coord_init)
+
+
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "load")
 def ol_load_func(
     self: PrunePolyTaylorDPFuncts,
@@ -522,8 +558,8 @@ def ol_load_func(
     return impl
 
 
-@overload_method(PrunePolyTaylorDPFunctsTemplate, "suggest")
-def ol_suggest_func(
+@overload_method(PrunePolyTaylorDPFunctsTemplate, "seed")
+def ol_seed_func(
     self: PrunePolyTaylorDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
@@ -532,8 +568,8 @@ def ol_suggest_func(
         self: PrunePolyTaylorDPFuncts,
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
-    ) -> SuggestionStruct:
-        return suggest_func(self, fold_segment, coord_init)
+    ) -> WorldTree:
+        return seed_func(self, fold_segment, coord_init)
 
     return impl
 
@@ -684,6 +720,24 @@ def ol_pack_func(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> types.Funct
     return impl
 
 
+@overload_method(PrunePolyTaylorDPFunctsTemplate, "report")
+def ol_report_func(
+    self: PrunePolyTaylorDPFuncts,
+    leaves: np.ndarray,
+    coord_mid: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorDPFuncts,
+        leaves: np.ndarray,
+        coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> np.ndarray:
+        return report_func(self, leaves, coord_mid, coord_init)
+
+    return impl
+
+
 @overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "load")
 def ol_load_complex_func(
     self: PrunePolyTaylorComplexDPFuncts,
@@ -700,8 +754,8 @@ def ol_load_complex_func(
     return impl
 
 
-@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "suggest")
-def ol_suggest_complex_func(
+@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "seed")
+def ol_seed_complex_func(
     self: PrunePolyTaylorComplexDPFuncts,
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
@@ -710,8 +764,8 @@ def ol_suggest_complex_func(
         self: PrunePolyTaylorComplexDPFuncts,
         fold_segment: np.ndarray,
         coord_init: tuple[float, float],
-    ) -> SuggestionStructComplex:
-        return suggest_complex_func(self, fold_segment, coord_init)
+    ) -> WorldTreeComplex:
+        return seed_complex_func(self, fold_segment, coord_init)
 
     return impl
 
@@ -867,5 +921,23 @@ def ol_pack_complex_func(
 ) -> types.FunctionType:
     def impl(self: PrunePolyTaylorComplexDPFuncts, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
+
+    return impl
+
+
+@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "report")
+def ol_report_complex_func(
+    self: PrunePolyTaylorComplexDPFuncts,
+    leaves: np.ndarray,
+    coord_mid: tuple[float, float],
+    coord_init: tuple[float, float],
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorComplexDPFuncts,
+        leaves: np.ndarray,
+        coord_mid: tuple[float, float],
+        coord_init: tuple[float, float],
+    ) -> np.ndarray:
+        return report_func(self, leaves, coord_mid, coord_init)
 
     return impl

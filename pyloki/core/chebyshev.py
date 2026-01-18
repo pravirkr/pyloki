@@ -4,21 +4,19 @@ import numpy as np
 from numba import njit, types
 
 from pyloki.core.common import get_leaves
-from pyloki.detection.scoring import snr_score_func, snr_score_func_complex
 from pyloki.utils import np_utils, psr_utils, transforms
 from pyloki.utils.misc import C_VAL
 from pyloki.utils.snail import MiddleOutScheme
-from pyloki.utils.suggestion import SuggestionStruct, SuggestionStructComplex
 
 
 @njit(cache=True, fastmath=True)
-def poly_chebyshev_leaves(
+def poly_chebyshev_seed(
     param_arr: types.ListType,
     dparams: np.ndarray,
     poly_order: int,
     coord_init: tuple[float, float],
 ) -> np.ndarray:
-    """Generate the leaf parameter sets for Chebyshev polynomial search.
+    """Generate the seed leaves for Chebyshev polynomial search.
 
     Parameters
     ----------
@@ -37,11 +35,11 @@ def poly_chebyshev_leaves(
     Returns
     -------
     np.ndarray
-        The leaf parameter sets. Shape is (n_param_sets, poly_order + 2, 2).
+        The seed leaves. Shape is (n_leaves, poly_order + 2, 2).
 
     Notes
     -----
-    Conventions for each leaf parameter set:
+    Conventions for each seed leaf:
     leaf[:-1, 0] -> Chebyshev polynomial coefficients,
                     order is [alpha_poly_order, ..., alpha_1, alpha_0]
     leaf[:-1, 1] -> Grid size (error) on each coefficient,
@@ -67,94 +65,6 @@ def poly_chebyshev_leaves(
     leaves[:, -1, 0] = f0_batch
     leaves[:, -1, 1] = 0  # Polynomial basis
     return leaves
-
-
-@njit(cache=True, fastmath=True)
-def poly_chebyshev_suggest(
-    fold_segment: np.ndarray,
-    coord_init: tuple[float, float],
-    param_arr: types.ListType,
-    dparams: np.ndarray,
-    poly_order: int,
-    score_widths: np.ndarray,
-) -> SuggestionStruct:
-    """Generate a Chebyshev suggestion struct from a fold segment.
-
-    Parameters
-    ----------
-    fold_segment : np.ndarray
-        The fold segment to generate suggestions for. The shape of the array is
-        (n_accel, n_freq, 2, n_bins). Parameter dimensions are first two.
-    coord_init : tuple[float, float]
-        The coordinate of the starting segment (level 0).
-    param_arr : types.ListType
-        Parameter values for each dimension (accel, freq).
-    dparams : np.ndarray
-        Parameter step (grid) sizes for each dimension in a 1D array.
-    poly_order : int
-        The order of the Chebyshev polynomial.
-    score_widths : np.ndarray
-        Boxcar widths for the score computation.
-
-    Returns
-    -------
-    SuggestionStruct
-        Suggestion struct
-        - param_sets: The parameter sets (n_param_sets, poly_order + 2, 2).
-        - data: The folded data for each leaf.
-        - scores: The scores for each leaf.
-        - backtracks: The backtracks for each leaf.
-    """
-    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
-    param_sets = poly_chebyshev_leaves(param_arr, dparams, poly_order, coord_init)
-    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
-    scores = np.zeros(n_param_sets, dtype=np.float32)
-    for iparam in range(n_param_sets):
-        scores[iparam] = snr_score_func(data[iparam], score_widths)
-    backtracks = np.zeros((n_param_sets, poly_order + 2), dtype=np.int32)
-    return SuggestionStruct(param_sets, data, scores, backtracks, "chebyshev")
-
-
-@njit(cache=True, fastmath=True)
-def poly_chebyshev_suggest_complex(
-    fold_segment: np.ndarray,
-    coord_init: tuple[float, float],
-    param_arr: types.ListType,
-    dparams: np.ndarray,
-    poly_order: int,
-    score_widths: np.ndarray,
-) -> SuggestionStructComplex:
-    """Generate a Chebyshev suggestion struct from a fold segment in Fourier domain.
-
-    Parameters
-    ----------
-    fold_segment : np.ndarray
-        The fold segment to generate suggestions for. The shape of the array is
-        (n_accel, n_freq, 2, n_bins_f). Parameter dimensions are first two.
-    coord_init : tuple[float, float]
-        The coordinate of the starting segment (level 0).
-    param_arr : types.ListType
-        Parameter values for each dimension (accel, freq).
-    dparams : np.ndarray
-        Parameter step (grid) sizes for each dimension in a 1D array.
-    poly_order : int
-        The order of the Chebyshev polynomial.
-    score_widths : np.ndarray
-        Boxcar widths for the score computation.
-
-    Returns
-    -------
-    SuggestionStructComplex
-        Suggestion struct in Fourier domain
-    """
-    n_param_sets = np.prod(np.array([len(arr) for arr in param_arr]))
-    param_sets = poly_chebyshev_leaves(param_arr, dparams, poly_order, coord_init)
-    data = fold_segment.reshape((n_param_sets, *fold_segment.shape[-2:]))
-    scores = np.zeros(n_param_sets, dtype=np.float32)
-    for iparam in range(n_param_sets):
-        scores[iparam] = snr_score_func_complex(data[iparam], score_widths)
-    backtracks = np.zeros((n_param_sets, poly_order + 2), dtype=np.int32)
-    return SuggestionStructComplex(param_sets, data, scores, backtracks, "chebyshev")
 
 
 @njit(cache=True, fastmath=True)
@@ -428,6 +338,33 @@ def poly_chebyshev_transform_batch(
 
 
 @njit(cache=True, fastmath=True)
+def poly_chebyshev_report_batch(
+    leaves: np.ndarray,
+    coord_mid: tuple[float, float],
+) -> np.ndarray:
+    cheby_coeffs_batch = leaves[:, :-1, :]
+    f0_batch = leaves[:, -1, 0]
+    _, scale = coord_mid
+    param_sets_batch_d = transforms.cheby_to_taylor_full(cheby_coeffs_batch, scale)
+    param_sets_batch = param_sets_batch_d[:, :-1]
+    v_final = param_sets_batch[:, -1, 0]
+    dv_final = param_sets_batch[:, -1, 1]
+    s_factor = 1 - v_final / C_VAL
+    # Gauge transform + error propagation
+    param_sets_vals = param_sets_batch[:, :-1, 0]
+    param_sets_sigs = param_sets_batch[:, :-1, 1]
+    param_sets_batch[:, :-1, 0] = param_sets_vals / s_factor[:, None]
+    param_sets_batch[:, :-1, 1] = np.sqrt(
+        (param_sets_sigs / s_factor[:, None]) ** 2
+        + ((param_sets_vals / (C_VAL * s_factor[:, None] ** 2)) ** 2)
+        * (dv_final[:, None] ** 2),
+    )
+    param_sets_batch[:, -1, 0] = f0_batch * s_factor
+    param_sets_batch[:, -1, 1] = f0_batch * dv_final / C_VAL
+    return param_sets_batch
+
+
+@njit(cache=True, fastmath=True)
 def generate_bp_poly_chebyshev_approx(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
@@ -437,16 +374,16 @@ def generate_bp_poly_chebyshev_approx(
     nbins: int,
     eta: float,
     ref_seg: int,
-    isuggest: int = 0,
-    use_use_conservative_tile: bool = False,
+    itree: int = 0,
+    use_conservative_tile: bool = False,
 ) -> np.ndarray:
     """Generate the approximate branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
     branch_max = 256
     snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
     coord_init = snail_scheme.get_coord(0)
-    leaves_init = poly_chebyshev_leaves(param_arr, dparams_lim, poly_order, coord_init)
-    leaf = leaves_init[isuggest]
+    leaves_init = poly_chebyshev_seed(param_arr, dparams_lim, poly_order, coord_init)
+    leaf = leaves_init[itree]
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
     for prune_level in range(1, nsegments):
         coord_next = snail_scheme.get_coord(prune_level)
@@ -459,14 +396,14 @@ def generate_bp_poly_chebyshev_approx(
             poly_order,
             param_limits,
             branch_max,
-            use_use_conservative_tile,
+            use_conservative_tile,
         )
         branching_pattern[prune_level - 1] = len(leaves_arr)
         leaves_arr_trans = poly_chebyshev_transform_batch(
             leaves_arr,
             coord_next,
             coord_cur,
-            use_use_conservative_tile,
+            use_conservative_tile,
         )
         leaf = leaves_arr_trans[0]
     return np.array(branching_pattern)
@@ -554,7 +491,7 @@ def generate_bp_poly_chebyshev(
         needs_branching = shift_bins_batch >= (eta - eps)
         too_large_step = dcheb_new_batch > (param_ranges + eps)
 
-        for i in range(n_freqs): # skip d0
+        for i in range(n_freqs):  # skip d0
             for j in range(poly_order):
                 if not needs_branching[i, j] or too_large_step[i, j]:
                     dcheb_cur_next[i, j] = dcheb_cur_batch[i, j]
