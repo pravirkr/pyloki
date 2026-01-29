@@ -40,7 +40,12 @@ class FFATaylorDPFuncts(structref.StructRefProxy):
 
     def __new__(cls, cfg: PulsarSearchConfig) -> Self:
         """Create a new instance of FFATaylorDPFuncts."""
-        return ffa_taylor_dp_functs_init(cfg.tsamp, cfg.nbins, cfg.bseg_brute)
+        return ffa_taylor_dp_functs_init(
+            cfg.param_limits,
+            cfg.tsamp,
+            cfg.nbins,
+            cfg.bseg_brute,
+        )
 
     def init(
         self,
@@ -55,19 +60,11 @@ class FFATaylorDPFuncts(structref.StructRefProxy):
         self,
         pset_cur: np.ndarray,
         param_grid_count_prev: np.ndarray,
-        param_limits: np.ndarray,
         ffa_level: int,
         latter: int,
     ) -> tuple[np.ndarray, float]:
         """Resolve the current parameters among the previous level grid points."""
-        return resolve_func(
-            self,
-            pset_cur,
-            param_grid_count_prev,
-            param_limits,
-            ffa_level,
-            latter,
-        )
+        return resolve_func(self, pset_cur, param_grid_count_prev, ffa_level, latter)
 
     def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:
         """Bit packing rule for the FFA search."""
@@ -95,7 +92,12 @@ class FFATaylorComplexDPFuncts(structref.StructRefProxy):
 
     def __new__(cls, cfg: PulsarSearchConfig) -> Self:
         """Create a new instance of FFATaylorComplexDPFuncts."""
-        return ffa_taylor_complex_dp_functs_init(cfg.tsamp, cfg.nbins, cfg.bseg_brute)
+        return ffa_taylor_complex_dp_functs_init(
+            cfg.param_limits,
+            cfg.tsamp,
+            cfg.nbins,
+            cfg.bseg_brute,
+        )
 
     def init(
         self,
@@ -110,19 +112,11 @@ class FFATaylorComplexDPFuncts(structref.StructRefProxy):
         self,
         pset_cur: np.ndarray,
         param_grid_count_prev: np.ndarray,
-        param_limits: np.ndarray,
         ffa_level: int,
         latter: int,
     ) -> tuple[np.ndarray, float]:
         """Resolve the current parameters among the previous level grid points."""
-        return resolve_func(
-            self,
-            pset_cur,
-            param_grid_count_prev,
-            param_limits,
-            ffa_level,
-            latter,
-        )
+        return resolve_func(self, pset_cur, param_grid_count_prev, ffa_level, latter)
 
     def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:
         """Bit packing rule for the FFA search."""
@@ -149,6 +143,7 @@ class FFATaylorComplexDPFuncts(structref.StructRefProxy):
 
 
 fields_ffa_taylor_dp_funcs = [
+    ("param_limits", types.f8[:, ::1]),
     ("tsamp", types.float64),
     ("nbins", types.int64),
     ("bseg_brute", types.int64),
@@ -166,11 +161,13 @@ FFATaylorComplexDPFunctsType = FFATaylorComplexDPFunctsTemplate(
 
 @njit(cache=True, fastmath=True)
 def ffa_taylor_dp_functs_init(
+    param_limits: np.ndarray,
     tsamp: float,
     nbins: int,
     bseg_brute: int,
 ) -> FFATaylorDPFuncts:
     self = structref.new(FFATaylorDPFunctsType)
+    self.param_limits = param_limits
     self.tsamp = tsamp
     self.nbins = nbins
     self.bseg_brute = bseg_brute
@@ -179,11 +176,13 @@ def ffa_taylor_dp_functs_init(
 
 @njit(cache=True, fastmath=True)
 def ffa_taylor_complex_dp_functs_init(
+    param_limits: np.ndarray,
     tsamp: float,
     nbins: int,
     bseg_brute: int,
 ) -> FFATaylorComplexDPFuncts:
     self = structref.new(FFATaylorComplexDPFunctsType)
+    self.param_limits = param_limits
     self.tsamp = tsamp
     self.nbins = nbins
     self.bseg_brute = bseg_brute
@@ -229,7 +228,6 @@ def resolve_func(
     self: FFATaylorDPFuncts,
     pset_cur: np.ndarray,
     param_grid_count_prev: np.ndarray,
-    param_limits: np.ndarray,
     ffa_level: int,
     latter: int,
 ) -> tuple[np.ndarray, float]:
@@ -237,7 +235,7 @@ def resolve_func(
     return fold.ffa_taylor_resolve(
         pset_cur,
         param_grid_count_prev,
-        param_limits,
+        self.param_limits,
         ffa_level,
         latter,
         tseg_brute,
@@ -294,18 +292,18 @@ def ol_init_func(
 def ol_resolve(
     self: FFATaylorDPFuncts,
     pset_cur: np.ndarray,
-    parr_prev: np.ndarray,
+    param_grid_count_prev: np.ndarray,
     ffa_level: int,
     latter: int,
 ) -> types.FunctionType:
     def impl(
         self: FFATaylorDPFuncts,
         pset_cur: np.ndarray,
-        parr_prev: np.ndarray,
+        param_grid_count_prev: np.ndarray,
         ffa_level: int,
         latter: int,
     ) -> tuple[np.ndarray, int]:
-        return resolve_func(self, pset_cur, parr_prev, ffa_level, latter)
+        return resolve_func(self, pset_cur, param_grid_count_prev, ffa_level, latter)
 
     return impl
 
@@ -374,18 +372,18 @@ def ol_init_complex_func(
 def ol_resolve_complex(
     self: FFATaylorComplexDPFuncts,
     pset_cur: np.ndarray,
-    parr_prev: np.ndarray,
+    param_grid_count_prev: np.ndarray,
     ffa_level: int,
     latter: int,
 ) -> types.FunctionType:
     def impl(
         self: FFATaylorComplexDPFuncts,
         pset_cur: np.ndarray,
-        parr_prev: np.ndarray,
+        param_grid_count_prev: np.ndarray,
         ffa_level: int,
         latter: int,
     ) -> tuple[np.ndarray, float]:
-        return resolve_func(self, pset_cur, parr_prev, ffa_level, latter)
+        return resolve_func(self, pset_cur, param_grid_count_prev, ffa_level, latter)
 
     return impl
 
@@ -437,7 +435,6 @@ def ol_shift_add_complex_func(
 def unify_fold(
     fold_in: np.ndarray,
     param_grid_count_prev: np.ndarray,
-    param_limits: np.ndarray,
     fold_out: np.ndarray,
     param_cart_cur: np.ndarray,
     ffa_level: int,
@@ -452,8 +449,6 @@ def unify_fold(
         Input fold structure from the previous level.
     param_grid_count_prev : np.ndarray
         Number of points in the parameter grid for the previous level.
-    param_limits : np.ndarray
-        Parameter limits (min, max) for the previous level.
     fold_out : np.ndarray
         Output fold structure for the current level.
     param_cart_cur : np.ndarray
@@ -472,14 +467,12 @@ def unify_fold(
         p_idx_tail, shift_tail = dp_funcs.resolve(
             p_set,
             param_grid_count_prev,
-            param_limits,
             ffa_level,
             0,
         )
         p_idx_head, shift_head = dp_funcs.resolve(
             p_set,
             param_grid_count_prev,
-            param_limits,
             ffa_level,
             1,
         )

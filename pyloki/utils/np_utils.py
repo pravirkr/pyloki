@@ -388,3 +388,17 @@ def lstsq_weighted(
     phi_t_estimated = design_matrix @ x_hat
 
     return x_hat, cov_x_hat, phi_t_estimated
+
+
+def determine_ref_segs(nsegments: int, n_runs: int) -> list[int]:
+    if not (1 <= n_runs <= nsegments):
+        msg = f"n_runs must be between 1 and {nsegments}"
+        raise ValueError(msg)
+
+    if n_runs == 1:
+        return [0]
+
+    max_idx = nsegments - 1
+    denom = n_runs - 1
+
+    return [(i * max_idx) // denom for i in range(n_runs)]

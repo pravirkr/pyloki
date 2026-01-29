@@ -4,7 +4,7 @@ import numpy as np
 from numba import njit, types
 
 from pyloki.utils import np_utils, psr_utils, transforms
-from pyloki.utils.misc import C_VAL
+from pyloki.utils.misc import C_VAL, FLOAT_EPSILON
 from pyloki.utils.snail import MiddleOutScheme
 
 
@@ -18,15 +18,13 @@ def get_circ_mask(
     accel: np.ndarray,
     minimum_snap_cells: float = 5,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    eps = 1e-12
-
     # Delays circular classification until snap is well-measured.
-    is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + eps))
-    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + eps))
+    is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
+    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + FLOAT_EPSILON))
 
     # Snap-Dominated Region (Standard)
     # We check if implied Omega is physical (-d4/d2 > 0)
-    is_physical_snap = ((-snap * accel) > 0) & (np.abs(accel) > eps)
+    is_physical_snap = ((-snap * accel) > 0) & (np.abs(accel) > FLOAT_EPSILON)
     mask_circular_snap = is_sig_snap & is_physical_snap
 
     # Crackle-Dominated Region (The Hole)
@@ -35,7 +33,7 @@ def get_circ_mask(
     in_the_hole = (~is_sig_snap) & is_sig_crackle
 
     # Check if implied Omega is physical (-d5/d3 > 0)
-    is_physical_crackle = ((-crackle * jerk) > 0) & (np.abs(jerk) > eps)
+    is_physical_crackle = ((-crackle * jerk) > 0) & (np.abs(jerk) > FLOAT_EPSILON)
     mask_circular_crackle = in_the_hole & is_physical_crackle
 
     # Taylor Region (Noise / Unresolved)
@@ -61,8 +59,6 @@ def circ_validate_batch(
     x_mass_const: float,
     minimum_snap_cells: float = 5,
 ) -> np.ndarray:
-    eps = 1e-12
-
     n_leaves = len(crackle)
     mask_keep = np.zeros(n_leaves, dtype=np.bool_)
     omega_max_sq = (2 * np.pi / p_orb_min) ** 2
@@ -70,8 +66,8 @@ def circ_validate_batch(
     # Classification (for gatekeeping)
     # |val / step| > thresh  <=>  |val| > thresh * |step|
     # dsnap and dcrackle are step sizes (always positive)
-    is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + eps))
-    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + eps))
+    is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
+    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + FLOAT_EPSILON))
 
     # 1. Noise (Unresolved Taylor cells) - Always keep
     is_noise = (~is_sig_snap) & (~is_sig_crackle)
@@ -83,15 +79,15 @@ def circ_validate_batch(
         s_snap = snap[idx_snap]
         s_accel = accel[idx_snap]
         s_jerk = jerk[idx_snap]
-        s_omega_sq = -s_snap / (s_accel + eps)
+        s_omega_sq = -s_snap / (s_accel + FLOAT_EPSILON)
         # Check: Physical Sign (-d4/d2 > 0)
-        valid_sign = (s_omega_sq > 0) & (np.abs(s_accel) > eps)
+        valid_sign = (s_omega_sq > 0) & (np.abs(s_accel) > FLOAT_EPSILON)
         # Check: Max Orbital Frequency
         valid_omega = s_omega_sq < omega_max_sq
 
         # |d2| < x * omega^(4/3)
         s_omega_sq_safe = np.abs(s_omega_sq)
-        limit_accel = x_mass_const * (s_omega_sq_safe ** (2 / 3) + eps)
+        limit_accel = x_mass_const * (s_omega_sq_safe ** (2 / 3) + FLOAT_EPSILON)
         valid_accel = np.abs(s_accel) < limit_accel
 
         # |d3| < |d2| * omega
@@ -108,13 +104,13 @@ def circ_validate_batch(
         h_crackle = crackle[idx_hole]
         h_jerk = jerk[idx_hole]
         h_accel = accel[idx_hole]
-        h_omega_sq = -h_crackle / (h_jerk + eps)
-        valid_sign = (h_omega_sq > 0) & (np.abs(h_jerk) > eps)
+        h_omega_sq = -h_crackle / (h_jerk + FLOAT_EPSILON)
+        valid_sign = (h_omega_sq > 0) & (np.abs(h_jerk) > FLOAT_EPSILON)
         valid_omega = h_omega_sq < omega_max_sq
 
         # |d2| < x * omega^(4/3)
         h_omega_sq_safe = np.abs(h_omega_sq)
-        limit_accel = x_mass_const * (h_omega_sq_safe ** (2 / 3) + eps)
+        limit_accel = x_mass_const * (h_omega_sq_safe ** (2 / 3) + FLOAT_EPSILON)
         valid_accel = np.abs(h_accel) < limit_accel
 
         # |d3| < |d2| * omega
@@ -174,17 +170,16 @@ def get_circ_taylor_mask_branch(
     minimum_snap_cells: float = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Get the indices of the leaves that need to be expanded (crackle)."""
-    eps = 1e-12
     crackle = leaves_params_batch[:, 0]
     dcrackle = leaves_dparams_batch[:, 0]
     snap = leaves_params_batch[:, 1]
     dsnap = leaves_dparams_batch[:, 1]
     jerk = leaves_params_batch[:, 2]
 
-    is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + eps))
-    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + eps))
+    is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
+    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + FLOAT_EPSILON))
     in_the_hole = (~is_sig_snap) & is_sig_crackle
-    is_physical_crackle = ((-crackle * jerk) > 0) & (np.abs(jerk) > eps)
+    is_physical_crackle = ((-crackle * jerk) > 0) & (np.abs(jerk) > FLOAT_EPSILON)
     mask_circular_crackle = in_the_hole & is_physical_crackle
 
     # Optimization: Filter out 'crackle' candidates that don't actually need branching
@@ -260,8 +255,7 @@ def circ_taylor_branch_batch(
             branched_counts[i, j] = count
 
     # --- Vectorized Selection (mask non-crackle branched params)---
-    eps = 1e-6  # Small tolerance for floating-point comparison
-    needs_branching = shift_bins_batch >= (eta - eps)
+    needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
     for i in range(n_batch):
         for j in range(poly_order):
             if not needs_branching[i, j] or j == 0:
@@ -872,7 +866,6 @@ def generate_bp_circ_taylor(
 
     # Track when first snap branching occurs for each frequency
     snap_first_branched = np.zeros(n_freqs, dtype=np.bool_)
-    eps = 1e-12
     for prune_level in range(1, nsegments):
         coord_next = snail_scheme.get_coord(prune_level)
         coord_cur = snail_scheme.get_current_coord(prune_level)
@@ -899,16 +892,17 @@ def generate_bp_circ_taylor(
         n_branches = np.ones(n_freqs, dtype=np.float64)
 
         # Vectorized branching decision
-        needs_branching = shift_bins_batch >= (eta - eps)
-        too_large_step = dparam_new_batch > (param_ranges + eps)
+        needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
+        too_large_step = dparam_new_batch > (param_ranges + FLOAT_EPSILON)
 
         for i in range(n_freqs):
             for j in range(1, poly_order):
                 if not needs_branching[i, j] or too_large_step[i, j]:
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
-                ratio = (dparam_cur_batch[i, j] + eps) / dparam_new_batch[i, j]
-                num_points = max(1, int(np.ceil(ratio - eps)))
+                numerator = dparam_cur_batch[i, j] + FLOAT_EPSILON
+                ratio = numerator / dparam_new_batch[i, j]
+                num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
                 if j == 1:
@@ -917,7 +911,9 @@ def generate_bp_circ_taylor(
         # Determine validation fraction
         snap_val = param_limits_d[:, 1, 1]
         dsnap = dparam_cur_next[:, 1]
-        snap_active_mask = np.abs(snap_val) > (minimum_snap_cells * (dsnap + eps))
+        snap_active_mask = np.abs(snap_val) > (
+            minimum_snap_cells * (dsnap + FLOAT_EPSILON)
+        )
         # Apply 0.5x if this is the first time snap becomes active
         just_active = snap_active_mask & (~snap_first_branched)
         # Correction factor array
@@ -997,7 +993,6 @@ def generate_bp_circ_taylor_fixed(
 
     # Track when first snap branching occurs for each frequency
     snap_first_branched = np.zeros(n_freqs, dtype=np.bool_)
-    eps = 1e-12
     for prune_level in range(1, nsegments):
         coord_cur_fixed = snail_scheme.get_current_coord_fixed(prune_level)
         _, t_obs_minus_t_ref = coord_cur_fixed
@@ -1022,16 +1017,17 @@ def generate_bp_circ_taylor_fixed(
         n_branch_snap = np.ones(n_freqs, dtype=np.float64)
         n_branches = np.ones(n_freqs, dtype=np.float64)
         # Vectorized branching decision
-        needs_branching = shift_bins_batch >= (eta - eps)
-        too_large_step = dparam_new_batch > (param_ranges + eps)
+        needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
+        too_large_step = dparam_new_batch > (param_ranges + FLOAT_EPSILON)
 
         for i in range(n_freqs):
             for j in range(1, poly_order):
                 if not needs_branching[i, j] or too_large_step[i, j]:
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
-                ratio = (dparam_cur_batch[i, j] + eps) / dparam_new_batch[i, j]
-                num_points = max(1, int(np.ceil(ratio - eps)))
+                numerator = dparam_cur_batch[i, j] + FLOAT_EPSILON
+                ratio = numerator / dparam_new_batch[i, j]
+                num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
 
@@ -1041,7 +1037,9 @@ def generate_bp_circ_taylor_fixed(
         # Determine validation fraction
         snap_val = param_limits_d[:, 1, 1]
         dsnap = dparam_cur_next[:, 1]
-        snap_active_mask = np.abs(snap_val) > (minimum_snap_cells * (dsnap + eps))
+        snap_active_mask = np.abs(snap_val) > (
+            minimum_snap_cells * (dsnap + FLOAT_EPSILON)
+        )
         # Apply 0.5x if this is the first time snap becomes active
         just_active = snap_active_mask & (~snap_first_branched)
         # Correction factor array

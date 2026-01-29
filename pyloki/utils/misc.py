@@ -31,9 +31,12 @@ if TYPE_CHECKING:
     from rich.progress import ProgressType, Task
 
 
-C_VAL = float(constants.c.value)  # ty: ignore[unresolved-attribute]
 T = TypeVar("T")
 CONSOLE = Console()
+
+C_VAL = float(constants.c.value)  # ty: ignore[unresolved-attribute]
+# A safe epsilon to ensure deterministic rounding across C++/Python
+FLOAT_EPSILON = 1e-6
 
 
 def mkdir_p(dir_path: str | Path, must_not_exist: list[str] | None = None) -> Path:

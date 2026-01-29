@@ -5,7 +5,7 @@ from numba import njit, typed, types
 
 from pyloki.core.common import get_leaves
 from pyloki.utils import np_utils, psr_utils, transforms
-from pyloki.utils.misc import C_VAL
+from pyloki.utils.misc import C_VAL, FLOAT_EPSILON
 from pyloki.utils.snail import MiddleOutScheme
 
 
@@ -124,14 +124,13 @@ def poly_taylor_branch(
         t_ref=0,
     )
 
-    eps = 1e-12
     total_size = 1
     leaf_branch_params = typed.List.empty_list(types.float64[::1])
     leaf_branch_dparams = np.empty(poly_order, dtype=np.float64)
     shapes = np.empty(poly_order, dtype=np.int64)
     for i in range(poly_order):
         param_min, param_max = param_limits_d[i]
-        if shift_bins[i] >= (eta - eps):
+        if shift_bins[i] >= (eta - FLOAT_EPSILON):
             leaf_param_arr, dparam_act = psr_utils.branch_param(
                 param_cur[i],
                 dparam_cur[i],
@@ -228,8 +227,7 @@ def poly_taylor_branch_batch(
             branched_counts[i, j] = count
 
     # --- Vectorized Selection ---
-    eps = 1e-12  # Small tolerance for floating-point comparison
-    needs_branching = shift_bins_batch >= (eta - eps)
+    needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
     for i in range(n_batch):
         for j in range(poly_order):
             if not needs_branching[i, j]:
@@ -535,7 +533,6 @@ def generate_bp_poly_taylor(
     param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
     param_ranges = (param_limits_d[:, :, 1] - param_limits_d[:, :, 0]) / 2
 
-    eps = 1e-12
     for prune_level in range(1, nsegments):
         coord_next = snail_scheme.get_coord(prune_level)
         coord_cur = snail_scheme.get_current_coord(prune_level)
@@ -561,16 +558,17 @@ def generate_bp_poly_taylor(
         n_branches = np.ones(n_freqs, dtype=np.int64)
 
         # Vectorized branching decision
-        needs_branching = shift_bins_batch >= (eta - eps)
-        too_large_step = dparam_new_batch > (param_ranges + eps)
+        needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
+        too_large_step = dparam_new_batch > (param_ranges + FLOAT_EPSILON)
 
         for i in range(n_freqs):
             for j in range(poly_order):
                 if not needs_branching[i, j] or too_large_step[i, j]:
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
-                ratio = (dparam_cur_batch[i, j] + eps) / dparam_new_batch[i, j]
-                num_points = max(1, int(np.ceil(ratio - eps)))
+                numerator = dparam_cur_batch[i, j] + FLOAT_EPSILON
+                ratio = numerator / dparam_new_batch[i, j]
+                num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
         # Compute average branching factor
@@ -626,7 +624,6 @@ def generate_bp_poly_taylor_fixed(
     param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
     param_ranges = (param_limits_d[:, :, 1] - param_limits_d[:, :, 0]) / 2
 
-    eps = 1e-12
     for prune_level in range(1, nsegments):
         coord_cur_fixed = snail_scheme.get_current_coord_fixed(prune_level)
         _, t_obs_minus_t_ref = coord_cur_fixed
@@ -651,16 +648,17 @@ def generate_bp_poly_taylor_fixed(
         n_branches = np.ones(n_freqs, dtype=np.int64)
 
         # Vectorized branching decision
-        needs_branching = shift_bins_batch >= (eta - eps)
-        too_large_step = dparam_new_batch > (param_ranges + eps)
+        needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
+        too_large_step = dparam_new_batch > (param_ranges + FLOAT_EPSILON)
 
         for i in range(n_freqs):
             for j in range(poly_order):
                 if not needs_branching[i, j] or too_large_step[i, j]:
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
-                ratio = (dparam_cur_batch[i, j] + eps) / dparam_new_batch[i, j]
-                num_points = max(1, int(np.ceil(ratio - eps)))
+                numerator = dparam_cur_batch[i, j] + FLOAT_EPSILON
+                ratio = numerator / dparam_new_batch[i, j]
+                num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
         # Compute average branching factor

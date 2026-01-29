@@ -6,7 +6,7 @@ import numpy as np
 from numba import njit, vectorize
 
 from pyloki.utils import maths
-from pyloki.utils.misc import C_VAL
+from pyloki.utils.misc import C_VAL, FLOAT_EPSILON
 
 
 @vectorize(nopython=True, cache=True)
@@ -49,8 +49,11 @@ def get_phase_idx(proper_time: float, freq: float, nbins: int, delay: float) -> 
 @vectorize(nopython=True, cache=True)
 def get_phase_idx_int(proper_time: float, freq: float, nbins: int, delay: float) -> int:
     shifts = get_phase_idx(proper_time, freq, nbins, delay)
-    shifts_float = np.float32(shifts)
-    return round(shifts_float) % nbins
+    # iphase ∈ [0, nbins), half-up rounding is intentional and deterministic
+    ibin = int(np.float32(shifts) + np.float32(0.5))
+    if ibin == nbins:
+        ibin = 0
+    return ibin
 
 
 @njit(cache=True, fastmath=True)
@@ -186,8 +189,7 @@ def split_f(
     """Check if a parameter {f_k} should be split."""
     factor = (tobs_new - t_ref) ** (k + 1) * nbins / maths.fact(k + 1)
     factor_opt = factor / 2**k
-    eps = 1e-6
-    return abs(df_old - df_new) * factor_opt > (eta - eps)
+    return abs(df_old - df_new) * factor_opt > (eta - FLOAT_EPSILON)
 
 
 @njit(cache=True, fastmath=True)
@@ -296,19 +298,20 @@ def branch_param(
     ValueError
         If the input parameters are invalid.
     """
-    eps = 1e-12
-    if dparam_cur <= eps or dparam_new <= eps:
+    if dparam_cur <= FLOAT_EPSILON or dparam_new <= FLOAT_EPSILON:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
-    if param_max <= param_min + eps:
+    if param_max <= param_min + FLOAT_EPSILON:
         msg = "param_max must be greater than param_min."
         raise ValueError(msg)
     param_range = (param_max - param_min) / 2.0
-    if dparam_new > (param_range + eps):
+    if dparam_new > (param_range + FLOAT_EPSILON):
         # If the desired new step size is too large, return the current value
         return np.array([param_cur]), dparam_new
     # Compute number of intervals with conservative ceil logic
-    num_points = int(np.ceil(((dparam_cur + eps) / dparam_new) - eps))
+    num_points = int(
+        np.ceil(((dparam_cur + FLOAT_EPSILON) / dparam_new) - FLOAT_EPSILON),
+    )
     if num_points <= 0:
         msg = "Invalid input: ensure dparam_cur > dparam_new."
         raise ValueError(msg)
@@ -333,21 +336,22 @@ def branch_param_padded(
 ) -> tuple[float, int]:
     count = 0
     dparam_new_actual = dparam_new  # Default if no branching occurs or edge cases
-    eps = 1e-12
-    if dparam_cur <= eps or dparam_new <= eps:
+    if dparam_cur <= FLOAT_EPSILON or dparam_new <= FLOAT_EPSILON:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
-    if param_max <= param_min + eps:
+    if param_max <= param_min + FLOAT_EPSILON:
         msg = "param_max must be greater than param_min."
         raise ValueError(msg)
 
     param_range = (param_max - param_min) / 2.0
-    if dparam_new > (param_range + eps):
+    if dparam_new > (param_range + FLOAT_EPSILON):
         # If the desired new step size is too large, return the current value
         out_values[0] = param_cur
         return dparam_new, 1
     # Compute number of intervals with conservative ceil logic
-    num_points = int(np.ceil(((dparam_cur + eps) / dparam_new) - eps))
+    num_points = int(
+        np.ceil(((dparam_cur + FLOAT_EPSILON) / dparam_new) - FLOAT_EPSILON),
+    )
     if num_points <= 0:
         msg = "Invalid input: ensure dparam_cur > dparam_new."
         raise ValueError(msg)
@@ -388,11 +392,10 @@ def range_param_count(vmin: float, vmax: float, dv: float) -> int:
     int
         Number of points in the parameter range.
     """
-    eps = 1e-12
-    if not (vmin < (vmax - eps) and dv > eps):
-        msg = "Invalid input: ensure vmin < vmax and dv > 0."
+    if not (vmin < vmax and dv > 0.0):
+        msg = "Invalid input: ensure vmin < vmax and dv > 0.0."
         raise ValueError(msg)
-    if dv > ((vmax - vmin) / 2 + eps):
+    if dv > ((vmax - vmin) / 2.0):
         return 1
     return int((vmax - vmin) / dv)
 
@@ -419,12 +422,11 @@ def range_param(vmin: float, vmax: float, dv: float) -> np.ndarray:
     np.ndarray
         Array of parameter values uniformly spaced between vmin and vmax.
     """
-    eps = 1e-12
-    if not (vmin < (vmax - eps) and dv > eps):
+    if not (vmin < vmax and dv > 0):
         msg = "Invalid input: ensure vmin < vmax and dv > 0."
         raise ValueError(msg)
-    if dv > ((vmax - vmin) / 2 + eps):
-        return np.array([(vmax + vmin) / 2])
+    if dv > ((vmax - vmin) / 2.0):
+        return np.array([(vmax + vmin) / 2.0])
     npoints = int((vmax - vmin) / dv)
     return np.linspace(vmin, vmax, npoints + 2)[1:-1]
 
@@ -465,10 +467,13 @@ def get_nearest_indices_analytical(
         vmin = param_limits[ip][0]
         vmax = param_limits[ip][1]
         step_inv = (n_grid + 1) / (vmax - vmin)
-        # Banker's rounding
-        idx = round(((val - vmin) * step_inv) - 1.0)
-        # Clamp (If n_grid=1, limit becomes 0)
-        pindex[ip] = min(max(idx, 0), n_grid - 1)
+        raw_idx = ((val - vmin) * step_inv) - 1.0
+        idx = int(raw_idx + 0.5 + FLOAT_EPSILON)  # explicit half-up
+        if idx < 0:
+            idx = 0
+        elif idx >= n_grid:
+            idx = n_grid - 1
+        pindex[ip] = idx
     return pindex
 
 
@@ -489,8 +494,18 @@ def get_nearest_indices_2d_batch(
     step_inv_accel = (n_accel + 1) / (accel_max - accel_min)
     step_inv_freq = (n_freq + 1) / (freq_max - freq_min)
     for i in range(n_batch):
-        accel_idx = round((accel_batch[i] - accel_min) * step_inv_accel - 1.0)
-        out[i, -2] = min(max(accel_idx, 0), n_accel - 1)
-        freq_idx = round((freq_batch[i] - freq_min) * step_inv_freq - 1.0)
-        out[i, -1] = min(max(freq_idx, 0), n_freq - 1)
+        raw_accel_idx = ((accel_batch[i] - accel_min) * step_inv_accel) - 1.0
+        accel_idx = int(raw_accel_idx + 0.5)  # explicit half-up
+        if accel_idx < 0:
+            accel_idx = 0
+        elif accel_idx >= n_accel:
+            accel_idx = n_accel - 1
+        out[i, -2] = accel_idx
+        raw_freq_idx = ((freq_batch[i] - freq_min) * step_inv_freq) - 1.0
+        freq_idx = int(raw_freq_idx + 0.5)  # explicit half-up
+        if freq_idx < 0:
+            freq_idx = 0
+        elif freq_idx >= n_freq:
+            freq_idx = n_freq - 1
+        out[i, -1] = freq_idx
     return out

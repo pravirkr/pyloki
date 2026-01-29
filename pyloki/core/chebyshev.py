@@ -5,7 +5,7 @@ from numba import njit, types
 
 from pyloki.core.common import get_leaves
 from pyloki.utils import np_utils, psr_utils, transforms
-from pyloki.utils.misc import C_VAL
+from pyloki.utils.misc import C_VAL, FLOAT_EPSILON
 from pyloki.utils.snail import MiddleOutScheme
 
 
@@ -166,8 +166,7 @@ def poly_chebyshev_branch_batch(
             branched_counts[i, j] = count
 
     # --- Vectorized Selection ---
-    eps = 1e-6  # Small tolerance for floating-point comparison
-    needs_branching = shift_bins_batch >= (eta - eps)
+    needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
     for i in range(n_batch):
         for j in range(poly_order):
             if not needs_branching[i, j]:
@@ -447,7 +446,6 @@ def generate_bp_poly_chebyshev(
     param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
     param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
 
-    eps = 1e-12
     for prune_level in range(1, nsegments):
         coord_next = snail_scheme.get_coord(prune_level)
         coord_prev = snail_scheme.get_coord(prune_level - 1)
@@ -487,16 +485,17 @@ def generate_bp_poly_chebyshev(
         n_branches = np.ones(n_freqs, dtype=np.int64)
 
         # Vectorized branching decision
-        needs_branching = shift_bins_batch >= (eta - eps)
-        too_large_step = dcheb_new_batch > (param_ranges + eps)
+        needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
+        too_large_step = dcheb_new_batch > (param_ranges + FLOAT_EPSILON)
 
         for i in range(n_freqs):  # skip d0
             for j in range(poly_order):
                 if not needs_branching[i, j] or too_large_step[i, j]:
                     dcheb_cur_next[i, j] = dcheb_cur_batch[i, j]
                     continue
-                ratio = (dcheb_cur_batch[i, j] + eps) / dcheb_new_batch[i, j]
-                num_points = max(1, int(np.ceil(ratio - eps)))
+                numerator = dcheb_cur_batch[i, j] + FLOAT_EPSILON
+                ratio = numerator / dcheb_new_batch[i, j]
+                num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
                 n_branches[i] *= num_points
                 dcheb_cur_next[i, j] = dcheb_cur_batch[i, j] / num_points
         # Compute average branching factor
@@ -555,7 +554,6 @@ def generate_bp_poly_chebyshev_fixed(
     param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
     param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
 
-    eps = 1e-12
     for prune_level in range(1, nsegments):
         coord_cur_fixed = snail_scheme.get_current_coord_fixed(prune_level)
         coord_prev_fixed = snail_scheme.get_current_coord_fixed(prune_level - 1)
@@ -594,16 +592,17 @@ def generate_bp_poly_chebyshev_fixed(
         n_branches = np.ones(n_freqs, dtype=np.int64)
 
         # Vectorized branching decision
-        needs_branching = shift_bins_batch >= (eta - eps)
-        too_large_step = dcheb_new_batch > (param_ranges + eps)
+        needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
+        too_large_step = dcheb_new_batch > (param_ranges + FLOAT_EPSILON)
 
         for i in range(n_freqs):  # skip d0
             for j in range(poly_order):
                 if not needs_branching[i, j] or too_large_step[i, j]:
                     dcheb_cur_next[i, j] = dcheb_cur_batch[i, j]
                     continue
-                ratio = (dcheb_cur_batch[i, j] + eps) / dcheb_new_batch[i, j]
-                num_points = max(1, int(np.ceil(ratio - eps)))
+                numerator = dcheb_cur_batch[i, j] + FLOAT_EPSILON
+                ratio = numerator / dcheb_new_batch[i, j]
+                num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
                 n_branches[i] *= num_points
                 dcheb_cur_next[i, j] = dcheb_cur_batch[i, j] / num_points
         # Compute average branching factor

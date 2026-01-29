@@ -38,7 +38,7 @@ def get_leaves_opt(
     param_arr: types.ListType,
     dparams: np.ndarray,
 ) -> np.ndarray:
-    nparams = len(param_arr) # ty: ignore
+    nparams = len(param_arr)  # ty: ignore
     shapes = np.empty(nparams, dtype=np.int64)
     for i in range(nparams):
         shapes[i] = len(param_arr[i])
@@ -313,10 +313,12 @@ def shift_add(
 ) -> np.ndarray:
     n_comps, nbins = data_tail.shape
     res = np.empty((n_comps, nbins), dtype=data_tail.dtype)
-    phase_shift_tail_float = np.float32(phase_shift_tail)
-    phase_shift_head_float = np.float32(phase_shift_head)
-    shift_tail = round(phase_shift_tail_float) % nbins
-    shift_head = round(phase_shift_head_float) % nbins
+    shift_tail = int(np.float32(phase_shift_tail) + np.float32(0.5))
+    if shift_tail == nbins:
+        shift_tail = 0
+    shift_head = int(np.float32(phase_shift_head) + np.float32(0.5))
+    if shift_head == nbins:
+        shift_head = 0
     for j in range(nbins):
         idx1 = (j - shift_tail) % nbins
         idx2 = (j - shift_head) % nbins
@@ -387,8 +389,9 @@ def shift_add_batch(
     n_batch, n_comps, nbins = segment_batch.shape
     res = np.empty((n_batch, n_comps, nbins), dtype=segment_batch.dtype)
     for irow in range(n_batch):
-        shift_float = np.float32(shift_batch[irow])
-        shift = round(shift_float) % nbins
+        shift = int(np.float32(shift_batch[irow]) + np.float32(0.5))
+        if shift == nbins:
+            shift = 0
         fold_row = folds[isuggest_batch[irow]]
         src_idx = (-shift) % nbins
         for j in range(nbins):
@@ -449,8 +452,9 @@ def shift_3d_batch(leaves_batch: np.ndarray, shift_batch: np.ndarray) -> np.ndar
     n_batch, n_comps, nbins = leaves_batch.shape
     res = np.empty((n_batch, n_comps, nbins), dtype=leaves_batch.dtype)
     for irow in range(n_batch):
-        shift_float = np.float32(shift_batch[irow])
-        shift = round(shift_float) % nbins
+        shift = int(np.float32(shift_batch[irow]) + np.float32(0.5))
+        if shift == nbins:
+            shift = 0
         src_idx = (-shift) % nbins
         for j in range(nbins):
             res[irow, 0, j] = leaves_batch[irow, 0, src_idx]

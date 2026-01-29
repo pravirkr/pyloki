@@ -50,7 +50,7 @@ ffacoordfreq_dtype = np.dtype(
 )
 
 
-class FFFPlan:
+class FFAPlan:
     """FFA Plan class for the FFA search.
 
     Parameters
@@ -82,11 +82,13 @@ class FFFPlan:
         self.ncoords_lb = np.empty(levels, dtype=np.float32)
         self.dparams = np.empty((levels, self.n_params), dtype=np.float32)
         self.dparams_limited = np.empty((levels, self.n_params), dtype=np.float32)
+        self.param_counts = np.empty((levels, self.n_params), dtype=np.int32)
         self.params = []
         for i_level in range(levels):
-            segment_len = self.cfg.tseg_brute * (2**i_level)
+            segment_len = self.cfg.bseg_brute * (2**i_level)
             tsegment = segment_len * self.cfg.tsamp
             nsegments_cur = self.cfg.nsamps // segment_len
+            param_counts_cur = self.cfg.get_param_grid_count(i_level)
             dparam_arr = self.cfg.get_dparams(i_level)
             dparam_arr_lim = self.cfg.get_dparams(i_level)
             param_arr = self.cfg.get_param_arr(dparam_arr)
@@ -95,9 +97,43 @@ class FFFPlan:
             self.tsegments[i_level] = tsegment
             self.dparams[i_level, :] = dparam_arr
             self.dparams_limited[i_level, :] = dparam_arr_lim
+            self.param_counts[i_level, :] = param_counts_cur
             self.ncoords[i_level] = np.prod([len(p) for p in param_arr])
             self.ncoords_lb[i_level] = np.round(np.log2(self.ncoords[i_level]), 2)
             self.params.append(param_arr)
+
+    def resolve_coordinates_freq(self) -> list[np.ndarray]:
+        """Resolve the coordinates for each level of the FFA search.
+
+        Returns
+        -------
+        list[np.ndarray]
+            List of parameter arrays for each level.
+        """
+        if self.n_params != 1:
+            msg = "resolve_coordinates_freq is only supported for single parameter"
+            raise ValueError(msg)
+        coords = []
+        for i_level in range(self.n_levels):
+            param_counts_prev = self.param_counts[i_level - 1, :]
+            param_arr = self.params[i_level]
+            param_cart_cur = np_utils.cartesian_prod_st(param_arr)
+            coords_cur = np.zeros(len(param_cart_cur), dtype=ffacoordfreq_dtype)
+            for iparam_set in range(len(param_cart_cur)):
+                p_set = param_cart_cur[iparam_set]
+                p_idx, shift = ffa_taylor_resolve(
+                    p_set,
+                    param_counts_prev,
+                    self.cfg.param_limits,
+                    i_level,
+                    1,
+                    self.cfg.tseg_brute,
+                    self.cfg.nbins,
+                )
+                # Flatten the p_idx
+                coords_cur[iparam_set] = (p_idx[0], shift)
+            coords.append(coords_cur)
+        return coords
 
     def resolve_coordinates(self) -> list[np.ndarray]:
         """Resolve the coordinates for each level of the FFA search.
@@ -107,65 +143,52 @@ class FFFPlan:
         list[np.ndarray]
             List of parameter arrays for each level.
         """
+        if self.n_params <= 1:
+            msg = "resolve_coordinates is only supported for multiple parameters"
+            raise ValueError(msg)
         coords = []
         for i_level in range(self.n_levels):
             param_arr = self.params[i_level]
-            param_arr_prev = self.params[i_level - 1]
+            param_counts_prev = self.param_counts[i_level - 1, :]
             param_cart_cur = np_utils.cartesian_prod_st(param_arr)
-            if self.n_params == 1:
-                # Special case for single parameter
-                coords_cur = np.zeros(len(param_cart_cur), dtype=ffacoordfreq_dtype)
-                for iparam_set in range(len(param_cart_cur)):
-                    p_set = param_cart_cur[iparam_set]
-                    p_idx, shift = ffa_taylor_resolve(
-                        p_set,
-                        param_arr_prev,
-                        i_level,
-                        1,
-                        self.cfg.tseg_brute,
-                        self.cfg.nbins,
-                    )
-                    # Flatten the p_idx
-                    coords_cur[iparam_set] = (p_idx[0], shift)
-            else:
-                lengths = [len(a) for a in param_arr_prev]
-                param_strides_prev = np.cumprod([1, *lengths[::-1][:-1]])[::-1]
-                coords_cur = np.zeros(len(param_cart_cur), dtype=ffacoord_dtype)
-                for iparam_set in range(len(param_cart_cur)):
-                    p_set = param_cart_cur[iparam_set]
-                    # Resolve parameters for tail and head
-                    p_idx_tail, shift_tail = ffa_taylor_resolve(
-                        p_set,
-                        param_arr_prev,
-                        i_level,
-                        0,
-                        self.cfg.tseg_brute,
-                        self.cfg.nbins,
-                    )
-                    p_idx_head, shift_head = ffa_taylor_resolve(
-                        p_set,
-                        param_arr_prev,
-                        i_level,
-                        1,
-                        self.cfg.tseg_brute,
-                        self.cfg.nbins,
-                    )
-                    # Flatten the p_idx
-                    p_idx_tail_flat = sum(
-                        i * s
-                        for i, s in zip(p_idx_tail, param_strides_prev, strict=False)
-                    )
-                    p_idx_head_flat = sum(
-                        i * s
-                        for i, s in zip(p_idx_head, param_strides_prev, strict=False)
-                    )
-                    # Store the coordinates
-                    coords_cur[iparam_set] = (
-                        p_idx_tail_flat,
-                        shift_tail,
-                        p_idx_head_flat,
-                        shift_head,
-                    )
+            lengths = [len(a) for a in param_counts_prev]
+            param_strides_prev = np.cumprod([1, *lengths[::-1][:-1]])[::-1]
+            coords_cur = np.zeros(len(param_cart_cur), dtype=ffacoord_dtype)
+            for iparam_set in range(len(param_cart_cur)):
+                p_set = param_cart_cur[iparam_set]
+                # Resolve parameters for tail and head
+                p_idx_tail, shift_tail = ffa_taylor_resolve(
+                    p_set,
+                    param_counts_prev,
+                    self.cfg.param_limits,
+                    i_level,
+                    0,
+                    self.cfg.tseg_brute,
+                    self.cfg.nbins,
+                )
+                p_idx_head, shift_head = ffa_taylor_resolve(
+                    p_set,
+                    param_counts_prev,
+                    self.cfg.param_limits,
+                    i_level,
+                    1,
+                    self.cfg.tseg_brute,
+                    self.cfg.nbins,
+                )
+                # Flatten the p_idx
+                p_idx_tail_flat = sum(
+                    i * s for i, s in zip(p_idx_tail, param_strides_prev, strict=False)
+                )
+                p_idx_head_flat = sum(
+                    i * s for i, s in zip(p_idx_head, param_strides_prev, strict=False)
+                )
+                # Store the coordinates
+                coords_cur[iparam_set] = (
+                    p_idx_tail_flat,
+                    shift_tail,
+                    p_idx_head_flat,
+                    shift_head,
+                )
             coords.append(coords_cur)
         return coords
 
@@ -337,7 +360,6 @@ class DynamicProgramming:
         unify_fold(
             self.fold,
             self.param_grid_count,
-            self.cfg.param_limits,
             fold_cur,
             param_cart_cur,
             self.ffa_level,
