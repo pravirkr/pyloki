@@ -646,6 +646,7 @@ class Pruning:
             prune_class,
             self.dyp.param_arr,
             self.dyp.dparams_limited,
+            self.dyp.param_grid_count,
             self.dyp.tseg,
             self.dyp.cfg,
             use_moving_grid,

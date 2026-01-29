@@ -205,7 +205,7 @@ def circ_taylor_branch_batch(
     nbins: int,
     eta: float,
     poly_order: int,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     branch_max: int,
     minimum_snap_cells: float = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -413,7 +413,8 @@ def circ_taylor_resolve_batch(
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
-    param_arr: types.ListType[types.Array],
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
     nbins: int,
     minimum_snap_cells: float,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -479,14 +480,11 @@ def circ_taylor_resolve_batch(
         nbins,
         delay_batch,
     )
-    param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
-    param_idx_batch[:, -2] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-2],
+    param_idx_batch = psr_utils.get_nearest_indices_2d_batch(
         accel_new_batch,
-    )
-    param_idx_batch[:, -1] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-1],
         freq_new_batch,
+        param_grid_count_init,
+        param_limits,
     )
     return param_idx_batch, relative_phase_batch
 
@@ -497,7 +495,8 @@ def circ_taylor_fixed_resolve_batch(
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
-    param_arr: types.ListType[types.Array],
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
     nbins: int,
     minimum_snap_cells: float,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -545,14 +544,11 @@ def circ_taylor_fixed_resolve_batch(
         nbins,
         delay_batch,
     )
-    param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
-    param_idx_batch[:, -2] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-2],
+    param_idx_batch = psr_utils.get_nearest_indices_2d_batch(
         accel_new_batch,
-    )
-    param_idx_batch[:, -1] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-1],
         freq_new_batch,
+        param_grid_count_init,
+        param_limits,
     )
     return param_idx_batch, relative_phase_batch
 
@@ -693,7 +689,7 @@ def cir_physical_branch_batch(
     nbins: int,
     eta: float,
     poly_order: int,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     branch_max: int = 16,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Branch a batch of parameter sets to leaves."""
@@ -794,12 +790,12 @@ def poly_circular_resolve_batch(
     leaf_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_init: tuple[float, float],
-    param_arr: types.ListType[types.Array],
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
     nbins: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
-    n_leaves = len(leaf_batch)
-    nparams = len(param_arr)
+    _, _, _ = leaf_batch.shape
     delta_t = coord_add[0] - coord_init[0]
 
     # Extract parameters leaf_batch[:, :-2]
@@ -826,14 +822,11 @@ def poly_circular_resolve_batch(
         nbins,
         delay_batch,
     )
-    param_idx_batch = np.zeros((n_leaves, nparams), dtype=np.int64)
-    param_idx_batch[:, -1] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-1],
-        f_new_batch,
-    )
-    param_idx_batch[:, -2] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-2],
+    param_idx_batch = psr_utils.get_nearest_indices_2d_batch(
         a_new_batch,
+        f_new_batch,
+        param_grid_count_init,
+        param_limits,
     )
     return param_idx_batch, relative_phase_batch
 
@@ -842,7 +835,7 @@ def poly_circular_resolve_batch(
 def generate_bp_circ_taylor(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,
@@ -969,7 +962,7 @@ def generate_bp_circ_taylor(
 def generate_bp_circ_taylor_fixed(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,

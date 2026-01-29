@@ -54,12 +54,20 @@ class FFATaylorDPFuncts(structref.StructRefProxy):
     def resolve(
         self,
         pset_cur: np.ndarray,
-        parr_prev: np.ndarray,
+        param_grid_count_prev: np.ndarray,
+        param_limits: np.ndarray,
         ffa_level: int,
         latter: int,
     ) -> tuple[np.ndarray, float]:
-        """Resolve the current parameters among the previous level parameters."""
-        return resolve_func(self, pset_cur, parr_prev, ffa_level, latter)
+        """Resolve the current parameters among the previous level grid points."""
+        return resolve_func(
+            self,
+            pset_cur,
+            param_grid_count_prev,
+            param_limits,
+            ffa_level,
+            latter,
+        )
 
     def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:
         """Bit packing rule for the FFA search."""
@@ -101,12 +109,20 @@ class FFATaylorComplexDPFuncts(structref.StructRefProxy):
     def resolve(
         self,
         pset_cur: np.ndarray,
-        parr_prev: np.ndarray,
+        param_grid_count_prev: np.ndarray,
+        param_limits: np.ndarray,
         ffa_level: int,
         latter: int,
     ) -> tuple[np.ndarray, float]:
-        """Resolve the current parameters among the previous level parameters."""
-        return resolve_func(self, pset_cur, parr_prev, ffa_level, latter)
+        """Resolve the current parameters among the previous level grid points."""
+        return resolve_func(
+            self,
+            pset_cur,
+            param_grid_count_prev,
+            param_limits,
+            ffa_level,
+            latter,
+        )
 
     def pack(self, data: np.ndarray, ffa_level: int) -> np.ndarray:
         """Bit packing rule for the FFA search."""
@@ -212,14 +228,16 @@ def init_complex_func(
 def resolve_func(
     self: FFATaylorDPFuncts,
     pset_cur: np.ndarray,
-    parr_prev: np.ndarray,
+    param_grid_count_prev: np.ndarray,
+    param_limits: np.ndarray,
     ffa_level: int,
     latter: int,
 ) -> tuple[np.ndarray, float]:
     tseg_brute = self.bseg_brute * self.tsamp
     return fold.ffa_taylor_resolve(
         pset_cur,
-        parr_prev,
+        param_grid_count_prev,
+        param_limits,
         ffa_level,
         latter,
         tseg_brute,
@@ -418,7 +436,8 @@ def ol_shift_add_complex_func(
 @njit(cache=True, fastmath=True, parallel=True, nogil=True)
 def unify_fold(
     fold_in: np.ndarray,
-    param_arr_prev: types.ListType[types.Array],
+    param_grid_count_prev: np.ndarray,
+    param_limits: np.ndarray,
     fold_out: np.ndarray,
     param_cart_cur: np.ndarray,
     ffa_level: int,
@@ -431,8 +450,10 @@ def unify_fold(
     ----------
     fold_in : np.ndarray
         Input fold structure from the previous level.
-    param_arr_prev : types.ListType[types.Array]
-        Parameter array from the previous level.
+    param_grid_count_prev : np.ndarray
+        Number of points in the parameter grid for the previous level.
+    param_limits : np.ndarray
+        Parameter limits (min, max) for the previous level.
     fold_out : np.ndarray
         Output fold structure for the current level.
     param_cart_cur : np.ndarray
@@ -450,13 +471,15 @@ def unify_fold(
         # Resolve parameters for tail and head
         p_idx_tail, shift_tail = dp_funcs.resolve(
             p_set,
-            param_arr_prev,
+            param_grid_count_prev,
+            param_limits,
             ffa_level,
             0,
         )
         p_idx_head, shift_head = dp_funcs.resolve(
             p_set,
-            param_arr_prev,
+            param_grid_count_prev,
+            param_limits,
             ffa_level,
             1,
         )

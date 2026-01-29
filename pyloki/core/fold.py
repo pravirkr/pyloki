@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from numba import njit, prange, types
 
-from pyloki.utils import np_utils, psr_utils, transforms
+from pyloki.utils import psr_utils, transforms
 
 
 @njit(cache=True, fastmath=True)
@@ -617,7 +617,8 @@ def ffa_taylor_init_complex(
 @njit(cache=True, fastmath=True)
 def ffa_taylor_resolve(
     pset_cur: np.ndarray,
-    param_arr: types.ListType[types.Array],
+    param_grid_count_prev: np.ndarray,
+    param_limits: np.ndarray,
     ffa_level: int,
     latter: int,
     tseg_brute: float,
@@ -629,8 +630,10 @@ def ffa_taylor_resolve(
     ----------
     pset_cur : np.ndarray
         The current iter parameter set to resolve.
-    param_arr : types.ListType[types.Array]
-        Parameter grid array for the previous iteration (ffa_level - 1).
+    param_grid_count_prev : np.ndarray
+        Number of points in the parameter grid for the previous level.
+    param_limits : np.ndarray
+        Parameter limits (min, max) for the previous iteration (ffa_level - 1).
     ffa_level : int
         Current FFA level (same level as pset_cur).
     latter : int
@@ -660,7 +663,9 @@ def ffa_taylor_resolve(
         delta_t = (latter - 0.5) * 2 ** (ffa_level - 1) * tseg_brute
         pset_new, delay = transforms.shift_taylor_params_d_f(pset_cur, delta_t)
     relative_phase = psr_utils.get_phase_idx(delta_t, pset_cur[-1], nbins, delay)
-    pindex_prev = np.zeros(nparams, dtype=np.int64)
-    for ip in range(nparams):
-        pindex_prev[ip] = np_utils.find_nearest_sorted_idx(param_arr[ip], pset_new[ip])
+    pindex_prev = psr_utils.get_nearest_indices_analytical(
+        pset_new,
+        param_grid_count_prev,
+        param_limits,
+    )
     return pindex_prev, relative_phase

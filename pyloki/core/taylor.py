@@ -70,7 +70,7 @@ def poly_taylor_branch(
     nbins: int,
     eta: float,
     poly_order: int,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
 ) -> np.ndarray:
     """Branch a parameter set to leaves.
 
@@ -86,7 +86,7 @@ def poly_taylor_branch(
         Tolerance for the parameter step size in bins.
     poly_order : int
         The order of the Taylor polynomial.
-    param_limits : types.ListType[types.Tuple[float, float]]
+    param_limits : np.ndarray
         The limits for each parameter in Taylor basis (reverse order).
 
     Returns
@@ -174,7 +174,7 @@ def poly_taylor_branch_batch(
     nbins: int,
     eta: float,
     poly_order: int,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     branch_max: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Branch a batch of parameter sets to leaves."""
@@ -260,7 +260,8 @@ def poly_taylor_resolve(
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
-    param_arr: types.ListType[types.Array],
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
     nbins: int,
 ) -> tuple[np.ndarray, float]:
     """Resolve the leaf params to find the closest index in grid and phase shift.
@@ -275,8 +276,11 @@ def poly_taylor_resolve(
         The coordinates for the current pruning suggestion tree.
     coord_init : tuple[float, float]
         The coordinates for the initial pruning suggestion tree.
-    param_arr : types.ListType[types.Array]
-        Parameter grid array for the ``coord_add`` segment (dim: 2)
+    param_grid_count_init : np.ndarray
+        Number of points in the initial (FFA) grid for the ``coord_add`` segment
+        Currently this is simply [n_accel, n_freq].
+    param_limits : np.ndarray
+        Parameter limits (min, max).
     nbins : int
         Number of bins in the folded profile.
 
@@ -306,9 +310,14 @@ def poly_taylor_resolve(
     freq_new = f0 * (1 - vel_new / C_VAL)
     delay = (dvec_t_add[-1] - dvec_t_init[-1]) / C_VAL
     relative_phase = psr_utils.get_phase_idx(t0_add - t0_init, f0, nbins, delay)
-    param_idx = np.zeros(len(param_arr), dtype=np.int64)
-    param_idx[-2] = np_utils.find_nearest_sorted_idx(param_arr[-2], accel_new)
-    param_idx[-1] = np_utils.find_nearest_sorted_idx(param_arr[-1], freq_new)
+    pset_res = np.empty(2, dtype=np.float64)
+    pset_res[0] = accel_new
+    pset_res[1] = freq_new
+    param_idx = psr_utils.get_nearest_indices_analytical(
+        pset_res,
+        param_grid_count_init[-2:],
+        param_limits[-2:],
+    )
     return param_idx, relative_phase
 
 
@@ -318,11 +327,12 @@ def poly_taylor_resolve_batch(
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
-    param_arr: types.ListType[types.Array],
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
     nbins: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
-    n_batch, _, _ = leaves_batch.shape
+    _, _, _ = leaves_batch.shape
     t0_cur, _ = coord_cur
     t0_init, _ = coord_init
     t0_add, _ = coord_add
@@ -341,14 +351,12 @@ def poly_taylor_resolve_batch(
         nbins,
         delay_batch,
     )
-    param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
-    param_idx_batch[:, -2] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-2],
+    # Pass the full param_limits to infer correct n_params
+    param_idx_batch = psr_utils.get_nearest_indices_2d_batch(
         accel_new_batch,
-    )
-    param_idx_batch[:, -1] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-1],
         freq_new_batch,
+        param_grid_count_init,
+        param_limits,
     )
     return param_idx_batch, relative_phase_batch
 
@@ -359,11 +367,12 @@ def poly_taylor_fixed_resolve_batch(
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
-    param_arr: types.ListType[types.Array],
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
     nbins: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
-    n_batch, _, _ = leaves_batch.shape
+    _, _, _ = leaves_batch.shape
     _, _ = coord_cur
     t0_init, _ = coord_init
     t0_add, _ = coord_add
@@ -381,14 +390,11 @@ def poly_taylor_fixed_resolve_batch(
         nbins,
         delay_batch,
     )
-    param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
-    param_idx_batch[:, -2] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-2],
+    param_idx_batch = psr_utils.get_nearest_indices_2d_batch(
         accel_new_batch,
-    )
-    param_idx_batch[:, -1] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-1],
         freq_new_batch,
+        param_grid_count_init,
+        param_limits,
     )
     return param_idx_batch, relative_phase_batch
 
@@ -457,7 +463,7 @@ def poly_taylor_fixed_report_batch(
 def generate_bp_poly_taylor_approx(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,
@@ -499,7 +505,7 @@ def generate_bp_poly_taylor_approx(
 def generate_bp_poly_taylor(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,
@@ -591,7 +597,7 @@ def generate_bp_poly_taylor(
 def generate_bp_poly_taylor_fixed(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,

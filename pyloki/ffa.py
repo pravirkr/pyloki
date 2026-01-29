@@ -191,7 +191,7 @@ class DynamicProgramming:
                 cfg,
             )
         else:
-            self._data_type = np.float32  # type: ignore[assignment]
+            self._data_type = np.float32
             self._dp_funcs = PicklableStructRefWrapper[DP_FUNCS_TYPE](
                 FFATaylorDPFuncts,
                 cfg,
@@ -254,6 +254,11 @@ class DynamicProgramming:
         return self._param_arr
 
     @property
+    def param_grid_count(self) -> np.ndarray:
+        """:obj:`~numpy.ndarray`: Number of grid points at the current FFA level."""
+        return self._param_grid_count
+
+    @property
     def param_arr_dict(self) -> dict[str, np.ndarray]:
         """:obj:`dict`: Dictionary of parameter arrays at the current FFA level."""
         param_names = self.cfg.param_names
@@ -291,6 +296,7 @@ class DynamicProgramming:
 
         self._fold = fold.astype(self.data_type)
         self._param_arr = param_arr
+        self._param_grid_count = self.cfg.get_param_grid_count(self.ffa_level)
         self._dparams = dparams
         self._dparams_limited = self.cfg.get_dparams_limited(self.ffa_level)
         self._tseg = self.cfg.tseg_brute
@@ -328,10 +334,10 @@ class DynamicProgramming:
             (self.nsegments // 2, len(param_cart_cur), *self.fold.shape[-2:]),
             self.fold.dtype,
         )
-        param_arr_t = typed.List(self.param_arr)
         unify_fold(
             self.fold,
-            param_arr_t,
+            self.param_grid_count,
+            self.cfg.param_limits,
             fold_cur,
             param_cart_cur,
             self.ffa_level,
@@ -346,6 +352,7 @@ class DynamicProgramming:
             ),
         )
         self._param_arr = param_arr_cur
+        self._param_grid_count = self.cfg.get_param_grid_count(self.ffa_level)
         self._dparams = dparams
         self._dparams_limited = self.cfg.get_dparams_limited(self.ffa_level)
         self._tseg *= 2

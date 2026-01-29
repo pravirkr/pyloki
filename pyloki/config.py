@@ -38,12 +38,15 @@ def _is_power_of_two(
 def _param_limits_validator(
     instance: PulsarSearchConfig,
     attribute: attrs.Attribute,
-    value: list[tuple[float, float]],
+    value: np.ndarray,
 ) -> None:
-    if len(value) < 1:  # or len(value) > 4:
-        msg = f"param_limits must have 1-5 elements, got {len(value)}"
+    val_len = value.shape[0]
+    if val_len < 1:  # or val_len > 4:
+        msg = f"param_limits must have 1-5 elements, got {val_len}"
         raise ValueError(msg)
-    for _, (val_min, val_max) in enumerate(value):
+    for i in range(val_len):
+        val_min = value[i, 0]
+        val_max = value[i, 1]
         if not isinstance(val_min, int | float) or not isinstance(
             val_max,
             int | float,
@@ -66,8 +69,8 @@ class ParamLimits:
         Paramaters are defined at t=t_c (center of the observation).
     """
 
-    def __init__(self, limits: list[tuple[float, float]]) -> None:
-        self.limits = limits
+    def __init__(self, limits: np.ndarray | list[tuple[float, float]]) -> None:
+        self.limits = np.asarray(limits, dtype=np.float64)
 
     def get_cheby_limits(
         self,
@@ -328,8 +331,8 @@ class PulsarSearchConfig:
     tol : float
         Tolerance (in bins) for the polynomial search
         (in units of bins across the pulsar ducy)
-    param_limits : types.ListType[types.Tuple[float, float]]
-        List of tuples with the min and max values for each search parameter
+    param_limits : np.ndarray
+        Array with the min and max values for each search parameter
     ducy_max : float, optional
         Maximum duty cycle to search for, by default 0.2.
     wtsp : float, optional
@@ -365,7 +368,7 @@ class PulsarSearchConfig:
         ],
     )
     eta: float = attrs.field(validator=attrs.validators.gt(0))
-    param_limits: list[tuple[float, float]] = attrs.field(
+    param_limits: np.ndarray = attrs.field(
         validator=_param_limits_validator,
     )
     ducy_max: float = attrs.field(default=0.2, validator=attrs.validators.gt(0.0))
@@ -438,7 +441,7 @@ class PulsarSearchConfig:
     @property
     def nparams(self) -> int:
         """:obj:`int`: Number of parameters in the search."""
-        return len(self.param_limits)
+        return self.param_limits.shape[0]
 
     @property
     def param_names(self) -> list[str]:
@@ -532,6 +535,29 @@ class PulsarSearchConfig:
             dparams_lim[iparam] = min(dparam_diff, dparams[iparam])
         return dparams_lim
 
+    def get_param_grid_count(self, ffa_level: int) -> np.ndarray:
+        """Get the number of points in the parameter grid for the given FFA level.
+
+        Parameters
+        ----------
+        ffa_level : int
+            FFA level for which to compute the parameter grid count.
+
+        Returns
+        -------
+        np.ndarray
+            Array with the number of points in the parameter grid
+        """
+        dparams = self.get_dparams(ffa_level)
+        count = np.empty(self.nparams, dtype=np.int64)
+        for iparam in range(self.nparams):
+            count[iparam] = psr_utils.range_param_count(
+                self.param_limits[iparam, 0],
+                self.param_limits[iparam, 1],
+                dparams[iparam],
+            )
+        return count
+
     def get_param_arr(self, dparams: np.ndarray) -> list[np.ndarray]:
         """Get the parameter ranges for the given parameter steps.
 
@@ -554,7 +580,11 @@ class PulsarSearchConfig:
             msg = f"dparams must have length {self.nparams}, got {len(dparams)}"
             raise ValueError(msg)
         return [
-            psr_utils.range_param(*self.param_limits[iparam], dparams[iparam])
+            psr_utils.range_param(
+                self.param_limits[iparam, 0],
+                self.param_limits[iparam, 1],
+                dparams[iparam],
+            )
             for iparam in range(self.nparams)
         ]
 

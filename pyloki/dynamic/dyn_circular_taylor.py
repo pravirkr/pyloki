@@ -32,6 +32,7 @@ class PruneCircTaylorDPFuncts(structref.StructRefProxy):
         cls,
         param_arr: list[np.ndarray],
         dparams: np.ndarray,
+        param_grid_count_init: np.ndarray,
         tseg_ffa: float,
         cfg: PulsarSearchConfig,
         use_moving_grid: bool = True,
@@ -40,6 +41,7 @@ class PruneCircTaylorDPFuncts(structref.StructRefProxy):
         return prune_circ_taylor_dp_functs_init(
             param_arr,
             dparams,
+            param_grid_count_init,
             tseg_ffa,
             cfg.nbins,
             cfg.eta,
@@ -146,6 +148,7 @@ class PruneCircTaylorComplexDPFuncts(structref.StructRefProxy):
         cls,
         param_arr: list[np.ndarray],
         dparams: np.ndarray,
+        param_grid_count_init: np.ndarray,
         tseg_ffa: float,
         cfg: PulsarSearchConfig,
         use_moving_grid: bool = True,
@@ -154,6 +157,7 @@ class PruneCircTaylorComplexDPFuncts(structref.StructRefProxy):
         return prune_circ_taylor_complex_dp_functs_init(
             param_arr,
             dparams,
+            param_grid_count_init,
             tseg_ffa,
             cfg.nbins,
             cfg.eta,
@@ -257,11 +261,12 @@ class PruneCircTaylorComplexDPFuncts(structref.StructRefProxy):
 
 fields_prune_circ_taylor_dp_funcs = [
     ("param_arr", types.ListType(types.Array(types.f8, 1, "C"))),
-    ("dparams", types.f8[:]),
+    ("dparams", types.f8[::1]),
+    ("param_grid_count_init", types.i8[::1]),
     ("tseg_ffa", types.f8),
     ("nbins", types.int64),
     ("eta", types.f8),
-    ("param_limits", types.ListType(types.Tuple([types.f8, types.f8]))),
+    ("param_limits", types.f8[:, ::1]),
     ("bseg_brute", types.int64),
     ("score_widths", types.i8[::1]),
     ("poly_order", types.i8),
@@ -291,10 +296,11 @@ PruneCircTaylorComplexDPFunctsType = PruneCircTaylorComplexDPFunctsTemplate(
 def prune_circ_taylor_dp_functs_init(
     param_arr: list[np.ndarray],
     dparams: np.ndarray,
+    param_grid_count_init: np.ndarray,
     tseg_ffa: float,
     nbins: int,
     eta: float,
-    param_limits: list[tuple[float, float]],
+    param_limits: np.ndarray,
     bseg_brute: int,
     score_widths: np.ndarray,
     poly_order: int,
@@ -309,10 +315,11 @@ def prune_circ_taylor_dp_functs_init(
     self = structref.new(PruneCircTaylorDPFunctsType)
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
+    self.param_grid_count_init = param_grid_count_init
     self.tseg_ffa = tseg_ffa
     self.nbins = nbins
     self.eta = eta
-    self.param_limits = typed.List(param_limits)
+    self.param_limits = param_limits
     self.bseg_brute = bseg_brute
     self.score_widths = score_widths
     self.poly_order = poly_order
@@ -334,10 +341,11 @@ def prune_circ_taylor_dp_functs_init(
 def prune_circ_taylor_complex_dp_functs_init(
     param_arr: list[np.ndarray],
     dparams: np.ndarray,
+    param_grid_count_init: np.ndarray,
     tseg_ffa: float,
     nbins: int,
     eta: float,
-    param_limits: list[tuple[float, float]],
+    param_limits: np.ndarray,
     bseg_brute: int,
     score_widths: np.ndarray,
     poly_order: int,
@@ -352,10 +360,11 @@ def prune_circ_taylor_complex_dp_functs_init(
     self = structref.new(PruneCircTaylorComplexDPFunctsType)
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
+    self.param_grid_count_init = param_grid_count_init
     self.tseg_ffa = tseg_ffa
     self.nbins = nbins
     self.eta = eta
-    self.param_limits = typed.List(param_limits)
+    self.param_limits = param_limits
     self.bseg_brute = bseg_brute
     self.score_widths = score_widths
     self.poly_order = poly_order
@@ -480,7 +489,8 @@ def resolve_func(
             coord_add,
             coord_cur,
             coord_init,
-            self.param_arr,
+            self.param_grid_count_init,
+            self.param_limits,
             self.nbins,
             self.minimum_snap_cells,
         )
@@ -489,7 +499,8 @@ def resolve_func(
         coord_add,
         coord_cur,
         coord_init,
-        self.param_arr,
+        self.param_grid_count_init,
+        self.param_limits,
         self.nbins,
         self.minimum_snap_cells,
     )

@@ -75,7 +75,7 @@ def poly_chebyshev_branch_batch(
     nbins: int,
     eta: float,
     poly_order: int,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     branch_max: int,
     use_conservative_tile: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -95,7 +95,7 @@ def poly_chebyshev_branch_batch(
         Tolerance for the parameter step size in bins.
     poly_order : int
         The order of the Taylor polynomial.
-    param_limits : types.ListType[types.Tuple[float, float]]
+    param_limits : np.ndarray
         The limits for each parameter in Taylor basis (reverse order).
     branch_max : int
         Maximum number of branches that can be generated.
@@ -198,7 +198,8 @@ def poly_chebyshev_resolve_batch(
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
-    param_arr: types.ListType[types.Array],
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
     nbins: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve the leaf parameters to find the closest grid index and phase shift.
@@ -213,8 +214,11 @@ def poly_chebyshev_resolve_batch(
         The coordinates of the current segment (level cur).
     coord_init : tuple[float, float]
         The coordinates for the starting segment (level 0).
-    param_arr : types.ListType
-        Parameter grid array for the ``coord_add`` segment (dim: 2)
+    param_grid_count_init : np.ndarray
+        Number of points in the initial (FFA) grid for the ``coord_add`` segment
+        Currently this is simply [n_accel, n_freq].
+    param_limits : np.ndarray
+        Parameter limits (min, max).
     nbins : int
         Number of bins in the folded profile.
 
@@ -232,7 +236,7 @@ def poly_chebyshev_resolve_batch(
     relative_phase_batch is complete phase shift with fractional part.
 
     """
-    n_batch, _, _ = leaves_batch.shape
+    _, _, _ = leaves_batch.shape
     t0_cur, scale_cur = coord_cur
     t0_init, _ = coord_init
     t0_add, _ = coord_add
@@ -261,14 +265,11 @@ def poly_chebyshev_resolve_batch(
         nbins,
         delay_batch,
     )
-    param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
-    param_idx_batch[:, -2] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-2],
+    param_idx_batch = psr_utils.get_nearest_indices_2d_batch(
         accel_new_batch,
-    )
-    param_idx_batch[:, -1] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-1],
         freq_new_batch,
+        param_grid_count_init,
+        param_limits,
     )
     return param_idx_batch, relative_phase_batch
 
@@ -279,11 +280,12 @@ def poly_chebyshev_fixed_resolve_batch(
     coord_add: tuple[float, float],
     coord_cur_fixed: tuple[float, float],
     coord_init: tuple[float, float],
-    param_arr: types.ListType[types.Array],
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
     nbins: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
-    n_batch, _, _ = leaves_batch.shape
+    _, _, _ = leaves_batch.shape
     _, scale_cur_fixed = coord_cur_fixed
     t0_init, _ = coord_init
     t0_add, _ = coord_add
@@ -306,14 +308,11 @@ def poly_chebyshev_fixed_resolve_batch(
         nbins,
         delay_batch,
     )
-    param_idx_batch = np.zeros((n_batch, len(param_arr)), dtype=np.int64)
-    param_idx_batch[:, -2] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-2],
+    param_idx_batch = psr_utils.get_nearest_indices_2d_batch(
         accel_new_batch,
-    )
-    param_idx_batch[:, -1] = np_utils.find_nearest_sorted_idx_vect(
-        param_arr[-1],
         freq_new_batch,
+        param_grid_count_init,
+        param_limits,
     )
     return param_idx_batch, relative_phase_batch
 
@@ -368,7 +367,7 @@ def poly_chebyshev_report_batch(
 def generate_bp_poly_chebyshev_approx(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,
@@ -413,7 +412,7 @@ def generate_bp_poly_chebyshev_approx(
 def generate_bp_poly_chebyshev(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,
@@ -521,7 +520,7 @@ def generate_bp_poly_chebyshev(
 def generate_bp_poly_chebyshev_fixed(
     param_arr: types.ListType,
     dparams_lim: np.ndarray,
-    param_limits: types.ListType[types.Tuple[float, float]],
+    param_limits: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,

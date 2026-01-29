@@ -19,8 +19,6 @@ from pyloki.utils import np_utils
 from pyloki.utils.misc import CONSOLE, get_logger
 
 if TYPE_CHECKING:
-    from numba import types
-
     from pyloki.io.timeseries import TimeSeries
     from pyloki.simulation.pulse import PulseSignalConfig
 
@@ -118,7 +116,7 @@ def test_sensitivity_ffa(
     dyp, pgram = ffa_search(tim_data, search_cfg, quiet=quiet, show_progress=False)
     snr_shifted = get_shifted_snr(dyp.dparams, tim_data, signal_cfg, search_cfg)
 
-    nparams = len(search_cfg.param_limits)
+    nparams = search_cfg.param_limits.shape[0]
     true_params_idx = [
         np_utils.find_nearest_sorted_idx(dyp.param_arr[-1], signal_cfg.freq),
     ]
@@ -174,7 +172,7 @@ class TestFFASensitivity:
     def __init__(
         self,
         cfg: PulseSignalConfig,
-        param_limits: types.ListType[types.Tuple[float, float]],
+        param_limits: np.ndarray,
         ducy_arr: np.ndarray | None = None,
         eta_arr: np.ndarray | None = None,
         ds_arr: np.ndarray | None = None,
@@ -204,7 +202,7 @@ class TestFFASensitivity:
 
     @property
     def nparams(self) -> int:
-        return len(self.param_limits)
+        return self.param_limits.shape[0]
 
     @property
     def ntols(self) -> int:
