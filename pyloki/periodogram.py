@@ -50,8 +50,9 @@ class Periodogram:
     def get_slice(self, fixed_param_idx: dict[str, int]) -> xr.DataArray:
         return self.data.isel(fixed_param_idx)
 
-    def find_best_indices(self) -> tuple:
-        return np.unravel_index(self.data.argmax().to_numpy(), self.data.shape)  # type: ignore[union-attr]
+    def find_best_indices(self) -> tuple[int, ...]:
+        flat_index = np.argmax(self.data.values)
+        return np.unravel_index(int(flat_index), self.data.shape)
 
     def find_best_params(self) -> dict[str, float]:
         best_snr = self.data.max().item()
@@ -260,13 +261,12 @@ class ScatteredPeriodogram:
             f"d{p}: {self.data[f'd{p}'][0]:.10g}" for p in self.param_names
         )
         summary.append(f"dparams: {dparams_str}")
-        for row in top_df.itertuples(index=False):
+        for _, row in top_df.iterrows():
             params_str = ", ".join(
-                f"{p}: {param_formatters[p].format(getattr(row, p))}"
-                for p in self.param_names
+                f"{p}: {param_formatters[p].format(row[p])}" for p in self.param_names
             )
             summary.append(
-                f"Run: {row.run_id}, S/N: {row.score:.2f}, {params_str}",  # ty:ignore[possibly-missing-attribute]
+                f"Run: {row['run_id']}, S/N: {row['score']:.2f}, {params_str}",
             )
         return "\n".join(summary)
 
@@ -299,14 +299,12 @@ class ScatteredPeriodogram:
 
         # Sort by score descending for consistent ordering
         best_per_run = best_per_run.sort_values("run_id", ascending=True)
-
-        for row in best_per_run.itertuples(index=False):
+        for _, row in best_per_run.iterrows():
             params_str = ", ".join(
-                f"{p}: {param_formatters[p].format(getattr(row, p))}"
-                for p in self.param_names
+                f"{p}: {param_formatters[p].format(row[p])}" for p in self.param_names
             )
             summary.append(
-                f"Run: {row.run_id}, S/N: {row.score:.2f}, {params_str}",
+                f"Run: {row['run_id']}, S/N: {row['score']:.2f}, {params_str}",
             )
         return "\n".join(summary)
 

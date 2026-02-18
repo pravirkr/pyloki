@@ -726,7 +726,10 @@ def prune_dyp_tree(
         msg = "Either n_runs or ref_segs must be provided"
         raise ValueError(msg)
 
-    logger.info(f"Starting Pruning for {len(ref_segs)} runs, with {n_workers} workers")
+    n_workers_act = min(n_workers, len(ref_segs))
+    logger.info(
+        f"Starting Pruning for {len(ref_segs)} runs, with {n_workers_act} workers",
+    )
     log_file.write_text("Pruning log\n")
     with PruneResultWriter(result_file) as writer:
         writer.write_metadata(
@@ -735,7 +738,7 @@ def prune_dyp_tree(
             max_sugg,
             threshold_scheme,
         )
-    if n_workers == 1:
+    if n_workers_act == 1:
         prn = Pruning(
             dyp,
             threshold_scheme,
@@ -756,7 +759,7 @@ def prune_dyp_tree(
     else:
         with (
             MultiprocessProgressTracker("Pruning tree") as tracker,
-            ProcessPoolExecutor(max_workers=n_workers) as executor,
+            ProcessPoolExecutor(max_workers=n_workers_act) as executor,
         ):
             futures_to_seg = {}
             # Important: pass a reference to the tracker dict to the worker
