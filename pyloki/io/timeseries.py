@@ -195,7 +195,33 @@ class TimeSeries:
         return figure
 
     @classmethod
-    def from_tim(cls, timfile: str, tim_type: str = "dat") -> TimeSeries:
+    def from_tim(
+        cls,
+        timfile: str,
+        tim_type: str = "dat",
+        filter_window: float = 1.0,
+        norm_scale_method: str = "iqr",
+    ) -> TimeSeries:
+        """Load a time series from a .tim or .dat file.
+
+        Parameters
+        ----------
+        timfile : str
+            Path to the .tim or .dat file.
+        tim_type : str, optional
+            Type of the time series file, by default "dat"
+        filter_window : float, optional
+            Window size for the median baseline/rednoise filter, by default 1.0 seconds
+        norm_scale_method : str, optional
+            Method for normalising the time series, by default "iqr"
+            Other options are "std" and "mad"
+            See sigpyproc.timeseries.TimeSeries.normalise for more details.
+
+        Returns
+        -------
+        TimeSeries
+            A TimeSeries object.
+        """
         if tim_type == "dat":
             tim_load = sigTimeSeries.from_dat(timfile)
         elif tim_type == "tim":
@@ -203,8 +229,8 @@ class TimeSeries:
         else:
             msg = f"Invalid tim type: {tim_type}"
             raise ValueError(msg)
-        tim_load = tim_load.deredden(method="median", window=4.0, fast=True)
-        tim_load = tim_load.normalise()
+        tim_load = tim_load.deredden(method="median", window=filter_window, fast=True)
+        tim_load = tim_load.normalise(loc_method="mean", scale_method=norm_scale_method)  # ty:ignore[invalid-argument-type]
         signal = tim_load.data
         return cls(signal, np.ones_like(signal), tim_load.header.tsamp)
 
