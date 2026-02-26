@@ -1,15 +1,17 @@
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.10.4,<0.11.0"]
+build-backend = "uv_build"
 
 [project]
 name = "pyloki"
 version = "0.7.0"
 description = "Detecting Pulsars"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Pravir Kumar", email = "pravirka@gmail.com" },
-    { name = "Barak Zackay", email = "bzackay@gmail.com" },
+    { name = "Barak Zackay" },
 ]
 requires-python = ">=3.12"
 classifiers = [
@@ -20,7 +22,6 @@ classifiers = [
     "Operating System :: MacOS :: MacOS X",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
-    "License :: OSI Approved :: MIT License",
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Astronomy",
@@ -44,17 +45,25 @@ dependencies = [
 Repository = "https://github.com/pravirkr/pyloki"
 
 [project.optional-dependencies]
-cuda = ["cuda-python", "numba-cuda"]
 tests = [
-    "pytest",
+    "pytest>=9.0",
     "pytest-cov",
     "pytest-randomly",
     "pytest-sugar",
     "pytest-benchmark",
-    "mypy",
+    "pytest-mock",
 ]
-docs = ["sphinx", "sphinx-book-theme", "sphinx-click", "myst-nb"]
-develop = ["ruff"]
+dev = ["ruff", "ty"]
+docs = [
+    "sphinx",
+    "sphinx-book-theme",
+    "sphinx-click",
+    "sphinx-copybutton",
+    "numpydoc",
+    "myst-nb",
+    "jupyter_sphinx",
+    "sphinx-design",
+]
 
 [project.scripts]
 pyloki_viewer = "pyloki.apps.pyloki_viewer:main"
@@ -62,7 +71,7 @@ pyloki_viewer = "pyloki.apps.pyloki_viewer:main"
 [tool.ruff]
 include = [
     "pyproject.toml",
-    "pyloki/**/*.py",
+    "src/**/*.py",
     "tests/**/*.py",
     "examples/**/*.ipynb",
 ]
@@ -89,7 +98,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"pyloki/**/*.py" = ["E402"]
+"src/pyloki/**/*.py" = ["E402"]
 "examples/**/*.ipynb" = ["T201"]
 
 [tool.ruff.lint.mccabe]
@@ -106,27 +115,12 @@ convention = "numpy"
 [tool.ruff.lint.flake8-unused-arguments]
 ignore-variadic-names = true
 
-[tool.pytest.ini_options]
-minversion = "8.0"
-testpaths = "tests"
-
-[tool.coverage.paths]
-source = ["./pyloki/"]
-
-[tool.coverage.run]
-omit = ["tests/*", "*__init__.py"]
-
-[tool.coverage.report]
-show_missing = true
-#fail_under = 85
-ignore_errors = true
-exclude_lines = ['raise AssertionError', 'raise NotImplementedError']
-
 [tool.ty.environment]
 python-version = "3.12"
 
 [tool.ty.src]
-exclude = ["pyloki/cuda/*.py", "pyloki/main.py", "**/tests/**", "**/docs/**"]
+include = ["src"]
+exclude = ["src/pyloki/main.py", "tests", "docs"]
 
 [tool.ty.rules]
 index-out-of-bounds = "ignore"
@@ -135,13 +129,36 @@ not-iterable = "ignore"        # For Numba prange
 
 [[tool.ty.overrides]]
 include = [
-    "pyloki/dynamic/*.py",
-    "pyloki/detection/thresholding.py",
-    "pyloki/utils/snail.py",
-    "pyloki/utils/world_tree.py",
+    "src/pyloki/dynamic/*.py",
+    "src/pyloki/detection/thresholding.py",
+    "src/pyloki/utils/snail.py",
+    "src/pyloki/utils/world_tree.py",
 ]
 
 [tool.ty.overrides.rules]
 invalid-assignment = "ignore"
 invalid-return-type = "ignore"
 unresolved-attribute = "ignore"
+
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+addopts = ["-ra", "-q"]
+testpaths = ["tests"]
+
+[tool.coverage.paths]
+source = ["../src/"]
+
+[tool.coverage.run]
+omit = ["tests/*", "docs/*", "*__init__.py", "*_types.py"]
+
+[tool.coverage.report]
+show_missing = true
+#fail_under = 85
+ignore_errors = true
+exclude_lines = [
+    'raise NotImplementedError',
+    'if TYPE_CHECKING:',
+    'except ModuleNotFoundError:',
+    'if __name__ == "__main__":',
+]
