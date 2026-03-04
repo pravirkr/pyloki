@@ -27,7 +27,8 @@ class WorldTree(structref.StructRefProxy):
     Parameters
     ----------
     leaves : np.ndarray
-        Array of leaves. Shape: (n_leaves, nparams + 2, 2)
+        Array of leaves.
+        Shape: (n_leaves, (nparams + 2) * 2 + (nparams * nparams))
     folds : np.ndarray
         Array of folded profiles. Shape: (n_leaves, 2, nbins)
     scores : np.ndarray
@@ -37,6 +38,9 @@ class WorldTree(structref.StructRefProxy):
 
     Notes
     -----
+    Leaves are organized as follows:
+    - first (nparams + 2) * 2 values: (nparams + 2, 2)
+    - next (nparams * nparams) values: basis matrix
     The last row rows of the leaves is reserved.
     - row (-1) : f0, _
     """
@@ -305,7 +309,7 @@ class WorldTreeComplex(structref.StructRefProxy):
 
 
 fields_world_tree = [
-    ("leaves", types.f8[:, :, ::1]),
+    ("leaves", types.f8[:, ::1]),
     ("folds", types.f4[:, :, ::1]),
     ("scores", types.f4[:]),
     ("backtracks", types.i4[:, ::1]),
@@ -318,7 +322,7 @@ structref.define_boxing(WorldTreeTemplate, WorldTree)
 WorldTreeType = WorldTreeTemplate(fields_world_tree)
 
 fields_world_tree_complex = [
-    ("leaves", types.f8[:, :, ::1]),
+    ("leaves", types.f8[:, ::1]),
     ("folds", types.c8[:, :, ::1]),
     ("scores", types.f4[:]),
     ("backtracks", types.i4[:, ::1]),

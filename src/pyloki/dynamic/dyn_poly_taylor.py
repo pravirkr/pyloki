@@ -455,7 +455,9 @@ def resolve_func(
             self.param_grid_count_init,
             self.param_limits,
             self.nbins,
+            self.poly_order,
         )
+    return None
     return taylor.poly_taylor_fixed_resolve_batch(
         leaves_batch,
         coord_add,
@@ -522,7 +524,7 @@ def transform_func(
             leaves_batch,
             coord_next,
             coord_cur,
-            self.use_conservative_tile,
+            self.poly_order,
         )
     return leaves_batch
 
@@ -549,7 +551,8 @@ def report_func(
     coord_init: tuple[float, float],
 ) -> np.ndarray:
     if self.use_moving_grid:
-        return taylor.poly_taylor_report_batch(leaves)
+        return taylor.poly_taylor_report_batch(leaves, self.poly_order)
+    return None
     return taylor.poly_taylor_fixed_report_batch(leaves, coord_mid, coord_init)
 
 

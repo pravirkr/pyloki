@@ -483,7 +483,7 @@ class Pruning:
             self.dyp.nsegments - 1,
             dtype=np.dtype(
                 [
-                    ("param_sets", np.float64, (self.dyp.cfg.prune_poly_order + 2, 2)),
+                    ("param_sets", np.float64, self.world_tree.leaves.shape[1]),
                     ("folds", self.dyp.fold.dtype, fold_segment.shape[-2:]),
                     ("scores", np.float32),
                 ],

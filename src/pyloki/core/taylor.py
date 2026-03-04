@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import numpy as np
-from numba import njit, typed, types
+from numba import njit, types
 
 from pyloki.core.common import get_leaves
-from pyloki.utils import np_utils, psr_utils, transforms
+from pyloki.utils import maths, np_utils, psr_utils, transforms
 from pyloki.utils.misc import C_VAL, FLOAT_EPSILON
 from pyloki.utils.snail import MiddleOutScheme
 
@@ -35,135 +35,49 @@ def poly_taylor_seed(
     Returns
     -------
     np.ndarray
-        The seed leaves. Shape is (n_leaves, poly_order + 2, 2).
+        The seed leaves. Shape is (n_leaves, total_size).
 
     Notes
     -----
-    Conventions for each seed leaf:
-    leaf[:-1, 0] -> Taylor polynomial coefficients,
-                    order is [d_poly_order, ..., d_1, d_0]
-    leaf[:-1, 1] -> Grid size (error) on each coefficient,
-    leaf[-1, 0]  -> Frequency at t_init (f0), assuming f=f0 at t_init
-    leaf[-1, 1]  -> Flag to indicate basis change (0: Polynomial, 1: Physical)
+    Conventions for each seed leaf: leaf_params + leaf_basis
+    total_size = (n_params + 2) * 2 + (n_params * n_params)
+    leaf_params[:-1, 0] -> Taylor polynomial coefficients, [d_poly_order, ..., d_1, d_0]
+    leaf_params[:-1, 1] -> Grid size (error) on each coefficient,
+    leaf_params[-1, 0]  -> Frequency at t_init (f0), assuming f=f0 at t_init
+    leaf_params[-1, 1]  -> Flag to indicate basis change (0: Polynomial, 1: Physical)
+    leaf_basis[:] -> Basis matrix, shape is (n_params, n_params)
     """
     _, _ = coord_init
     leaves_taylor = get_leaves(param_arr, dparams)
+    n_leaves = len(leaves_taylor)
+    n_params = poly_order
+
+    param_rows = n_params + 2
+    bo = param_rows * 2
+    basis_size = n_params * n_params
+    total_size = bo + basis_size
+    leaves = np.zeros((n_leaves, total_size), dtype=np.float64)
+
     f0_batch = leaves_taylor[:, -1, 0]
     df_batch = leaves_taylor[:, -1, 1]
-    leaves = np.zeros((len(leaves_taylor), poly_order + 2, 2), dtype=np.float64)
-    # Copy till accel
-    leaves[:, :-3] = leaves_taylor[:, :-1]
-    # f = f0(1 - v / C) => dv = -(C/f0) * df
-    leaves[:, -3, 0] = 0
-    leaves[:, -3, 1] = df_batch * (C_VAL / f0_batch)
-    # intialize d0 (measure from t=t_init)
-    leaves[:, -2, 0] = 0  # we never branch on d0
-    leaves[:, -1, 0] = f0_batch
-    leaves[:, -1, 1] = 0  # Polynomial basis
+
+    for i in range(n_leaves):
+        params = leaves[i, :bo].reshape(param_rows, 2)
+        # Copy till accel
+        params[:-3, :] = leaves_taylor[i, :-1, :]
+        # f = f0(1 - v / C) => dv = -(C/f0) * df
+        params[-3, 0] = 0.0
+        params[-3, 1] = df_batch[i] * (C_VAL / f0_batch[i])
+        # initialize d0 (measure from t=t_init)
+        params[-2, 0] = 0.0  # we never branch on d0
+        # f0 and flag
+        params[-1, 0] = f0_batch[i]
+        params[-1, 1] = 0.0  # polynomial basis
+
+        basis = leaves[i, bo : bo + basis_size].reshape(n_params, n_params)
+        for j in range(n_params):
+            basis[j, j] = params[j, 1]
     return leaves
-
-
-@njit(cache=True, fastmath=True)
-def poly_taylor_branch(
-    leaf: np.ndarray,
-    coord_cur: tuple[float, float],
-    nbins: int,
-    eta: float,
-    poly_order: int,
-    param_limits: np.ndarray,
-) -> np.ndarray:
-    """Branch a parameter set to leaves.
-
-    Parameters
-    ----------
-    leaf : np.ndarray
-        Parameter set (leaf) to branch. Shape: (n_params + 2, 2).
-    coord_cur : tuple[float, float]
-        Coordinates for the accumulated segment in the current stage.
-    nbins : int
-        Number of bins in the folded profile.
-    eta : float
-        Tolerance for the parameter step size in bins.
-    poly_order : int
-        The order of the Taylor polynomial.
-    param_limits : np.ndarray
-        The limits for each parameter in Taylor basis (reverse order).
-
-    Returns
-    -------
-    np.ndarray
-        Array of leaf parameter sets. Shape: (n_branch, n_params + 2, 2).
-    """
-    _, t_obs_minus_t_ref = coord_cur
-    param_cur = leaf[:-2, 0]
-    dparam_cur = leaf[:-2, 1]
-    d0_cur = leaf[-2, 0]
-    f0 = leaf[-1, 0]
-
-    param_limits_d = np.empty((poly_order, 2), dtype=np.float64)
-    for i in range(poly_order):
-        param_limits_d[i, 0] = param_limits[i][0]
-        param_limits_d[i, 1] = param_limits[i][1]
-    param_limits_d[-1, 0] = (1 - param_limits[poly_order - 1][1] / f0) * C_VAL
-    param_limits_d[-1, 1] = (1 - param_limits[poly_order - 1][0] / f0) * C_VAL
-
-    dparam_new = psr_utils.poly_taylor_step_d(
-        poly_order,
-        t_obs_minus_t_ref,
-        nbins,
-        eta,
-        f0,
-        t_ref=0,
-    )
-    shift_bins = psr_utils.poly_taylor_shift_d(
-        dparam_cur,
-        dparam_new,
-        t_obs_minus_t_ref,
-        nbins,
-        f0,
-        t_ref=0,
-    )
-
-    total_size = 1
-    leaf_branch_params = typed.List.empty_list(types.float64[::1])
-    leaf_branch_dparams = np.empty(poly_order, dtype=np.float64)
-    shapes = np.empty(poly_order, dtype=np.int64)
-    for i in range(poly_order):
-        param_min, param_max = param_limits_d[i]
-        if shift_bins[i] >= (eta - FLOAT_EPSILON):
-            leaf_param_arr, dparam_act = psr_utils.branch_param(
-                param_cur[i],
-                dparam_cur[i],
-                dparam_new[i],
-                param_min,
-                param_max,
-            )
-        else:
-            leaf_param_arr = np.array([param_cur[i]], dtype=np.float64)
-            dparam_act = dparam_cur[i]
-        leaf_branch_dparams[i] = dparam_act
-        leaf_branch_params.append(leaf_param_arr)
-        shapes[i] = len(leaf_param_arr)
-        total_size *= shapes[i]
-
-    # Allocate and populate the final array directly
-    leaves_branch_taylor = np.empty((total_size, poly_order, 2), dtype=np.float64)
-    leaves_branch_taylor[:, :, 1] = leaf_branch_dparams
-    # Fill column 0 (parameter values) using Cartesian product logic
-    for i in range(total_size):
-        idx = i
-        # last dimension changes fastest
-        for j in range(poly_order - 1, -1, -1):
-            arr = leaf_branch_params[j]
-            arr_idx = idx % shapes[j]
-            leaves_branch_taylor[i, j, 0] = arr[arr_idx]
-            idx //= shapes[j]
-
-    leaves_branch = np.zeros((total_size, poly_order + 2, 2), dtype=np.float64)
-    leaves_branch[:, :-2] = leaves_branch_taylor
-    leaves_branch[:, -2, 0] = d0_cur
-    leaves_branch[:, -1, 0] = f0
-    return leaves_branch
 
 
 @njit(cache=True, fastmath=True)
@@ -176,28 +90,55 @@ def poly_taylor_branch_batch(
     param_limits: np.ndarray,
     branch_max: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Branch a batch of parameter sets to leaves."""
-    n_batch, _, _ = leaves_batch.shape
+    """Branch a batch of parameter sets to leaves.
+
+    Parameters
+    ----------
+    leaves_batch : np.ndarray
+        Parameter sets (leaves) to branch. Shape: (n_leaves, total_size).
+        total_size = (n_params + 2) * 2 + (n_params * n_params)
+    coord_cur : tuple[float, float]
+        Coordinates for the accumulated segment in the current stage.
+    nbins : int
+        Number of bins in the folded profile.
+    eta : float
+        Tolerance for the parameter step size in bins.
+    poly_order : int
+        The order of the Taylor polynomial.
+    param_limits : np.ndarray
+        The limits for each parameter in Taylor basis (reverse order).
+    branch_max : int
+        Maximum number of branches that can be generated.
+
+    Returns
+    -------
+    np.ndarray
+        Array of leaf parameter sets. Shape: (n_branch, total_size).
+    """
+    n_batch, _ = leaves_batch.shape
     _, t_obs_minus_t_ref = coord_cur
-    param_cur_batch = leaves_batch[:, :-2, 0]
-    dparam_cur_batch = leaves_batch[:, :-2, 1]
-    d0_cur_batch = leaves_batch[:, -2, 0]
-    f0_batch = leaves_batch[:, -1, 0]
-    basis_flag_batch = leaves_batch[:, -1, 1]
 
-    param_limits_d = np.empty((n_batch, poly_order, 2), dtype=np.float64)
-    for i in range(poly_order):
-        param_limits_d[:, i, 0] = param_limits[i][0]
-        param_limits_d[:, i, 1] = param_limits[i][1]
-    param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
-    param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
+    n_params = poly_order
+    param_rows = n_params + 2
+    bo = param_rows * 2
+    basis_size = n_params * n_params
+    total_size = bo + basis_size
 
-    dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
-        poly_order,
+    dparam_cur_batch = np.empty((n_batch, n_params), dtype=np.float64)
+    f0_batch = np.empty(n_batch, dtype=np.float64)
+    for i in range(n_batch):
+        row = leaves_batch[i]
+        f0_batch[i] = row[2 * (param_rows - 1) + 0]
+        for j in range(n_params):
+            dparam_cur_batch[i, j] = row[(2 * j) + 1]
+
+    dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
+        n_params,
         t_obs_minus_t_ref,
         nbins,
         eta,
         f0_batch,
+        param_limits,
         t_ref=0,
     )
     shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
@@ -208,47 +149,73 @@ def poly_taylor_branch_batch(
         f0_batch,
         t_ref=0,
     )
-    # --- Vectorized Padded Branching ---
-    pad_branched_params = np.empty((n_batch, poly_order, branch_max), dtype=np.float64)
-    pad_branched_dparams = np.empty((n_batch, poly_order), dtype=np.float64)
-    branched_counts = np.empty((n_batch, poly_order), dtype=np.int64)
+    # Vectorized Padded Branching
+    pad_branched_fracs = np.empty((n_batch, n_params, branch_max), dtype=np.float64)
+    branched_scales = np.empty((n_batch, n_params), dtype=np.float64)
+    branched_counts = np.empty((n_batch, n_params), dtype=np.int64)
     for i in range(n_batch):
-        for j in range(poly_order):
-            param_min, param_max = param_limits_d[i, j]
-            dparam_act, count = psr_utils.branch_param_padded(
-                pad_branched_params[i, j],
-                param_cur_batch[i, j],
+        for j in range(n_params):
+            # Get purely fractional offsets [-0.5, 0.5]
+            scale, count = psr_utils.branch_logical_padded(
+                pad_branched_fracs[i, j],
                 dparam_cur_batch[i, j],
                 dparam_new_batch[i, j],
-                param_min,
-                param_max,
             )
-            pad_branched_dparams[i, j] = dparam_act
+            branched_scales[i, j] = scale
             branched_counts[i, j] = count
 
-    # --- Vectorized Selection ---
-    needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
+    # Vectorized Selection
     for i in range(n_batch):
-        for j in range(poly_order):
-            if not needs_branching[i, j]:
-                pad_branched_params[i, j, :] = 0
-                pad_branched_params[i, j, 0] = param_cur_batch[i, j]
-                pad_branched_dparams[i, j] = dparam_cur_batch[i, j]
+        for j in range(n_params):
+            if shift_bins_batch[i, j] < (eta - FLOAT_EPSILON):
+                branched_scales[i, j] = 1.0
                 branched_counts[i, j] = 1
-    # --- Optimized Padded Cartesian Product ---
-    leaves_branch_taylor_batch, batch_origins = np_utils.cartesian_prod_padded(
-        pad_branched_params,
+                for k in range(branch_max):
+                    pad_branched_fracs[i, j, k] = 0.0
+    # Optimized Padded Cartesian Product (fractional offsets)
+    leaves_branch_fracs_batch, batch_origins = np_utils.cartesian_prod_padded(
+        pad_branched_fracs,
         branched_counts,
         n_batch,
-        poly_order,
+        n_params,
     )
-    total_leaves = len(batch_origins)
-    leaves_branch_batch = np.zeros((total_leaves, poly_order + 2, 2), dtype=np.float64)
-    leaves_branch_batch[:, :-2, 0] = leaves_branch_taylor_batch
-    leaves_branch_batch[:, :-2, 1] = pad_branched_dparams[batch_origins]
-    leaves_branch_batch[:, -2, 0] = d0_cur_batch[batch_origins]
-    leaves_branch_batch[:, -1, 0] = f0_batch[batch_origins]
-    leaves_branch_batch[:, -1, 1] = basis_flag_batch[batch_origins]
+    total_leaves = batch_origins.shape[0]
+    leaves_branch_batch = np.zeros((total_leaves, total_size), dtype=np.float64)
+    # Child centers and basis
+    for i in range(total_leaves):
+        parent_idx = batch_origins[i]
+        parent_row = leaves_batch[parent_idx]
+        child_row = leaves_branch_batch[i]
+        fracs = leaves_branch_fracs_batch[i]
+
+        # Compute physical displacement and write child centers
+        # \phys_disp = fracs @ parent_basis.T
+        # New center = Old center + Physical Displacement
+        for j in range(n_params):
+            phys_disp = np.float64(0.0)
+            for k in range(n_params):
+                phys_disp += fracs[k] * parent_row[bo + (k * n_params) + j]
+            child_row[2 * j] = parent_row[2 * j] + phys_disp
+
+        # Scale the child basis. The child tile geometry is the same as the parent
+        # but scaled by the branching factor.
+        for j in range(n_params):
+            scale = branched_scales[parent_idx, j]
+            for k in range(n_params):
+                idx = bo + (k * n_params) + j
+                val = parent_row[idx] * scale
+                child_row[idx] = val
+                # diagonal entry → parameter extent
+                # Store current valid extent (diagonal of child basis) in dparam slot
+                if k == j:
+                    child_row[(2 * j) + 1] = np.abs(val)
+
+        # Copy over d0, f0, flags...
+        idx = 2 * (param_rows - 2)
+        child_row[idx] = parent_row[idx]
+        idx = 2 * (param_rows - 1)
+        child_row[idx] = parent_row[idx]
+        child_row[idx + 1] = parent_row[idx + 1]
     return leaves_branch_batch, batch_origins
 
 
@@ -328,14 +295,23 @@ def poly_taylor_resolve_batch(
     param_grid_count_init: np.ndarray,
     param_limits: np.ndarray,
     nbins: int,
+    poly_order: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
-    _, _, _ = leaves_batch.shape
+    n_batch, _ = leaves_batch.shape
     t0_cur, _ = coord_cur
     t0_init, _ = coord_init
     t0_add, _ = coord_add
-    param_vec_batch = leaves_batch[:, :-1, 0]
-    f0_batch = leaves_batch[:, -1, 0]
+
+    param_vec_batch = np.empty((n_batch, poly_order + 1), dtype=np.float64)
+    f0_batch = np.empty(n_batch, dtype=np.float64)
+    for i in range(n_batch):
+        row = leaves_batch[i]
+        for j in range(poly_order + 1):
+            param_vec_batch[i, j] = row[2 * j]
+        # f0 row (last param row)
+        f0_base = 2 * (poly_order + 1)
+        f0_batch[i] = row[f0_base]
 
     dvec_t_add = transforms.shift_taylor_params(param_vec_batch, t0_add - t0_cur)
     dvec_t_init = transforms.shift_taylor_params(param_vec_batch, t0_init - t0_cur)
@@ -370,7 +346,7 @@ def poly_taylor_fixed_resolve_batch(
     nbins: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
-    _, _, _ = leaves_batch.shape
+    _, _ = leaves_batch.shape
     _, _ = coord_cur
     t0_init, _ = coord_init
     t0_add, _ = coord_add
@@ -402,39 +378,77 @@ def poly_taylor_transform_batch(
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
-    use_conservative_tile: bool,
+    poly_order: int,
 ) -> np.ndarray:
     """Re-center the leaves to the next segment reference time."""
+    n_batch, _ = leaves_batch.shape
+    k = poly_order
+    param_rows = k + 2
+    param_size = param_rows * 2
+    basis_size = k * k
+    bo = param_size
     delta_t = coord_next[0] - coord_cur[0]
-    leaves_batch_trans = np.zeros_like(leaves_batch)
-    leaves_batch_trans[:, :-1] = transforms.shift_taylor_full(
-        leaves_batch[:, :-1],
-        delta_t,
-        use_conservative_tile,
-    )
-    leaves_batch_trans[:, -1] = leaves_batch[:, -1]
+    leaves_batch_trans = leaves_batch.copy()
+
+    # Construct the transformation matrix
+    powers = np.tril(np.arange(k + 1)[:, np.newaxis] - np.arange(k + 1))
+    t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
+
+    # Apply transform to each leaf
+    taylor_coeffs = np.empty(k + 1, dtype=np.float64)
+    basis_block = np.empty(basis_size, dtype=np.float64)
+    for i in range(n_batch):
+        row = leaves_batch_trans[i]
+        # \Parameters (taylor_coeffs @ t_mat.T)
+        for j in range(k + 1):
+            taylor_coeffs[j] = row[2 * j]
+        for j in range(k + 1):
+            acc = np.float64(0.0)
+            for m in range(k + 1):
+                acc += taylor_coeffs[m] * t_mat[j, m]
+            row[2 * j] = acc
+        # \Basis (t_mat[:-1,:-1] @ basis_block)
+        for r in range(k):
+            for c in range(k):
+                acc = np.float64(0.0)
+                for m in range(k):
+                    acc += t_mat[r, m] * row[bo + (m * k) + c]
+                basis_block[(r * k) + c] = acc
+        for r in range(k):
+            for c in range(k):
+                row[bo + (r * k) + c] = basis_block[(r * k) + c]
     return leaves_batch_trans
 
 
 @njit(cache=True, fastmath=True)
-def poly_taylor_report_batch(leaves: np.ndarray) -> np.ndarray:
-    param_sets_batch = leaves[:, :-2, :]
-    v_final = leaves[:, -3, 0]
-    dv_final = leaves[:, -3, 1]
-    f0_batch = leaves[:, -1, 0]
-    s_factor = 1 - v_final / C_VAL
-    # Gauge transform + error propagation
-    param_sets_vals = param_sets_batch[:, :-1, 0]
-    param_sets_sigs = param_sets_batch[:, :-1, 1]
-    param_sets_batch[:, :-1, 0] = param_sets_vals / s_factor[:, None]
-    param_sets_batch[:, :-1, 1] = np.sqrt(
-        (param_sets_sigs / s_factor[:, None]) ** 2
-        + ((param_sets_vals / (C_VAL * s_factor[:, None] ** 2)) ** 2)
-        * (dv_final[:, None] ** 2),
-    )
-    param_sets_batch[:, -1, 0] = f0_batch * s_factor
-    param_sets_batch[:, -1, 1] = f0_batch * dv_final / C_VAL
-    return param_sets_batch
+def poly_taylor_report_batch(leaves: np.ndarray, poly_order: int) -> np.ndarray:
+    n_batch, _ = leaves.shape
+    param_rows = poly_order + 2
+    out = np.empty((n_batch, poly_order, 2), dtype=np.float64)
+
+    for i in range(n_batch):
+        row = leaves[i]
+        v_base = 2 * (param_rows - 3)  # -3 row
+        v_final = row[v_base]
+        dv_final = row[v_base + 1]
+        f0_base = 2 * (param_rows - 1)  # last row
+        f0 = row[f0_base]
+        s_factor = 1.0 - v_final / C_VAL
+
+        for j in range(poly_order - 1):
+            val = row[2 * j]
+            sig = row[(2 * j) + 1]
+            val_new = val / s_factor
+            sig_new = np.sqrt(
+                (sig / s_factor) ** 2
+                + ((val / (C_VAL * s_factor * s_factor)) ** 2) * (dv_final * dv_final),
+            )
+            out[i, j, 0] = val_new
+            out[i, j, 1] = sig_new
+        out[i, poly_order - 1, 0] = f0 * s_factor
+        out[i, poly_order - 1, 1] = f0 * dv_final / C_VAL
+
+    return out
 
 
 @njit(cache=True, fastmath=True)
@@ -468,34 +482,39 @@ def generate_bp_poly_taylor_approx(
     eta: float,
     ref_seg: int,
     itree: int = 0,
-    use_conservative_tile: bool = False,
+    branch_max: int = 256,
 ) -> np.ndarray:
     """Generate the approximate branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
     snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
     coord_init = snail_scheme.get_coord(0)
     leaves_init = poly_taylor_seed(param_arr, dparams_lim, poly_order, coord_init)
-    leaf = leaves_init[itree]
+    leaf = leaves_init[itree : itree + 1]  # shape: (1, total_size)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
     for prune_level in range(1, nsegments):
         coord_next = snail_scheme.get_coord(prune_level)
         coord_cur = snail_scheme.get_current_coord(prune_level)
-        leaves_arr = poly_taylor_branch(
+        leaves_arr = poly_taylor_branch_batch(
             leaf,
             coord_cur,
             nbins,
             eta,
             poly_order,
             param_limits,
+            branch_max,
         )
         branching_pattern[prune_level - 1] = len(leaves_arr)
         leaves_arr_trans = poly_taylor_transform_batch(
             leaves_arr,
             coord_next,
             coord_cur,
-            use_conservative_tile,
+            poly_order,
         )
-        leaf = leaves_arr_trans[0]
+        leaf = leaves_arr_trans[0:1]  # shape: (1, total_size)
+    # Check if any branches is truncated due to branch_max
+    if np.any(branching_pattern == branch_max):
+        msg = "Branching pattern is truncated due to branch_max. Increase branch_max."
+        raise ValueError(msg)
     return branching_pattern
 
 
@@ -509,7 +528,6 @@ def generate_bp_poly_taylor(
     nbins: int,
     eta: float,
     ref_seg: int,
-    use_conservative_tile: bool,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor pruning search."""
     poly_order = len(dparams_lim)
@@ -525,24 +543,16 @@ def generate_bp_poly_taylor(
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -1] = dparam_cur_batch[:, -1] * (C_VAL / f0_batch)
 
-    param_limits_d = np.empty((n_freqs, poly_order, 2), dtype=np.float64)
-    for i in range(poly_order):
-        param_limits_d[:, i, 0] = param_limits[i][0]
-        param_limits_d[:, i, 1] = param_limits[i][1]
-    param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
-    param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
-    param_ranges = (param_limits_d[:, :, 1] - param_limits_d[:, :, 0]) / 2
-
     for prune_level in range(1, nsegments):
-        coord_next = snail_scheme.get_coord(prune_level)
         coord_cur = snail_scheme.get_current_coord(prune_level)
         _, t_obs_minus_t_ref = coord_cur
-        dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
+        dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
             poly_order,
             t_obs_minus_t_ref,
             nbins,
             eta,
             f0_batch,
+            param_limits,
             t_ref=0,
         )
         shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
@@ -559,11 +569,10 @@ def generate_bp_poly_taylor(
 
         # Vectorized branching decision
         needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
-        too_large_step = dparam_new_batch > (param_ranges + FLOAT_EPSILON)
 
         for i in range(n_freqs):
             for j in range(poly_order):
-                if not needs_branching[i, j] or too_large_step[i, j]:
+                if not needs_branching[i, j]:
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
                 numerator = dparam_cur_batch[i, j] + FLOAT_EPSILON
@@ -578,16 +587,7 @@ def generate_bp_poly_taylor(
         # Update weights and dparams
         weights *= n_branches
 
-        # Transform dparams to the new optimal center
-        delta_t = coord_next[0] - coord_cur[0]
-        dparam_d_vec = np.zeros((n_freqs, poly_order + 1), dtype=np.float64)
-        dparam_d_vec[:, :-1] = dparam_cur_next
-        dparam_d_vec_new = transforms.shift_taylor_errors(
-            dparam_d_vec,
-            delta_t,
-            use_conservative_tile,
-        )
-        dparam_cur_batch = dparam_d_vec_new[:, :-1]
+        dparam_cur_batch = dparam_cur_next
     return branching_pattern
 
 
@@ -616,23 +616,16 @@ def generate_bp_poly_taylor_fixed(
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, -1] = dparam_cur_batch[:, -1] * (C_VAL / f0_batch)
 
-    param_limits_d = np.empty((n_freqs, poly_order, 2), dtype=np.float64)
-    for i in range(poly_order):
-        param_limits_d[:, i, 0] = param_limits[i][0]
-        param_limits_d[:, i, 1] = param_limits[i][1]
-    param_limits_d[:, -1, 0] = (1 - param_limits[poly_order - 1][1] / f0_batch) * C_VAL
-    param_limits_d[:, -1, 1] = (1 - param_limits[poly_order - 1][0] / f0_batch) * C_VAL
-    param_ranges = (param_limits_d[:, :, 1] - param_limits_d[:, :, 0]) / 2
-
     for prune_level in range(1, nsegments):
         coord_cur_fixed = snail_scheme.get_current_coord_fixed(prune_level)
         _, t_obs_minus_t_ref = coord_cur_fixed
-        dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
+        dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
             poly_order,
             t_obs_minus_t_ref,
             nbins,
             eta,
             f0_batch,
+            param_limits,
             t_ref=0,
         )
         shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
@@ -649,11 +642,10 @@ def generate_bp_poly_taylor_fixed(
 
         # Vectorized branching decision
         needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
-        too_large_step = dparam_new_batch > (param_ranges + FLOAT_EPSILON)
 
         for i in range(n_freqs):
             for j in range(poly_order):
-                if not needs_branching[i, j] or too_large_step[i, j]:
+                if not needs_branching[i, j]:
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
                 numerator = dparam_cur_batch[i, j] + FLOAT_EPSILON

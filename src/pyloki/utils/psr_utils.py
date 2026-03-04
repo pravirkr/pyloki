@@ -123,6 +123,30 @@ def poly_taylor_step_d(
 
 
 @njit(cache=True, fastmath=True)
+def poly_taylor_step_d_limited(
+    poly_order: int,
+    tobs: float,
+    nbins: int,
+    eta: float,
+    f0: float,
+    param_limits: np.ndarray,
+    t_ref: float = 0,
+) -> np.ndarray:
+    """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (scalar)."""
+    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref)
+    dparams = dparams_f * C_VAL / f0
+    for iparam in range(poly_order - 1):
+        param_min, param_max = param_limits[iparam]
+        domain_width = param_max - param_min
+        dparams[iparam] = min(domain_width, dparams[iparam])
+    v_min = (1 - param_limits[poly_order - 1][1] / f0) * C_VAL
+    v_max = (1 - param_limits[poly_order - 1][0] / f0) * C_VAL
+    domain_width = v_max - v_min
+    dparams[poly_order - 1] = min(domain_width, dparams[poly_order - 1])
+    return dparams
+
+
+@njit(cache=True, fastmath=True)
 def poly_taylor_step_d_vec(
     poly_order: int,
     tobs: float,
@@ -134,6 +158,34 @@ def poly_taylor_step_d_vec(
     """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (vector)."""
     dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref)
     return dparams_f[np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
+
+
+@njit(cache=True, fastmath=True)
+def poly_taylor_step_d_vec_limited(
+    poly_order: int,
+    tobs: float,
+    nbins: int,
+    eta: float,
+    f0_batch: np.ndarray,
+    param_limits: np.ndarray,
+    t_ref: float = 0,
+) -> np.ndarray:
+    """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (vector)."""
+    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref)
+    dparams = dparams_f[np.newaxis, :] * C_VAL / f0_batch[:, np.newaxis]
+    n_batch = f0_batch.shape[0]
+    for iparam in range(poly_order - 1):
+        param_min, param_max = param_limits[iparam]
+        domain_width = param_max - param_min
+        for i in range(n_batch):
+            dparams[i, iparam] = min(domain_width, dparams[i, iparam])
+    # velocity
+    for i in range(n_batch):
+        v_min = (1 - param_limits[poly_order - 1][1] / f0_batch[i]) * C_VAL
+        v_max = (1 - param_limits[poly_order - 1][0] / f0_batch[i]) * C_VAL
+        domain_width = v_max - v_min
+        dparams[i, poly_order - 1] = min(domain_width, dparams[i, poly_order - 1])
+    return dparams
 
 
 @njit(cache=True, fastmath=True)
@@ -267,48 +319,47 @@ def branch_param(
     param_cur: float,
     dparam_cur: float,
     dparam_new: float,
-    param_min: float = -np.inf,
-    param_max: float = np.inf,
 ) -> tuple[np.ndarray, float]:
-    """Refine a parameter range around a current value with a finer step size.
+    """Generate refined parameter centres around a current value.
 
-    This function creates a new array of parameter values centered on a specified
-    current value with a desired new step size.
+    This function subdivides the current parameter spacing into a finer grid
+    centred on ``param_cur``. The refinement is controlled by the ratio between
+    the current grid spacing and the desired new spacing.
+
+    The function assumes that parameter values outside the allowed search
+    domain will be handled elsewhere (e.g. by a validation step). Therefore
+    it does not enforce parameter limits internally.
 
     Parameters
     ----------
     param_cur : float
-        The current parameter value (center of the range).
+        Current parameter value (centre of the parent cell).
     dparam_cur : float
-        The current parameter step size (half-width of current range).
+        Current grid spacing of the parameter dimension. This represents the
+        characteristic spacing between neighbouring grid points at the
+        current search stage.
     dparam_new : float
-        The desired new parameter step size (half-width of finer range).
-    param_min : float, optional
-        The minimum allowable parameter value, by default -np.inf.
-    param_max : float, optional
-        The maximum allowable parameter value, by default np.inf.
+        Desired grid spacing for the refined search stage. The actual spacing
+        used may differ slightly in order to maintain symmetry.
 
     Returns
     -------
     tuple[np.ndarray, float]
-        Array of new parameter values and the actual new parameter step size used.
+        param_arr_new : np.ndarray
+            Array of refined parameter centres generated around ``param_cur``.
+
+        dparam_new_actual : float
+            Actual spacing between the returned parameter centres.
 
     Raises
     ------
     ValueError
-        If the input parameters are invalid.
+        If the provided spacings are not positive.
     """
     if dparam_cur <= FLOAT_EPSILON or dparam_new <= FLOAT_EPSILON:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
-    if param_max <= param_min + FLOAT_EPSILON:
-        msg = "param_max must be greater than param_min."
-        raise ValueError(msg)
-    param_range = (param_max - param_min) / 2.0
-    if dparam_new > (param_range + FLOAT_EPSILON):
-        # If the desired new step size is too large, return the current value
-        return np.array([param_cur]), dparam_new
-    # Compute number of intervals with conservative ceil logic
+    # Determine number of refined points
     num_points = int(
         np.ceil(((dparam_cur + FLOAT_EPSILON) / dparam_new) - FLOAT_EPSILON),
     )
@@ -331,23 +382,11 @@ def branch_param_padded(
     param_cur: float,
     dparam_cur: float,
     dparam_new: float,
-    param_min: float = -np.inf,
-    param_max: float = np.inf,
 ) -> tuple[float, int]:
-    count = 0
-    dparam_new_actual = dparam_new  # Default if no branching occurs or edge cases
+    """Generate parameters as `branch_param`, but for padded arrays."""
     if dparam_cur <= FLOAT_EPSILON or dparam_new <= FLOAT_EPSILON:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
-    if param_max <= param_min + FLOAT_EPSILON:
-        msg = "param_max must be greater than param_min."
-        raise ValueError(msg)
-
-    param_range = (param_max - param_min) / 2.0
-    if dparam_new > (param_range + FLOAT_EPSILON):
-        # If the desired new step size is too large, return the current value
-        out_values[0] = param_cur
-        return dparam_new, 1
     # Compute number of intervals with conservative ceil logic
     num_points = int(
         np.ceil(((dparam_cur + FLOAT_EPSILON) / dparam_new) - FLOAT_EPSILON),
@@ -372,6 +411,46 @@ def branch_param_padded(
     # Calculate actual dparam based on generated points
     dparam_new_actual = dparam_cur / num_points
     return dparam_new_actual, count
+
+
+@njit(cache=True, fastmath=True)
+def branch_logical_padded(
+    out_values: np.ndarray,  # Slice to write into (shape MAX_BRANCH_VALS,)
+    extent_cur: float,
+    extent_new: float,
+) -> tuple[float, int]:
+    """Generate parameters as `branch_param`, but for padded arrays."""
+    if extent_cur <= FLOAT_EPSILON or extent_new <= FLOAT_EPSILON:
+        msg = "Both extent_cur and extent_new must be positive."
+        raise ValueError(msg)
+    if extent_new > (extent_cur + FLOAT_EPSILON):
+        # No branching needed. Offset is 0 (center), scale is 1.0 (unchanged)
+        out_values[0] = 0.0
+        return 1.0, 1
+    # Compute number of intervals with conservative ceil logic
+    num_points = int(
+        np.ceil(((extent_cur + FLOAT_EPSILON) / extent_new) - FLOAT_EPSILON),
+    )
+    if num_points <= 0:
+        msg = "Invalid input: ensure dparam_cur > dparam_new."
+        raise ValueError(msg)
+    # Confidence-based symmetric range shrinkage
+    # 0.5 < confidence_const < 1
+    confidence_const = 0.5 * (1 + 1 / num_points)
+    half_range = confidence_const * 1.0
+    start = - half_range
+    stop = half_range
+    num_intervals = num_points + 1
+    step = (stop - start) / num_intervals
+
+    # Generate points and fill the start of the padded array
+    count = min(num_points, len(out_values))
+    for i in range(count):
+        out_values[i] = start + (i + 1) * step
+
+    # Calculate actual extent based on generated points
+    extent_new_actual = 1.0 / num_points
+    return extent_new_actual, count
 
 
 @njit(cache=True, fastmath=True)

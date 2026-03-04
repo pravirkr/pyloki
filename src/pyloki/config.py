@@ -526,13 +526,27 @@ class PulsarSearchConfig:
         )
 
     def get_dparams_limited(self, ffa_level: int) -> np.ndarray:
+        """Return parameter spacings limited by the search domain.
+
+        The raw spacings returned by ``get_dparams`` are clipped so they do not
+        exceed the allowed parameter range in each dimension.
+
+        Parameters
+        ----------
+        ffa_level : int
+            FFA level for which to compute the parameter spacings.
+
+        Returns
+        -------
+        np.ndarray
+            Parameter spacings limited by the search domain.
+        """
         dparams = self.get_dparams(ffa_level)
-        dparams_lim = np.zeros_like(dparams)
+        dparams_lim = np.empty_like(dparams)
         for iparam in range(self.nparams):
-            if iparam == self.nparams - 1:
-                dparams_lim[iparam] = dparams[iparam]
-            dparam_diff = self.param_limits[iparam][1] - self.param_limits[iparam][0]
-            dparams_lim[iparam] = min(dparam_diff, dparams[iparam])
+            vmin, vmax = self.param_limits[iparam]
+            domain_width = vmax - vmin
+            dparams_lim[iparam] = min(domain_width, dparams[iparam])
         return dparams_lim
 
     def get_param_grid_count(self, ffa_level: int) -> np.ndarray:
@@ -619,7 +633,6 @@ class PulsarSearchConfig:
                 self.eta,
                 ref_seg,
                 isuggest,
-                self.use_conservative_tile,
             )
         if kind == "chebyshev":
             return generate_bp_poly_chebyshev_approx(
@@ -673,7 +686,6 @@ class PulsarSearchConfig:
                 self.nbins,
                 self.eta,
                 ref_seg,
-                self.use_conservative_tile,
             )
         if kind == "chebyshev":
             return generate_bp_poly_chebyshev(
