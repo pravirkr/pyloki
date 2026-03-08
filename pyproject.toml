@@ -99,6 +99,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "src/pyloki/**/*.py" = ["E402"]
+"src/pyloki/dynamic/**/*.py" = ["ARG001", "ARG002"]
 "examples/**/*.ipynb" = ["T201"]
 
 [tool.ruff.lint.mccabe]

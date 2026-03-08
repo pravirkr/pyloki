@@ -8,109 +8,127 @@ from pyloki.utils.misc import C_VAL
 
 
 @njit(cache=True, fastmath=True)
-def shift_taylor_params(
-    taylor_param_vec: np.ndarray,
-    delta_t: float,
-    n_out: int = 0,
-) -> np.ndarray:
+def shift_taylor_params(taylor_param_vec: np.ndarray, delta_t: float) -> np.ndarray:
     """Shift the kinematic Taylor parameters to a new reference time.
 
     Parameters
     ----------
     taylor_param_vec : np.ndarray
-        Parameter vector of shape (..., n_params) at reference time t_i.
+        Parameter vector of shape (n_batch, n_poly) at reference time t_i.
         Ordering is [d_k_max, ..., d_1, d_0] where d_k is coefficient of (t - t_c)^k/k!.
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
-    n_out : int, optional
-        Number of output parameters from end. If negative, all parameters are returned.
 
     Returns
     -------
     np.ndarray
-        Parameter vector of shape (..., n_out) at the new reference time t_j.
+        Parameter vector of shape (n_batch, n_poly) at the new reference time t_j.
     """
-    n_params = taylor_param_vec.shape[-1]
-    n_out = n_params if n_out <= 0 else min(n_out, n_params)
-    powers = np.tril(np.arange(n_params)[:, np.newaxis] - np.arange(n_params))
-    # Calculate the transformation matrix (taylor coefficients)
-    t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
-    t_mat = t_mat[-n_out:]
-    # transform each vector in correct shape: np.dot(t_mat, param_vec)
-    return np.ascontiguousarray(taylor_param_vec) @ t_mat.T
+    n_batch, n_poly = taylor_param_vec.shape
+    poly_order = n_poly - 1
+    t_mat = maths.poly_taylor_transform_matrix(poly_order, delta_t)
+
+    # Transform polynomial coefficients
+    out = np.empty_like(taylor_param_vec)
+    for i_batch in range(n_batch):
+        # Parameters transformation (taylor_coeffs @ t_mat)
+        for i in range(n_poly):
+            acc = 0.0
+            for j in range(n_poly):
+                acc += taylor_param_vec[i_batch, j] * t_mat[j, i]
+            out[i_batch, i] = acc
+    return out
 
 
 @njit(cache=True, fastmath=True)
-def shift_taylor_errors(
-    taylor_error_vec: np.ndarray,
-    delta_t: float,
-    use_conservative_tile: bool,
-) -> np.ndarray:
-    """Shift the kinematic Taylor errors to a new reference time.
+def shift_taylor_params_1d(taylor_param_vec: np.ndarray, delta_t: float) -> np.ndarray:
+    n_poly = taylor_param_vec.shape[-1]
+    poly_order = n_poly - 1
+    t_mat = maths.poly_taylor_transform_matrix(poly_order, delta_t)
 
-    Parameters
-    ----------
-    taylor_error_vec : np.ndarray
-        Error vector of shape (..., nparams) at reference time t_i.
-        Ordering is [dd_k_max, ..., dd_1, dd_0] where dd_k is coefficient
-        of (t - t_c)^k/k!.
-    delta_t : float
-        The time difference (t_j - t_i) to shift the parameters by.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
-
-    Returns
-    -------
-    np.ndarray
-        Error vector of shape (..., nparams) at reference time t_j.
-    """
-    n_params = taylor_error_vec.shape[-1]
-    # Construct the transformation matrix
-    powers = np.tril(np.arange(n_params)[:, np.newaxis] - np.arange(n_params))
-    t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
-    # Propagate errors (assuming no covariance)
-    if use_conservative_tile:
-        return np.sqrt((np.ascontiguousarray(taylor_error_vec) ** 2) @ (t_mat**2).T)
-    return np.ascontiguousarray(taylor_error_vec) * np.abs(np.diag(t_mat))
+    # Transform polynomial coefficients
+    out = np.empty_like(taylor_param_vec)
+    # Parameters transformation (taylor_coeffs @ t_mat)
+    for i in range(n_poly):
+        acc = 0.0
+        for j in range(n_poly):
+            acc += taylor_param_vec[j] * t_mat[j, i]
+        out[i] = acc
+    return out
 
 
 @njit(cache=True, fastmath=True)
-def shift_taylor_full(
-    taylor_full_vec: np.ndarray,
-    delta_t: float,
-    use_conservative_tile: bool,
-) -> np.ndarray:
-    """Shift the kinematic Taylor parameters and errors to a new reference time.
+def shift_taylor_basis(leaf_bases_batch: np.ndarray, delta_t: float) -> None:
+    """Shift (In-place) the Taylor Lattice basis to a new reference time.
 
     Parameters
     ----------
-    taylor_full_vec : np.ndarray
-        Parameter vector of shape (..., nparams, 2) at reference time t_i.
-        Ordering is [[d_k_max, dd_k_max], ..., [d_1, dd_1], [d_0, dd_0]]
+    leaf_bases_batch : np.ndarray
+        Basis matrix of shape (..., n_params, n_params) at reference time t_i.
+        Diagonal ordering is [d_k_max, ..., d_1].
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
-
-    Returns
-    -------
-    np.ndarray
-        Parameter vector of shape (..., nparams, 2) at reference time t_j.
     """
-    n_params = taylor_full_vec.shape[-2]
-    # Construct the transformation matrix
-    powers = np.tril(np.arange(n_params)[:, np.newaxis] - np.arange(n_params))
-    t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
-    # Propagate errors (assuming no covariance)
-    leaves_param_new = np.empty_like(taylor_full_vec)
-    param_values = np.ascontiguousarray(taylor_full_vec[..., :, 0])
-    param_errors = np.ascontiguousarray(taylor_full_vec[..., :, 1])
-    leaves_param_new[..., :, 0] = param_values @ t_mat.T
-    if use_conservative_tile:
-        leaves_param_new[..., :, 1] = np.sqrt((param_errors**2) @ (t_mat**2).T)
-    else:
-        leaves_param_new[..., :, 1] = param_errors * np.abs(np.diag(t_mat))
-    return leaves_param_new
+    n_leaves, n_params, _ = leaf_bases_batch.shape
+    t_mat = maths.poly_taylor_transform_matrix(n_params, delta_t)
+
+    # Transform basis
+    basis_tmp = np.empty((n_params, n_params), dtype=np.float64)
+    for leaf in range(n_leaves):
+        # Basis transformation (t_mat.T @ B)
+        for r in range(n_params):
+            for c in range(n_params):
+                acc = 0.0
+                for m in range(n_params):
+                    acc += t_mat[m, r] * leaf_bases_batch[leaf, m, c]
+                basis_tmp[r, c] = acc
+        leaf_bases_batch[leaf] = basis_tmp
+
+
+@njit(cache=True, fastmath=True)
+def shift_taylor_params_basis(
+    leaf_params_batch: np.ndarray,
+    leaf_bases_batch: np.ndarray,
+    delta_t: float,
+) -> None:
+    """Shift (In-place) the kinematic Taylor parameters and basis to a new reference.
+
+    Parameters
+    ----------
+    leaf_params_batch : np.ndarray
+        Parameter vector of shape (..., n_params) at reference time t_i.
+        Ordering is [d_k_max, ..., d_1, d_0] where d_k is coefficient of (t - t_c)^k/k!.
+    leaf_bases_batch : np.ndarray
+        Basis matrix of shape (..., n_params, n_params) at reference time t_i.
+        Diagonal ordering is [d_k_max, ..., d_1].
+    delta_t : float
+        The time difference (t_j - t_i) to shift the parameters by.
+    """
+    n_leaves, n_params, _ = leaf_bases_batch.shape
+    t_mat = maths.poly_taylor_transform_matrix(n_params, delta_t)
+
+    # Transform polynomial coefficients
+    coeffs_tmp = np.empty(n_params + 1, dtype=np.float64)
+    basis_tmp = np.empty((n_params, n_params), dtype=np.float64)
+
+    for leaf in range(n_leaves):
+        # Parameters transformation (taylor_coeffs @ t_mat)
+        for i in range(n_params + 1):
+            coeffs_tmp[i] = leaf_params_batch[leaf, i]
+        for i in range(n_params + 1):
+            acc = 0.0
+            for j in range(n_params + 1):
+                acc += coeffs_tmp[j] * t_mat[j, i]
+            leaf_params_batch[leaf, i] = acc
+
+        # Basis transformation (t_mat.T @ B)
+        for r in range(n_params):
+            for c in range(n_params):
+                acc = 0.0
+                for m in range(n_params):
+                    acc += t_mat[m, r] * leaf_bases_batch[leaf, m, c]
+                basis_tmp[r, c] = acc
+        leaf_bases_batch[leaf] = basis_tmp
 
 
 @njit(cache=True, fastmath=True)
@@ -138,7 +156,7 @@ def shift_taylor_params_d_f(
     n_params = param_vec.shape[-1]
     taylor_param_vec = np.zeros(n_params + 1, dtype=param_vec.dtype)
     taylor_param_vec[:-2] = param_vec[:-1]  # till acceleration
-    taylor_param_vec_new = shift_taylor_params(taylor_param_vec, delta_t)
+    taylor_param_vec_new = shift_taylor_params_1d(taylor_param_vec, delta_t)
     param_vec_new = param_vec.copy()
     param_vec_new[:-1] = taylor_param_vec_new[:-2]
     param_vec_new[-1] = param_vec[-1] * (1 - taylor_param_vec_new[-2] / C_VAL)
@@ -152,8 +170,8 @@ def shift_taylor_params_d_f_batch(
     delta_t: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Batch version of shift_taylor_params_d_f."""
-    n_batch, nparams = param_vec_batch.shape
-    taylor_param_vec = np.zeros((n_batch, nparams + 1), dtype=param_vec_batch.dtype)
+    n_batch, n_params = param_vec_batch.shape
+    taylor_param_vec = np.zeros((n_batch, n_params + 1), dtype=param_vec_batch.dtype)
     taylor_param_vec[:, :-2] = param_vec_batch[:, :-1]  # till acceleration
     taylor_param_vec_new = shift_taylor_params(taylor_param_vec, delta_t)
     param_vec_new = param_vec_batch.copy()
@@ -164,47 +182,6 @@ def shift_taylor_params_d_f_batch(
     delay_rel = taylor_param_vec_new[:, -1] / C_VAL
     return param_vec_new, delay_rel
 
-
-@njit(cache=True, fastmath=True)
-def shift_taylor_params_circular_d_f_batch(
-    param_vec_batch: np.ndarray,
-    delta_t: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Specialized version of shift_taylor_params_circular_batch for d_f basis."""
-    n_batch, nparams = param_vec_batch.shape
-    if nparams != 4:
-        msg = "4 parameters are needed for circular orbit propagation."
-        raise ValueError(msg)
-    s_i = param_vec_batch[:, 0]
-    j_i = param_vec_batch[:, 1]
-    a_i = param_vec_batch[:, 2]
-    f_i = param_vec_batch[:, 3]
-
-    omega_orb_sq = -s_i / a_i
-    omega_orb = np.sqrt(omega_orb_sq)
-    # Evolve the phase to the new time t_j = t_i + delta_t
-    omega_dt = omega_orb * delta_t
-    cos_odt = np.cos(omega_dt)
-    sin_odt = np.sin(omega_dt)
-    # Pin-down {s, j, a}
-    a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
-    j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
-    s_j = -omega_orb_sq * a_j
-    # Integrate to get {v, d}
-    v_circ_i = -j_i / omega_orb_sq
-    v_circ_j = -j_j / omega_orb_sq
-    delta_v = v_circ_j - v_circ_i
-    d_circ_j = -a_j / omega_orb_sq
-    d_circ_i = -a_i / omega_orb_sq
-    delta_d = d_circ_j - d_circ_i + (0 - v_circ_i) * delta_t
-    delay_rel = delta_d / C_VAL
-    f_j = f_i * (1 - delta_v / C_VAL)
-    out = np.empty((n_batch, 5), dtype=param_vec_batch.dtype)
-    out[:, 0] = s_j
-    out[:, 1] = j_j
-    out[:, 2] = a_j
-    out[:, 3] = f_j
-    return out, delay_rel
 
 @njit(cache=True, fastmath=True)
 def taylor_to_circular_full(param_sets: np.ndarray) -> np.ndarray:
@@ -266,11 +243,12 @@ def taylor_to_circular_full(param_sets: np.ndarray) -> np.ndarray:
 def shift_taylor_circular_params(
     taylor_param_vec: np.ndarray,
     delta_t: float,
+    in_hole: bool = False,
 ) -> np.ndarray:
     """Specialized version of shift_taylor_params for circular-orbit propagation.
 
     Works only for 6 parameters and batch processing. Input must be guaranteed to be
-    a physical circular orbit. Crackle is redundant and not used for pinning omega.
+    a physical circular orbit.
 
     Parameters
     ----------
@@ -278,471 +256,110 @@ def shift_taylor_circular_params(
         Parameter vector of shape (n_batch, 6), ordered [c, s, j, a, v, d] at t_i.
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
+    in_hole : bool, optional
+        If True, snap-accel is not significant but crackle-jerk is.
 
     Returns
     -------
     np.ndarray
         Parameter vector of shape (n_batch, 6), ordered [c, s, j, a, v, d] at t_j.
     """
-    n_batch, n_params = taylor_param_vec.shape
-    if n_params != 6:
-        msg = "6 parameters are needed for circular orbit propagation."
+    n_batch, n_poly = taylor_param_vec.shape
+    n_params = n_poly - 1
+    if n_params != 5:
+        msg = "5 parameters are needed for circular orbit propagation."
         raise ValueError(msg)
-    s_i = taylor_param_vec[:, 1]
-    j_i = taylor_param_vec[:, 2]
-    a_i = taylor_param_vec[:, 3]
-    v_i = taylor_param_vec[:, 4]
-    d_i = taylor_param_vec[:, 5]
+    d5_i = taylor_param_vec[:, 0]
+    d4_i = taylor_param_vec[:, 1]
+    d3_i = taylor_param_vec[:, 2]
+    d2_i = taylor_param_vec[:, 3]
+    d1_i = taylor_param_vec[:, 4]
+    d0_i = taylor_param_vec[:, 5]
 
-    # Pin-down the orbit using snap and accel
-    omega_orb_sq = -s_i / a_i
+    # Pin-down the orbit
+    omega_orb_sq = -d5_i / d3_i if in_hole else -d4_i / d2_i
     omega_orb = np.sqrt(omega_orb_sq)
     # Evolve the phase to the new time t_j = t_i + delta_t
     omega_dt = omega_orb * delta_t
     cos_odt = np.cos(omega_dt)
     sin_odt = np.sin(omega_dt)
-    # Pin-down {s, j, a}
-    a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
-    j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
-    s_j = -omega_orb_sq * a_j
-    c_j = -omega_orb_sq * j_j
-    # Integrate to get {v, d}
-    v_circ_i = -j_i / omega_orb_sq
-    v_circ_j = -j_j / omega_orb_sq
-    v_j = v_circ_j + (v_i - v_circ_i)
-    d_circ_j = -a_j / omega_orb_sq
-    d_circ_i = -a_i / omega_orb_sq
-    d_j = d_circ_j + (d_i - d_circ_i) + (v_i - v_circ_i) * delta_t
+    # rotation
+    d2_j = d2_i * cos_odt + (d3_i / omega_orb) * sin_odt
+    d3_j = d3_i * cos_odt - (d2_i * omega_orb) * sin_odt
+    # circular constraints
+    d4_j = -omega_orb_sq * d2_j
+    d5_j = -omega_orb_sq * d3_j
+    # Secular parameters. Integrate to get {v, d}
+    d1_circ_i = -d3_i / omega_orb_sq
+    d1_circ_j = -d3_j / omega_orb_sq
+    d1_j = d1_circ_j + (d1_i - d1_circ_i)
+    d0_circ_j = -d2_j / omega_orb_sq
+    d0_circ_i = -d2_i / omega_orb_sq
+    d0_j = d0_circ_j + (d0_i - d0_circ_i) + (d1_i - d1_circ_i) * delta_t
 
-    out = np.empty((n_batch, 6), dtype=taylor_param_vec.dtype)
-    out[:, 0] = c_j
-    out[:, 1] = s_j
-    out[:, 2] = j_j
-    out[:, 3] = a_j
-    out[:, 4] = v_j
-    out[:, 5] = d_j
+    out = np.empty((n_batch, n_poly), dtype=taylor_param_vec.dtype)
+    out[:, 0] = d5_j
+    out[:, 1] = d4_j
+    out[:, 2] = d3_j
+    out[:, 3] = d2_j
+    out[:, 4] = d1_j
+    out[:, 5] = d0_j
     return out
 
 
 @njit(cache=True, fastmath=True)
-def shift_taylor_circular_crackle_params(
-    taylor_param_vec: np.ndarray,
-    delta_t: float,
-) -> np.ndarray:
-    """Specialized version of shift_taylor_params for circular-orbit propagation.
-
-    Works only for 6 parameters and batch processing. Input must be guaranteed to be
-    a physical circular orbit. Crackle is used here as snap/accel is unstable.
-
-    Parameters
-    ----------
-    taylor_param_vec : np.ndarray
-        Parameter vector of shape (n_batch, 6), ordered [c, s, j, a, v, d] at t_i.
-    delta_t : float
-        The time difference (t_j - t_i) to shift the parameters by.
-
-    Returns
-    -------
-    np.ndarray
-        Parameter vector of shape (n_batch, 6), ordered [c, s, j, a, v, d] at t_j.
-    """
-    n_batch, n_params = taylor_param_vec.shape
-    if n_params != 6:
-        msg = "6 parameters are needed for circular orbit propagation."
-        raise ValueError(msg)
-    c_i = taylor_param_vec[:, 0]
-    j_i = taylor_param_vec[:, 2]
-    a_i = taylor_param_vec[:, 3]
-    v_i = taylor_param_vec[:, 4]
-    d_i = taylor_param_vec[:, 5]
-
-    # Pin-down the orbit using crackle and jerk
-    omega_orb_sq = -c_i / j_i
-    omega_orb = np.sqrt(omega_orb_sq)
-    # Evolve the phase to the new time t_j = t_i + delta_t
-    omega_dt = omega_orb * delta_t
-    cos_odt = np.cos(omega_dt)
-    sin_odt = np.sin(omega_dt)
-    # Pin-down {s, j, a}
-    a_j = a_i * cos_odt + (j_i / omega_orb) * sin_odt
-    j_j = j_i * cos_odt - (a_i * omega_orb) * sin_odt
-    s_j = -omega_orb_sq * a_j
-    c_j = -omega_orb_sq * j_j
-    # Integrate to get {v, d}
-    v_circ_i = -j_i / omega_orb_sq
-    v_circ_j = -j_j / omega_orb_sq
-    v_j = v_circ_j + (v_i - v_circ_i)
-    d_circ_j = -a_j / omega_orb_sq
-    d_circ_i = -a_i / omega_orb_sq
-    d_j = d_circ_j + (d_i - d_circ_i) + (v_i - v_circ_i) * delta_t
-
-    out = np.empty((n_batch, 6), dtype=taylor_param_vec.dtype)
-    out[:, 0] = c_j
-    out[:, 1] = s_j
-    out[:, 2] = j_j
-    out[:, 3] = a_j
-    out[:, 4] = v_j
-    out[:, 5] = d_j
-    return out
-
-
-@njit(cache=True, fastmath=True)
-def shift_taylor_circular_errors(
-    taylor_error_vec: np.ndarray,
+def shift_taylor_circular_basis(
+    leaf_bases_batch: np.ndarray,
     delta_t: float,
     p_orb_min: float,
-    use_conservative_tile: bool,
-) -> np.ndarray:
-    """Specialized version of shift_taylor_errors for circular-orbit propagation.
-
-    Works only for 6 parameters and batch processing. Input must be guaranteed to be
-    a physical circular orbit. Crackle is redundant and not used for pinning omega.
-
-    Parameters
-    ----------
-    taylor_error_vec : np.ndarray
-        Error vector of shape (n_batch, 6) at reference time t_i.
-        Ordering is [dc, ds, dj, da, dv, dd]
-    delta_t : float
-        The time difference (t_j - t_i) to shift the parameters by.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
-
-    Returns
-    -------
-    np.ndarray
-        Error vector of shape (n_batch, 6) at reference time t_j.
-    """
-    n_batch, n_params = taylor_error_vec.shape
-    if n_params != 6:
-        msg = "6 parameters are needed for circular orbit propagation."
+) -> None:
+    n_leaves, n_params, _ = leaf_bases_batch.shape
+    if n_params != 5:
+        msg = "5 parameters are needed for circular orbit propagation."
         raise ValueError(msg)
-    sig_d3_i = taylor_error_vec[:, 2]
-    sig_d2_i = taylor_error_vec[:, 3]
-    sig_d1_i = taylor_error_vec[:, 4]
 
-    omega_orb_max = 2 * np.pi / p_orb_min
-    omega_orb_sq_max = omega_orb_max**2
-    out = np.empty((n_batch, 6), dtype=taylor_error_vec.dtype)
-    if use_conservative_tile:
-        msg = "Conservative tile not implemented for circular orbit propagation."
-        raise NotImplementedError(msg)
-    sig_d2_j = np.sqrt(sig_d2_i**2 + (delta_t * sig_d3_i) ** 2)
-    sig_d3_j = np.sqrt(sig_d3_i**2 + sig_d2_i**2 * omega_orb_sq_max)
-    sig_d1_j = np.sqrt(
-        sig_d1_i**2 + (delta_t * sig_d3_i / 2) ** 2 + (delta_t * sig_d2_i) ** 2,
+    l_mat = maths.circ_taylor_transform_matrix(delta_t, p_orb_min)
+    basis_tmp = np.empty((n_params, n_params), dtype=np.float64)
+    for leaf in range(n_leaves):
+        # Basis transformation (l_mat.T @ B)
+        for r in range(n_params):
+            for c in range(n_params):
+                acc = np.float64(0.0)
+                for m in range(n_params):
+                    acc += l_mat[m, r] * leaf_bases_batch[leaf, m, c]
+                basis_tmp[r, c] = acc
+        leaf_bases_batch[leaf] = basis_tmp
+
+
+@njit(cache=True, fastmath=True)
+def shift_taylor_circular_params_basis(
+    leaf_params_batch: np.ndarray,
+    leaf_bases_batch: np.ndarray,
+    delta_t: float,
+    p_orb_min: float,
+    in_hole: bool = False,
+) -> None:
+    n_leaves, n_params, _ = leaf_bases_batch.shape
+    if n_params != 5:
+        msg = "5 parameters are needed for circular orbit propagation."
+        raise ValueError(msg)
+    leaf_params_batch[:, :-2] = shift_taylor_circular_params(
+        leaf_params_batch[:, :-2],
+        delta_t,
+        in_hole=in_hole,
     )
-    out[:, 0] = omega_orb_sq_max * sig_d3_j
-    out[:, 1] = omega_orb_sq_max * sig_d2_j
-    out[:, 2] = sig_d3_j
-    out[:, 3] = sig_d2_j
-    out[:, 4] = sig_d1_j
-    out[:, 5] = 0
-    return out
 
-
-@njit(cache=True, fastmath=True)
-def shift_taylor_circular_full(
-    taylor_full_vec: np.ndarray,
-    delta_t: float,
-    use_conservative_tile: bool,
-) -> np.ndarray:
-    """Specialized version of shift_taylor_full for circular-orbit propagation.
-
-    Works only for 6 parameters and batch processing. Input must be guaranteed to be
-    a physical circular orbit. Crackle is redundant and not used for pinning omega.
-
-    Parameters
-    ----------
-    taylor_full_vec : np.ndarray
-        Parameter vector of shape (n_batch, 6, 2) at reference time t_i.
-        Ordering is [[c, dc], [s, ds], [j, dj], [a, da], [v, dv], [d, dd]]
-    delta_t : float
-        The time difference (t_j - t_i) to shift the parameters by.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
-
-    Returns
-    -------
-    np.ndarray
-        Parameter vector of shape (n_batch, 6, 2) at reference time t_j.
-    """
-    n_batch, n_params, _ = taylor_full_vec.shape
-    if n_params != 6:
-        msg = "6 parameters are needed for circular orbit propagation."
-        raise ValueError(msg)
-    d4_i = taylor_full_vec[:, 1, 0]
-    d3_i = taylor_full_vec[:, 2, 0]
-    d2_i = taylor_full_vec[:, 3, 0]
-    d1_i = taylor_full_vec[:, 4, 0]
-    d0_i = taylor_full_vec[:, 5, 0]
-
-    sig_d4_i = taylor_full_vec[:, 1, 1]
-    sig_d3_i = taylor_full_vec[:, 2, 1]
-    sig_d2_i = taylor_full_vec[:, 3, 1]
-    sig_d1_i = taylor_full_vec[:, 4, 1]
-
-    # Pin-down the orbit using snap and accel
-    omega_orb_sq = -d4_i / d2_i
-    omega_orb = np.sqrt(omega_orb_sq)
-    # Evolve the phase to the new time t_j = t_i + delta_t
-    omega_dt = omega_orb * delta_t
-    cos_odt = np.cos(omega_dt)
-    sin_odt = np.sin(omega_dt)
-    # Precompute some constants for efficiency
-    inv_omega_orb = 1.0 / omega_orb
-    inv_omega_orb_sq = 1.0 / omega_orb_sq
-    sin_odt_inv_omega = sin_odt * inv_omega_orb
-    d3_i_sin_odt_inv_omega = d3_i * sin_odt_inv_omega
-    d2_i_omega_sin_odt = d2_i * omega_orb * sin_odt
-    # Pin-down {s, j, a}
-    d2_j = d2_i * cos_odt + d3_i_sin_odt_inv_omega
-    d3_j = d3_i * cos_odt - d2_i_omega_sin_odt
-    d4_j = -omega_orb_sq * d2_j
-    d5_j = -omega_orb_sq * d3_j
-    # Integrate to get {v, d}
-    v_circ_i = -d3_i * inv_omega_orb_sq
-    v_circ_j = -d3_j * inv_omega_orb_sq
-    d1_diff = d1_i - v_circ_i
-    d1_j = v_circ_j + d1_diff
-    d_circ_j = -d2_j * inv_omega_orb_sq
-    d_circ_i = -d2_i * inv_omega_orb_sq
-    d0_j = d_circ_j + (d0_i - d_circ_i) + d1_diff * delta_t
-
-    out = np.empty((n_batch, 6, 2), dtype=taylor_full_vec.dtype)
-    out[:, 0, 0] = d5_j
-    out[:, 1, 0] = d4_j
-    out[:, 2, 0] = d3_j
-    out[:, 3, 0] = d2_j
-    out[:, 4, 0] = d1_j
-    out[:, 5, 0] = d0_j
-
-    if use_conservative_tile:
-        omega_cu = omega_orb_sq * omega_orb
-        inv_omega_cu = inv_omega_orb * inv_omega_orb_sq
-
-        # Precompute sigma squared values
-        var_d1_i = sig_d1_i**2
-        var_d2_i = sig_d2_i**2
-        var_d3_i = sig_d3_i**2
-        var_d4_i = sig_d4_i**2
-
-        u2 = omega_dt * d3_j * inv_omega_orb_sq - d3_i_sin_odt_inv_omega * inv_omega_orb
-        u3 = -omega_dt * d2_j - d2_i * sin_odt
-        u4 = -2 * omega_orb * d2_j - omega_orb_sq * u2
-        u5 = -2 * omega_orb * d3_j - omega_orb_sq * u3
-        u1 = 2 * (d3_j - d3_i) * inv_omega_cu - u3 * inv_omega_orb_sq
-        v2 = -omega_orb / (2 * d2_i)
-        v4 = omega_orb / (2 * d4_i)
-
-        j52 = omega_cu * sin_odt + u5 * v2
-        j53 = -omega_orb_sq * cos_odt
-        j54 = u5 * v4
-        var_d5_j = j52**2 * var_d2_i + j53**2 * var_d3_i + j54**2 * var_d4_i
-
-        j42 = -omega_orb_sq * cos_odt + u4 * v2
-        j43 = -omega_orb * sin_odt
-        j44 = u4 * v4
-        var_d4_j = j42**2 * var_d2_i + j43**2 * var_d3_i + j44**2 * var_d4_i
-
-        j32 = -omega_orb * sin_odt + u3 * v2
-        j33 = cos_odt
-        j34 = u3 * v4
-        var_d3_j = j32**2 * var_d2_i + j33**2 * var_d3_i + j34**2 * var_d4_i
-
-        j22 = cos_odt + u2 * v2
-        j23 = sin_odt / omega_orb
-        j24 = u2 * v4
-        var_d2_j = j22**2 * var_d2_i + j23**2 * var_d3_i + j24**2 * var_d4_i
-
-        j11 = 1.0
-        j12 = sin_odt_inv_omega + u1 * v2
-        j13 = (1 - cos_odt) * inv_omega_orb_sq
-        j14 = u1 * v4
-        var_d1_j = (
-            j11**2 * var_d1_i
-            + j12**2 * var_d2_i
-            + j13**2 * var_d3_i
-            + j14**2 * var_d4_i
-        )
-
-        out[:, 0, 1] = np.sqrt(var_d5_j)
-        out[:, 1, 1] = np.sqrt(var_d4_j)
-        out[:, 2, 1] = np.sqrt(var_d3_j)
-        out[:, 3, 1] = np.sqrt(var_d2_j)
-        out[:, 4, 1] = np.sqrt(var_d1_j)
-        out[:, 5, 1] = 0
-    else:
-        sig_d2_j = np.sqrt(
-            (cos_odt * sig_d2_i) ** 2 + (sin_odt * sig_d3_i) ** 2 / omega_orb_sq,
-        )
-        sig_d3_j = np.sqrt(
-            (cos_odt * sig_d3_i) ** 2 + (sin_odt * sig_d2_i) ** 2 * omega_orb_sq,
-        )
-        sig_d1_j = np.sqrt(
-            sig_d1_i**2
-            + ((1 - cos_odt) * sig_d3_i / omega_orb_sq) ** 2
-            + (sig_d2_i * sin_odt) ** 2 / omega_orb_sq,
-        )
-        out[:, 0, 1] = omega_orb_sq * sig_d3_j
-        out[:, 1, 1] = omega_orb_sq * sig_d2_j
-        out[:, 2, 1] = sig_d3_j
-        out[:, 3, 1] = sig_d2_j
-        out[:, 4, 1] = sig_d1_j
-        out[:, 5, 1] = 0
-    return out
-
-
-@njit(cache=True, fastmath=True)
-def shift_taylor_circular_crackle_full(
-    taylor_full_vec: np.ndarray,
-    delta_t: float,
-    use_conservative_tile: bool,
-) -> np.ndarray:
-    """Specialized version of shift_taylor_full for circular-orbit propagation.
-
-    Works only for 6 parameters and batch processing. Input must be guaranteed to be
-    a physical circular orbit. Crackle is used here as snap/accel is unstable.
-
-    Parameters
-    ----------
-    taylor_full_vec : np.ndarray
-        Parameter vector of shape (n_batch, 6, 2) at reference time t_i.
-        Ordering is [[c, dc], [s, ds], [j, dj], [a, da], [v, dv], [d, dd]]
-    delta_t : float
-        The time difference (t_j - t_i) to shift the parameters by.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
-
-    Returns
-    -------
-    np.ndarray
-        Parameter vector of shape (n_batch, 6, 2) at reference time t_j.
-    """
-    n_batch, n_params, _ = taylor_full_vec.shape
-    if n_params != 6:
-        msg = "6 parameters are needed for circular orbit propagation."
-        raise ValueError(msg)
-    d5_i = taylor_full_vec[:, 0, 0]
-    d3_i = taylor_full_vec[:, 2, 0]
-    d2_i = taylor_full_vec[:, 3, 0]
-    d1_i = taylor_full_vec[:, 4, 0]
-    d0_i = taylor_full_vec[:, 5, 0]
-
-    sig_d5_i = taylor_full_vec[:, 0, 1]
-    sig_d3_i = taylor_full_vec[:, 2, 1]
-    sig_d2_i = taylor_full_vec[:, 3, 1]
-    sig_d1_i = taylor_full_vec[:, 4, 1]
-
-    # Pin-down the orbit using crackle and jerk
-    omega_orb_sq = -d5_i / d3_i
-    omega_orb = np.sqrt(omega_orb_sq)
-    # Evolve the phase to the new time t_j = t_i + delta_t
-    omega_dt = omega_orb * delta_t
-    cos_odt = np.cos(omega_dt)
-    sin_odt = np.sin(omega_dt)
-    # Precompute some constants for efficiency
-    inv_omega_orb = 1.0 / omega_orb
-    inv_omega_orb_sq = 1.0 / omega_orb_sq
-    sin_odt_inv_omega = sin_odt * inv_omega_orb
-    d3_i_sin_odt_inv_omega = d3_i * sin_odt_inv_omega
-    d2_i_omega_sin_odt = d2_i * omega_orb * sin_odt
-    # Pin-down {s, j, a}
-    d2_j = d2_i * cos_odt + d3_i_sin_odt_inv_omega
-    d3_j = d3_i * cos_odt - d2_i_omega_sin_odt
-    d4_j = -omega_orb_sq * d2_j
-    d5_j = -omega_orb_sq * d3_j
-    # Integrate to get {v, d}
-    v_circ_i = -d3_i * inv_omega_orb_sq
-    v_circ_j = -d3_j * inv_omega_orb_sq
-    d1_diff = d1_i - v_circ_i
-    d1_j = v_circ_j + d1_diff
-    d_circ_j = -d2_j * inv_omega_orb_sq
-    d_circ_i = -d2_i * inv_omega_orb_sq
-    d0_j = d_circ_j + (d0_i - d_circ_i) + d1_diff * delta_t
-
-    out = np.empty((n_batch, 6, 2), dtype=taylor_full_vec.dtype)
-    out[:, 0, 0] = d5_j
-    out[:, 1, 0] = d4_j
-    out[:, 2, 0] = d3_j
-    out[:, 3, 0] = d2_j
-    out[:, 4, 0] = d1_j
-    out[:, 5, 0] = d0_j
-
-    if use_conservative_tile:
-        omega_cu = omega_orb_sq * omega_orb
-        inv_omega_cu = inv_omega_orb * inv_omega_orb_sq
-
-        # Precompute sigma squared values
-        var_d1_i = sig_d1_i**2
-        var_d2_i = sig_d2_i**2
-        var_d3_i = sig_d3_i**2
-        var_d5_i = sig_d5_i**2
-
-        u2 = omega_dt * d3_j * inv_omega_orb_sq - d3_i_sin_odt_inv_omega * inv_omega_orb
-        u3 = -omega_dt * d2_j - d2_i * sin_odt
-        u4 = -2 * omega_orb * d2_j - omega_orb_sq * u2
-        u5 = -2 * omega_orb * d3_j - omega_orb_sq * u3
-        u1 = 2 * (d3_j - d3_i) * inv_omega_cu - u3 * inv_omega_orb_sq
-        v3 = -omega_orb / (2 * d3_i)
-        v5 = omega_orb / (2 * d5_i)
-
-        j52 = omega_cu * sin_odt
-        j53 = -omega_orb_sq * cos_odt + u5 * v3
-        j55 = u5 * v5
-        var_d5_j = j52**2 * var_d2_i + j53**2 * var_d3_i + j55**2 * var_d5_i
-
-        j42 = -omega_orb_sq * cos_odt
-        j43 = -omega_orb * sin_odt + u4 * v3
-        j45 = u4 * v5
-        var_d4_j = j42**2 * var_d2_i + j43**2 * var_d3_i + j45**2 * var_d5_i
-
-        j32 = -omega_orb * sin_odt
-        j33 = cos_odt + u3 * v3
-        j35 = u3 * v5
-        var_d3_j = j32**2 * var_d2_i + j33**2 * var_d3_i + j35**2 * var_d5_i
-
-        j22 = cos_odt
-        j23 = sin_odt / omega_orb + u2 * v3
-        j25 = u2 * v5
-        var_d2_j = j22**2 * var_d2_i + j23**2 * var_d3_i + j25**2 * var_d5_i
-
-        j11 = 1.0
-        j12 = sin_odt / omega_orb
-        j13 = (1 - cos_odt) / omega_orb_sq + u1 * v3
-        j15 = u1 * v5
-        var_d1_j = (
-            j11**2 * var_d1_i
-            + j12**2 * var_d2_i
-            + j13**2 * var_d3_i
-            + j15**2 * var_d5_i
-        )
-
-        out[:, 0, 1] = np.sqrt(var_d5_j)
-        out[:, 1, 1] = np.sqrt(var_d4_j)
-        out[:, 2, 1] = np.sqrt(var_d3_j)
-        out[:, 3, 1] = np.sqrt(var_d2_j)
-        out[:, 4, 1] = np.sqrt(var_d1_j)
-        out[:, 5, 1] = 0
-    else:
-        sig_d2_j = np.sqrt(
-            (cos_odt * sig_d2_i) ** 2 + (sin_odt * sig_d3_i) ** 2 / omega_orb_sq,
-        )
-        sig_d3_j = np.sqrt(
-            (cos_odt * sig_d3_i) ** 2 + (sin_odt * sig_d2_i) ** 2 * omega_orb_sq,
-        )
-        sig_d1_j = np.sqrt(
-            sig_d1_i**2
-            + ((1 - cos_odt) * sig_d3_i / omega_orb_sq) ** 2
-            + (sig_d2_i * sin_odt) ** 2 / omega_orb_sq,
-        )
-        out[:, 0, 1] = omega_orb_sq * sig_d3_j
-        out[:, 1, 1] = omega_orb_sq * sig_d2_j
-        out[:, 2, 1] = sig_d3_j
-        out[:, 3, 1] = sig_d2_j
-        out[:, 4, 1] = sig_d1_j
-        out[:, 5, 1] = 0
-    return out
+    l_mat = maths.circ_taylor_transform_matrix(delta_t, p_orb_min, 1)
+    basis_tmp = np.empty((n_params, n_params), dtype=np.float64)
+    for leaf in range(n_leaves):
+        # Basis transformation (l_mat.T @ B)
+        for r in range(n_params):
+            for c in range(n_params):
+                acc = np.float64(0.0)
+                for m in range(n_params):
+                    acc += l_mat[m, r] * leaf_bases_batch[leaf, m, c]
+                basis_tmp[r, c] = acc
+        leaf_bases_batch[leaf] = basis_tmp
 
 
 @njit(cache=True, fastmath=True)
@@ -914,12 +531,12 @@ def cheby_to_taylor_full(alpha_full_vec: np.ndarray, t_s: float) -> np.ndarray:
 
 
 @njit(cache=True, fastmath=True)
-def shift_cheby_errors(
-    alpha_error_vec: np.ndarray,
+def shift_cheby_basis(
+    leaf_bases_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
-    use_conservative_tile: bool,
-) -> np.ndarray:
+    poly_order: int,
+) -> None:
     """Shift the kinematic chebyshev errors to a new domain.
 
     Parameters
@@ -931,34 +548,34 @@ def shift_cheby_errors(
         The coordinate of the new domain.
     coord_cur : tuple[float, float]
         The coordinate of the current domain.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
-
-    Returns
-    -------
-    np.ndarray
-        Chebyshev errors vector of shape (N, n_params) in domain coord_next.
     """
-    _, n_params = alpha_error_vec.shape
-    poly_order = n_params - 1
+    n_leaves, _, _ = leaf_bases_batch.shape
+    n_params = poly_order
     tc1, ts1 = coord_cur
     tc2, ts2 = coord_next
-    c_mat = maths.poly_chebyshev_transform_matrix(poly_order, tc1, ts1, tc2, ts2)
-    alpha_errors = np.ascontiguousarray(alpha_error_vec[..., ::-1])
-    if use_conservative_tile:
-        alpha_errors_new = np.sqrt((alpha_errors**2) @ (c_mat**2))
-    else:
-        alpha_errors_new = alpha_errors * np.abs(np.diag(c_mat))
-    return alpha_errors_new[..., ::-1]
+    c_mat = maths.poly_chebyshev_transform_matrix(poly_order, tc1, ts1, tc2, ts2, 1)
+
+    # Transform basis
+    basis_tmp = np.empty((n_params, n_params), dtype=np.float64)
+    for leaf in range(n_leaves):
+        # Basis transformation (c_mat.T @ B)
+        for r in range(n_params):
+            for c in range(n_params):
+                acc = np.float64(0.0)
+                for m in range(n_params):
+                    acc += c_mat[m, r] * leaf_bases_batch[leaf, m, c]
+                basis_tmp[r, c] = acc
+        leaf_bases_batch[leaf] = basis_tmp
 
 
 @njit(cache=True, fastmath=True)
-def shift_cheby_full(
-    alpha_full_vec: np.ndarray,
+def shift_cheby_params_basis(
+    leaf_params_batch: np.ndarray,
+    leaf_bases_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
-    use_conservative_tile: bool,
-) -> np.ndarray:
+    poly_order: int,
+) -> None:
     """Shift the kinematic chebyshev parameters and errors to a new domain.
 
     Parameters
@@ -971,30 +588,35 @@ def shift_cheby_full(
         The coordinate of the new domain.
     coord_cur : tuple[float, float]
         The coordinate of the current domain.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
-
-    Returns
-    -------
-    np.ndarray
-        Chebyshev coefficients vector of shape (N, n_params, 2) in domain coord_next.
     """
-    n_params = alpha_full_vec.shape[-2]
-    poly_order = n_params - 1
+    n_leaves, _ = leaf_params_batch.shape
+    n_params = poly_order
     tc1, ts1 = coord_cur
     tc2, ts2 = coord_next
-    c_mat = maths.poly_chebyshev_transform_matrix(poly_order, tc1, ts1, tc2, ts2)
-    alpha_vec_new = np.empty_like(alpha_full_vec)
-    alpha_values = np.ascontiguousarray(alpha_full_vec[..., ::-1, 0])
-    alpha_errors = np.ascontiguousarray(alpha_full_vec[..., ::-1, 1])
-    alpha_values_new = alpha_values @ c_mat
-    if use_conservative_tile:
-        alpha_errors_new = np.sqrt((alpha_errors**2) @ (c_mat**2))
-    else:
-        alpha_errors_new = alpha_errors * np.abs(np.diag(c_mat))
-    alpha_vec_new[..., :, 0] = alpha_values_new[..., ::-1]
-    alpha_vec_new[..., :, 1] = alpha_errors_new[..., ::-1]
-    return alpha_vec_new
+    c_mat = maths.poly_chebyshev_transform_matrix(poly_order, tc1, ts1, tc2, ts2, 1)
+
+    # Transform polynomial coefficients
+    coeffs_tmp = np.empty(n_params + 1, dtype=np.float64)
+    basis_tmp = np.empty((n_params, n_params), dtype=np.float64)
+
+    for leaf in range(n_leaves):
+        # Parameters transformation (cheb_coeffs @ c_mat)
+        for i in range(n_params + 1):
+            coeffs_tmp[i] = leaf_params_batch[leaf, i]
+        for i in range(n_params + 1):
+            acc = np.float64(0.0)
+            for j in range(n_params + 1):
+                acc += coeffs_tmp[j] * c_mat[j, i]
+            leaf_params_batch[leaf, i] = acc
+
+        # Basis transformation (c_mat.T @ B)
+        for r in range(n_params):
+            for c in range(n_params):
+                acc = np.float64(0.0)
+                for m in range(n_params):
+                    acc += c_mat[m, r] * leaf_bases_batch[leaf, m, c]
+                basis_tmp[r, c] = acc
+        leaf_bases_batch[leaf] = basis_tmp
 
 
 @njit(cache=True, fastmath=True)
@@ -1028,10 +650,10 @@ def cheby_to_taylor_param_shift(
     poly_order = n_params - 1
     # Get transformation matrix for domain shift: t0 -> t_eval
     # Source domain: center=t0, scale=ts; Target domain: center=t_eval, scale=ts
-    c_mat = maths.poly_chebyshev_transform_matrix(poly_order, t0, ts, t_eval, ts)
-    alpha_standard_t0 = np.ascontiguousarray(alpha_param_vec[..., ::-1])
+    c_mat = maths.poly_chebyshev_transform_matrix(poly_order, t0, ts, t_eval, ts, 1)
+    alpha_standard_t0 = np.ascontiguousarray(alpha_param_vec)
     alpha_standard_t_eval = alpha_standard_t0 @ c_mat
-    return cheby_to_taylor(alpha_standard_t_eval[..., ::-1], ts)
+    return cheby_to_taylor(alpha_standard_t_eval, ts)
 
 
 @njit(cache=True, fastmath=True)

@@ -226,12 +226,13 @@ def pruning_iteration_batched(
 
         # Branching
         t_start = nb_time_now()
-        batch_leaves, batch_leaf_origins = prune_funcs.branch(
-            tree.leaves[i_batch_start:i_batch_end],
+        batch_leaf_params, batch_leaf_bases, batch_leaf_origins = prune_funcs.branch(
+            tree.leaf_params[i_batch_start:i_batch_end],
+            tree.leaf_bases[i_batch_start:i_batch_end],
             coord_cur,
             coord_prev,
         )
-        n_leaves_batch = len(batch_leaves)
+        n_leaves_batch = len(batch_leaf_params)
         n_leaves += n_leaves_batch
         timers[0] += nb_time_now() - t_start
         if n_leaves_batch == 0:
@@ -239,19 +240,21 @@ def pruning_iteration_batched(
 
         # Validation
         t_start = nb_time_now()
-        batch_leaves, batch_leaf_origins = prune_funcs.validate(
-            batch_leaves,
+        batch_leaf_params, batch_leaf_bases, batch_leaf_origins = prune_funcs.validate(
+            batch_leaf_params,
+            batch_leaf_bases,
             batch_leaf_origins,
             coord_cur,
         )
-        n_leaves_batch = len(batch_leaves)
+        n_leaves_batch = len(batch_leaf_params)
         n_leaves_phy += n_leaves_batch
         timers[1] += nb_time_now() - t_start
 
         # Resolve
         t_start = nb_time_now()
         batch_param_idx, batch_phase_shift = prune_funcs.resolve(
-            batch_leaves,
+            batch_leaf_params,
+            batch_leaf_bases,
             coord_add,
             coord_cur,
             coord_init,
@@ -289,15 +292,17 @@ def pruning_iteration_batched(
 
         # Filter results needed for adding to sugg_new
         filtered_indices = np.where(passing_mask)[0]
-        filtered_leaves = batch_leaves[filtered_indices]
+        filtered_leaf_params = batch_leaf_params[filtered_indices]
+        filtered_leaf_bases = batch_leaf_bases[filtered_indices]
         filtered_scores = batch_scores[filtered_indices]
         filtered_combined_res = batch_combined_res[filtered_indices]
         timers[5] += nb_time_now() - t_start  # Part of time for Threshold step
 
         # Transform & Backtrack
         t_start = nb_time_now()
-        filtered_leaves_trans = prune_funcs.transform(
-            filtered_leaves,
+        prune_funcs.transform(
+            filtered_leaf_params,
+            filtered_leaf_bases,
             coord_next,
             coord_cur,
         )
@@ -312,7 +317,8 @@ def pruning_iteration_batched(
         batch_backtrack[:, 1 : bt_nparams + 1] = batch_param_idx[filtered_indices]
         batch_backtrack[:, -1] = batch_phase_shift[filtered_indices]
         current_threshold = tree_new.add_batch(
-            filtered_leaves_trans,
+            filtered_leaf_params,
+            filtered_leaf_bases,
             filtered_combined_res,
             filtered_scores,
             batch_backtrack,
@@ -483,7 +489,8 @@ class Pruning:
             self.dyp.nsegments - 1,
             dtype=np.dtype(
                 [
-                    ("param_sets", np.float64, self.world_tree.leaves.shape[1]),
+                    ("params", np.float64, self.world_tree.leaf_params.shape[1]),
+                    ("bases", np.float64, self.world_tree.leaf_bases.shape[1:]),
                     ("folds", self.dyp.fold.dtype, fold_segment.shape[-2:]),
                     ("scores", np.float32),
                 ],
@@ -553,12 +560,16 @@ class Pruning:
         ):
             self.execute_iter(log_file)
         # Transform the world tree params to middle of the data
-        coord_init = self.scheme.get_coord(0)
-        coord_mid = self.scheme.get_coord(self.prune_level)
+        coord_end = self.scheme.get_previous_coord(
+            self.prune_level,
+            self.use_moving_grid,
+        )
+        coord_report = self.scheme.get_report_coord(self.use_moving_grid)
         leaves_report = self.prune_funcs.report(
-            self.world_tree.leaves,
-            coord_mid,
-            coord_init,
+            self.world_tree.leaf_params,
+            self.world_tree.leaf_bases,
+            coord_report,
+            coord_end,
         )
         with PruneResultWriter(result_file, mode="a") as writer:
             writer.write_run_results(
@@ -584,12 +595,14 @@ class Pruning:
         threshold = self.threshold_scheme[self.prune_level - 1]
         # Get the useful precomputed values: coord_next := coord_cur + coord_add
         coord_init = self.scheme.get_coord(0)
-        if self.use_moving_grid:
-            coord_cur = self.scheme.get_current_coord(self.prune_level)
-            coord_prev = self.scheme.get_coord(self.prune_level - 1)
-        else:
-            coord_cur = self.scheme.get_current_coord_fixed(self.prune_level)
-            coord_prev = self.scheme.get_current_coord_fixed(self.prune_level - 1)
+        coord_cur = self.scheme.get_current_coord(
+            self.prune_level,
+            self.use_moving_grid,
+        )
+        coord_prev = self.scheme.get_previous_coord(
+            self.prune_level,
+            self.use_moving_grid,
+        )
         coord_next = self.scheme.get_coord(self.prune_level)
         coord_add = self.scheme.get_segment_coord(self.prune_level)
         world_tree, stats_dict, timers = pruning_iteration_batched(

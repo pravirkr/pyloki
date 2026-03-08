@@ -129,9 +129,19 @@ class MiddleOutScheme(structref.StructRefProxy):
         return get_segment_coord_func(self, level)
 
     @njit(cache=True, fastmath=True)
-    def get_current_coord(self, level: int) -> tuple[float, float]:
-        """Get current ref, scale for an adaptive grid."""
-        return get_current_coord_func(self, level)
+    def get_current_coord(self, level: int, moving_grid: bool) -> tuple[float, float]:
+        """Get current ref, scale for a pruning scheme."""
+        return get_current_coord_func(self, level, moving_grid)
+
+    @njit(cache=True, fastmath=True)
+    def get_previous_coord(self, level: int, moving_grid: bool) -> tuple[float, float]:
+        """Get previous ref, scale for a pruning scheme."""
+        return get_previous_coord_func(self, level, moving_grid)
+
+    @njit(cache=True, fastmath=True)
+    def get_report_coord(self, moving_grid: bool) -> tuple[float, float]:
+        """Get the report coord for a pruning scheme."""
+        return get_report_coord_func(self, moving_grid)
 
     @njit(cache=True, fastmath=True)
     def get_current_coord_stride(self, level: int) -> tuple[float, float]:
@@ -142,11 +152,6 @@ class MiddleOutScheme(structref.StructRefProxy):
     def do_transform(self, level: int) -> bool:
         """Determine if the current level requires a transform."""
         return do_transform_func(self, level)
-
-    @njit(cache=True, fastmath=True)
-    def get_current_coord_fixed(self, level: int) -> tuple[float, float]:
-        """Get fixed ref, scale for a fixed grid."""
-        return get_current_coord_fixed_func(self, level)
 
     @njit(cache=True, fastmath=True)
     def get_valid(self, prune_level: int) -> tuple[float, float]:
@@ -256,16 +261,64 @@ def get_anchor_level_func(self: MiddleOutScheme, level: int) -> int:
 
 
 @njit(cache=True, fastmath=True)
-def get_current_coord_func(self: MiddleOutScheme, level: int) -> tuple[float, float]:
+def get_current_coord_func(
+    self: MiddleOutScheme,
+    level: int,
+    moving_grid: bool,
+) -> tuple[float, float]:
     if level < 0 or level >= self.nsegments:
         msg = f"level must be in [0, {self.nsegments - 1}], got {level}."
         raise ValueError(msg)
-
     if level == 0:
         return self.get_coord(level)
-    prev_ref, _ = self.get_coord(level - 1)
-    _, cur_scale = self.get_coord(level)
-    return prev_ref, cur_scale
+    if moving_grid:
+        prev_ref, _ = self.get_coord(level - 1)
+        _, cur_scale = self.get_coord(level)
+        return prev_ref, cur_scale
+    t0_init, scale_init = self.get_coord(0)
+    t0_next, scale_next = self.get_coord(level)
+    left_edge = t0_next - scale_next
+    right_edge = t0_next + scale_next
+    scale_cur = max(abs(left_edge - t0_init), abs(right_edge - t0_init))
+    return t0_init, scale_cur - scale_init
+
+
+@njit(cache=True, fastmath=True)
+def get_previous_coord_func(
+    self: MiddleOutScheme,
+    level: int,
+    moving_grid: bool,
+) -> tuple[float, float]:
+    level = level - 1
+    if level < 0 or level >= self.nsegments:
+        msg = f"level must be in [0, {self.nsegments - 1}], got {level}."
+        raise ValueError(msg)
+    if level == 0:
+        return self.get_coord(level)
+    if moving_grid:
+        return self.get_coord(level)
+    t0_init, scale_init = self.get_coord(0)
+    t0_next, scale_next = self.get_coord(level)
+    left_edge = t0_next - scale_next
+    right_edge = t0_next + scale_next
+    scale_cur = max(abs(left_edge - t0_init), abs(right_edge - t0_init))
+    return t0_init, scale_cur - scale_init
+
+
+@njit(cache=True, fastmath=True)
+def get_report_coord_func(
+    self: MiddleOutScheme,
+    moving_grid: bool,
+) -> tuple[float, float]:
+    level = self.nsegments - 1
+    if moving_grid:
+        return self.get_coord(level)
+    t0_init, scale_init = self.get_coord(0)
+    t0_next, scale_next = self.get_coord(level)
+    left_edge = t0_next - scale_next
+    right_edge = t0_next + scale_next
+    scale_cur = max(abs(left_edge - t0_init), abs(right_edge - t0_init))
+    return t0_next, scale_cur - scale_init
 
 
 @njit(cache=True, fastmath=True)
@@ -301,24 +354,6 @@ def do_transform_func(self: MiddleOutScheme, level: int) -> bool:
     if level == 0:
         return False
     return level % self.stride == 0
-
-
-@njit(cache=True, fastmath=True)
-def get_current_coord_fixed_func(
-    self: MiddleOutScheme,
-    level: int,
-) -> tuple[float, float]:
-    if level < 0 or level >= self.nsegments:
-        msg = f"level must be in [0, {self.nsegments - 1}], got {level}."
-        raise ValueError(msg)
-    if level == 0:
-        return self.get_coord(level)
-    t0_init, scale_init = self.get_coord(0)
-    t0_next, scale_next = self.get_coord(level)
-    left_edge = t0_next - scale_next
-    right_edge = t0_next + scale_next
-    scale_cur = max(abs(left_edge - t0_init), abs(right_edge - t0_init))
-    return t0_init, scale_cur - scale_init
 
 
 @njit(cache=True, fastmath=True)
@@ -375,9 +410,44 @@ def ol_get_segment_coord_func(self: MiddleOutScheme, level: int) -> types.Functi
 
 
 @overload_method(MiddleOutSchemeTemplate, "get_current_coord")
-def ol_get_current_coord_func(self: MiddleOutScheme, level: int) -> types.FunctionType:
-    def impl(self: MiddleOutScheme, level: int) -> tuple[float, float]:
-        return get_current_coord_func(self, level)
+def ol_get_current_coord_func(
+    self: MiddleOutScheme,
+    level: int,
+    moving_grid: bool,
+) -> types.FunctionType:
+    def impl(
+        self: MiddleOutScheme,
+        level: int,
+        moving_grid: bool,
+    ) -> tuple[float, float]:
+        return get_current_coord_func(self, level, moving_grid)
+
+    return impl
+
+
+@overload_method(MiddleOutSchemeTemplate, "get_previous_coord")
+def ol_get_previous_coord_func(
+    self: MiddleOutScheme,
+    level: int,
+    moving_grid: bool,
+) -> types.FunctionType:
+    def impl(
+        self: MiddleOutScheme,
+        level: int,
+        moving_grid: bool,
+    ) -> tuple[float, float]:
+        return get_previous_coord_func(self, level, moving_grid)
+
+    return impl
+
+
+@overload_method(MiddleOutSchemeTemplate, "get_report_coord")
+def ol_get_report_coord_func(
+    self: MiddleOutScheme,
+    moving_grid: bool,
+) -> types.FunctionType:
+    def impl(self: MiddleOutScheme, moving_grid: bool) -> tuple[float, float]:
+        return get_report_coord_func(self, moving_grid)
 
     return impl
 
@@ -405,17 +475,6 @@ def ol_get_anchor_level_func(self: MiddleOutScheme, level: int) -> types.Functio
 def ol_do_transform_func(self: MiddleOutScheme, level: int) -> types.FunctionType:
     def impl(self: MiddleOutScheme, level: int) -> bool:
         return do_transform_func(self, level)
-
-    return impl
-
-
-@overload_method(MiddleOutSchemeTemplate, "get_current_coord_fixed")
-def ol_get_current_coord_fixed_func(
-    self: MiddleOutScheme,
-    level: int,
-) -> types.FunctionType:
-    def impl(self: MiddleOutScheme, level: int) -> tuple[float, float]:
-        return get_current_coord_fixed_func(self, level)
 
     return impl
 

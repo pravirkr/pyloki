@@ -187,6 +187,115 @@ def gen_design_matrix_taylor(t_vals: np.ndarray, order_max: int) -> np.ndarray:
 
 
 @njit(cache=True, fastmath=True)
+def poly_taylor_transform_matrix(
+    poly_order: int,
+    delta_t: float,
+    coeff_order: int = 1,  # 0=ascending, 1=descending
+) -> np.ndarray:
+    """Compute the Taylor basis coefficient transformation matrix T.
+
+    Parameters
+    ----------
+    poly_order : int
+        Maximum polynomial order for Taylor bases (k_max).
+    delta_t : float
+        Shift in the reference time.
+    coeff_order : int
+        0 → coefficients stored [a0, a1, ..., ak]
+        1 → coefficients stored [ak, ..., a1, a0]
+
+    Returns
+    -------
+    np.ndarray
+        Transformation matrix T where T[i,j] contains the coefficient T_{i,j}(delta_t).
+        Shape is (k_max + 1, k_max + 1).
+
+    Notes
+    -----
+    In the codebase polynomial coefficients are stored as **row vectors**
+    and transformation operators act **on the right**:
+
+        alpha_new = alpha_old @ T
+
+    where `alpha = [a_k, ..., a_0]` (descending order) or
+    `alpha = [a_0, ..., a_k]` (ascending order). The matrix is triangular:
+    - ascending coefficients  → lower triangular
+    - descending coefficients → upper triangular
+    """
+    # / powers = np.tril(np.arange(n_params)[:, np.newaxis] - np.arange(n_params))
+    # / t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
+
+    size = poly_order + 1
+    t_mat = np.zeros((size, size), dtype=np.float64)
+
+    if coeff_order == 0:  # ascending coefficients
+        for i in range(size):
+            for j in range(i + 1):
+                power = i - j
+                t_mat[i, j] = delta_t**power / fact(power)
+    else:  # descending coefficients
+        for i in range(size):
+            for j in range(i, size):
+                power = j - i
+                t_mat[i, j] = delta_t**power / fact(power)
+
+    return t_mat
+
+@njit(cache=True, fastmath=True)
+def circ_taylor_transform_matrix(
+    delta_t: float,
+    p_orb_min: float,
+    coeff_order: int = 1,
+) -> np.ndarray:
+    """Construct the circular-orbit Taylor transport matrix L_circ.
+
+    Parameters
+    ----------
+    delta_t : float
+        Time difference (t_j - t_i).
+    p_orb_min : float
+        Minimum orbital period in the search range.
+    coeff_order : int
+        0 → coefficients stored [a0, a1, ..., a5]
+        1 → coefficients stored [a5, ..., a1, a0]
+
+    Returns
+    -------
+    np.ndarray
+        6x6 lattice transport matrix L_circ.
+    """
+    omega = 2.0 * np.pi / p_orb_min
+    omega_sq = omega * omega
+    omega_cu = omega_sq * omega
+
+    phi = omega * delta_t
+    c = np.cos(phi)
+    s = np.sin(phi)
+
+    l_mat = np.zeros((6, 6), dtype=np.float64)
+    l_mat[0, 0] = 1.0
+    l_mat[0, 1] = delta_t
+    l_mat[0, 2] = (1.0 - c) / omega_sq
+    l_mat[0, 3] = (omega * delta_t - s) / omega_cu
+    l_mat[1, 1] = 1.0
+    l_mat[1, 2] = s / omega
+    l_mat[1, 3] = (1.0 - c) / omega_sq
+    l_mat[2, 2] = c
+    l_mat[2, 3] = s / omega
+    l_mat[3, 2] = -omega * s
+    l_mat[3, 3] = c
+    l_mat[4, 4] = c
+    l_mat[4, 5] = s / omega
+    l_mat[5, 4] = -omega * s
+    l_mat[5, 5] = c
+    if coeff_order == 1:
+        # reverse coefficient ordering
+        l_mat = l_mat[::-1, ::-1]
+
+    return l_mat
+
+
+@njit(cache=True, fastmath=True)
 def generalized_cheb_pols(poly_order: int, t0: float, scale: float) -> np.ndarray:
     """Generate a set of generalized Chebyshev polynomials.
 
@@ -393,13 +502,14 @@ def poly_chebyshev_transform_matrix(
     ts1: float,
     tc2: float,
     ts2: float,
+    coeff_order: int = 0,  # 0=ascending, 1=descending
 ) -> np.ndarray:
-    """Compute the transformation coefficient matrix C.
+    """Compute the Chebyshev basis coefficient transformation matrix C.
 
     Parameters
     ----------
     poly_order : int
-        Maximum order for Chebyshev bases (k_max).
+        Maximum polynomial order for Chebyshev bases (k_max).
     tc1 : float
         Center of the domain for the input Chebyshev polynomials.
     ts1 : float
@@ -408,11 +518,14 @@ def poly_chebyshev_transform_matrix(
         Center of the domain for the output Chebyshev polynomials.
     ts2 : float
         Scale factor for the output Chebyshev polynomials.
+    coeff_order : int
+        0 → coefficients stored [a0, a1, ..., ak]
+        1 → coefficients stored [ak, ..., a1, a0]
 
     Returns
     -------
     np.ndarray
-        Matrix C where C[n,k] contains the transformation coefficient C_{n,k}(p,q).
+        Transformation Matrix C where C[n,k] contains the coefficient C_{n,k}(p,q).
         Shape is (k_max + 1, k_max + 1).
     """
     k_max = poly_order
@@ -424,10 +537,20 @@ def poly_chebyshev_transform_matrix(
         raise ValueError(msg)
     p = ts2 / ts1
     q = (tc2 - tc1) / ts1
-    c_mat = np.zeros((k_max + 1, k_max + 1), dtype=np.float64)
-    for n in range(k_max + 1):
-        for k in range(k_max + 1):
-            c_mat[n, k] = compute_transformation_coefficient_c(n, k, p, q)
+    size = k_max + 1
+    c_mat = np.zeros((size, size), dtype=np.float64)
+    if coeff_order == 0:
+        # ascending order
+        for n in range(size):
+            for k in range(size):
+                c_mat[n, k] = compute_transformation_coefficient_c(n, k, p, q)
+    else:
+        # descending order
+        for i in range(size):
+            n = k_max - i
+            for j in range(size):
+                k = k_max - j
+                c_mat[i, j] = compute_transformation_coefficient_c(n, k, p, q)
     return c_mat
 
 

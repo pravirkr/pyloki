@@ -10,13 +10,10 @@ import numpy as np
 from pyloki import kepler
 from pyloki.core import (
     generate_bp_circ_taylor,
-    generate_bp_circ_taylor_fixed,
     generate_bp_poly_chebyshev,
     generate_bp_poly_chebyshev_approx,
-    generate_bp_poly_chebyshev_fixed,
     generate_bp_poly_taylor,
     generate_bp_poly_taylor_approx,
-    generate_bp_poly_taylor_fixed,
 )
 from pyloki.detection.scoring import generate_box_width_trials
 from pyloki.utils import maths, psr_utils, transforms
@@ -403,7 +400,6 @@ class PulsarSearchConfig:
         default=5.0,
         validator=attrs.validators.gt(0.0),
     )
-    use_conservative_tile: bool = attrs.field(default=False)
 
     def __attrs_post_init__(self) -> None:
         if self.bseg_brute == 0:
@@ -501,13 +497,19 @@ class PulsarSearchConfig:
             t_ref=t_ref,
         )
 
-    def get_dparams(self, ffa_level: int) -> np.ndarray:
+    def get_dparams(
+        self,
+        ffa_level: int,
+        use_cheby_coarsening: bool = True,
+    ) -> np.ndarray:
         """Get the step sizes for the search parameters.
 
         Parameters
         ----------
         ffa_level : int
             FFA level for which to compute the parameter steps.
+        use_cheby_coarsening : bool, optional
+            Whether to use Chebyshev coarsening factor, by default True.
 
         Returns
         -------
@@ -523,9 +525,14 @@ class PulsarSearchConfig:
             self.eta,
             self.f_max,
             t_ref=t_ref,
+            use_cheby=use_cheby_coarsening,
         )
 
-    def get_dparams_limited(self, ffa_level: int) -> np.ndarray:
+    def get_dparams_limited(
+        self,
+        ffa_level: int,
+        use_cheby_coarsening: bool = True,
+    ) -> np.ndarray:
         """Return parameter spacings limited by the search domain.
 
         The raw spacings returned by ``get_dparams`` are clipped so they do not
@@ -535,13 +542,15 @@ class PulsarSearchConfig:
         ----------
         ffa_level : int
             FFA level for which to compute the parameter spacings.
+        use_cheby_coarsening : bool, optional
+            Whether to use Chebyshev coarsening factor, by default True.
 
         Returns
         -------
         np.ndarray
             Parameter spacings limited by the search domain.
         """
-        dparams = self.get_dparams(ffa_level)
+        dparams = self.get_dparams(ffa_level, use_cheby_coarsening)
         dparams_lim = np.empty_like(dparams)
         for iparam in range(self.nparams):
             vmin, vmax = self.param_limits[iparam]
@@ -602,6 +611,80 @@ class PulsarSearchConfig:
             for iparam in range(self.nparams)
         ]
 
+    def get_ep_brute_grid_count_taylor(
+        self,
+        use_cheby_coarsening: bool = True,
+    ) -> np.ndarray:
+        """Get the log2 of the number of points in the EP Taylor brute grid."""
+        if self.nparams == 1:
+            msg = "EP Taylor brute grid count is not supported for 1 parameter"
+            raise ValueError(msg)
+        nsegments_ffa = self.nsamps // self.bseg_ffa
+        tseg_ffa = self.tseg_ffa
+        grid_log2 = np.empty(nsegments_ffa, dtype=np.float64)
+        for i_level in range(nsegments_ffa):
+            tseg_cur = (i_level + 1) * tseg_ffa
+            t_ref = tseg_cur / 2
+            dparams = psr_utils.poly_taylor_step_d_f(
+                self.nparams,
+                tseg_cur,
+                self.nbins,
+                self.eta,
+                self.f_max,
+                t_ref=t_ref,
+                use_cheby=use_cheby_coarsening,
+            )
+            log2_count = 0.0
+            for iparam in range(self.nparams):
+                count = psr_utils.range_param_count(
+                    self.param_limits[iparam, 0],
+                    self.param_limits[iparam, 1],
+                    dparams[iparam],
+                )
+                log2_count += np.log2(count)
+            grid_log2[i_level] = log2_count
+        return grid_log2
+
+    def get_ep_brute_grid_count_chebyshev(self) -> np.ndarray:
+        """Get the log2 of the number of points in the EP Chebyshev brute grid."""
+        if self.nparams == 1:
+            msg = "EP Chebyshev brute grid count is not supported for 1 parameter"
+            raise ValueError(msg)
+        nsegments_ffa = self.nsamps // self.bseg_ffa
+        tseg_ffa = self.tseg_ffa
+        grid_log2 = np.empty(nsegments_ffa, dtype=np.float64)
+
+        param_limits_d = np.empty((self.nparams, 2), dtype=np.float64)
+        for i in range(self.nparams):
+            param_limits_d[i, 0] = self.param_limits[i, 0]
+            param_limits_d[i, 1] = self.param_limits[i, 1]
+        param_limits_d[-1, 0] = (1 - self.param_limits[-1, 1] / self.f_max) * C_VAL
+        param_limits_d[-1, 1] = (1 - self.param_limits[-1, 0] / self.f_max) * C_VAL
+
+        for i_level in range(nsegments_ffa):
+            tseg_cur = (i_level + 1) * tseg_ffa
+            scale_cur = tseg_cur / 2
+            dparams_cheby = psr_utils.poly_cheb_step_vec(
+                self.nparams,
+                self.nbins,
+                self.eta,
+                np.array([self.f_max]),
+            )
+            param_limits_cheby = transforms.taylor_to_chebyshev_limits_full(
+                param_limits_d[np.newaxis, :, :],
+                scale_cur,
+            )
+            log2_count = 0.0
+            for iparam in range(self.nparams):
+                count = psr_utils.range_param_count(
+                    param_limits_cheby[0, iparam, 0],
+                    param_limits_cheby[0, iparam, 1],
+                    dparams_cheby[0, iparam],
+                )
+                log2_count += np.log2(count)
+            grid_log2[i_level] = log2_count
+        return grid_log2
+
     def generate_branching_pattern_approx(
         self,
         kind: str = "taylor",
@@ -622,38 +705,39 @@ class PulsarSearchConfig:
         dparams = self.get_dparams(self.niters_ffa)
         param_arr = self.get_param_arr(dparams)
         dparams_lim = self.get_dparams_limited(self.niters_ffa)
-        if kind == "taylor":
-            return generate_bp_poly_taylor_approx(
-                param_arr,
-                dparams_lim,
-                self.param_limits,
-                self.tseg_ffa,
-                nsegments_ffa,
-                self.nbins,
-                self.eta,
-                ref_seg,
-                isuggest,
-            )
-        if kind == "chebyshev":
-            return generate_bp_poly_chebyshev_approx(
-                param_arr,
-                dparams_lim,
-                self.param_limits,
-                self.tseg_ffa,
-                nsegments_ffa,
-                self.nbins,
-                self.eta,
-                ref_seg,
-                isuggest,
-                self.use_conservative_tile,
-            )
-        msg = f"Invalid kind: {kind}"
-        raise ValueError(msg)
+
+        generate_funcs = {
+            "taylor": (generate_bp_poly_taylor_approx, True),
+            "chebyshev": (generate_bp_poly_chebyshev_approx, True),
+            "taylor_fixed": (generate_bp_poly_taylor_approx, False),
+            "chebyshev_fixed": (generate_bp_poly_chebyshev_approx, False),
+        }
+
+        try:
+            generate_func, use_moving_grid = generate_funcs[kind]
+        except KeyError:
+            msg = f"Invalid kind: {kind}"
+            raise ValueError(msg) from None
+
+        return generate_func(
+            param_arr,
+            dparams_lim,
+            self.param_limits,
+            self.tseg_ffa,
+            nsegments_ffa,
+            self.nbins,
+            self.eta,
+            ref_seg,
+            use_moving_grid=use_moving_grid,
+            itree=isuggest,
+            branch_max=self.branch_max,
+        )
 
     def generate_branching_pattern(
         self,
         kind: str = "taylor",
         ref_seg: int = 0,
+        use_cheby_coarsening: bool = True,
     ) -> np.ndarray:
         """Generate the exact branching pattern for the pruning search.
 
@@ -666,69 +750,53 @@ class PulsarSearchConfig:
             The kind of branching pattern to generate.
         ref_seg : int
             The reference segment to generate the branching pattern for.
+        use_cheby_coarsening : bool, optional
+            Whether to use Chebyshev coarsening factor, by default True.
+            Only used for kind = "Taylor" or "Taylor_fixed".
 
         Returns
         -------
         np.ndarray
             The branching pattern for the pruning search.
         """
+        if kind in {"chebyshev", "chebyshev_fixed"}:
+            use_cheby_coarsening = True
         nsegments_ffa = int(np.ceil(self.nsamps / self.bseg_ffa))
-        dparams = self.get_dparams(self.niters_ffa)
+        dparams = self.get_dparams(self.niters_ffa, use_cheby_coarsening)
         param_arr = self.get_param_arr(dparams)
-        dparams_lim = self.get_dparams_limited(self.niters_ffa)
-        if kind == "taylor":
-            return generate_bp_poly_taylor(
-                param_arr,
-                dparams_lim,
-                self.param_limits,
-                self.tseg_ffa,
-                nsegments_ffa,
-                self.nbins,
-                self.eta,
-                ref_seg,
-            )
-        if kind == "chebyshev":
-            return generate_bp_poly_chebyshev(
-                param_arr,
-                dparams_lim,
-                self.param_limits,
-                self.tseg_ffa,
-                nsegments_ffa,
-                self.nbins,
-                self.eta,
-                ref_seg,
-                self.use_conservative_tile,
-            )
-        if kind == "taylor_fixed":
-            return generate_bp_poly_taylor_fixed(
-                param_arr,
-                dparams_lim,
-                self.param_limits,
-                self.tseg_ffa,
-                nsegments_ffa,
-                self.nbins,
-                self.eta,
-                ref_seg,
-            )
-        if kind == "chebyshev_fixed":
-            return generate_bp_poly_chebyshev_fixed(
-                param_arr,
-                dparams_lim,
-                self.param_limits,
-                self.tseg_ffa,
-                nsegments_ffa,
-                self.nbins,
-                self.eta,
-                ref_seg,
-                self.use_conservative_tile,
-            )
-        msg = f"Invalid kind: {kind}"
-        raise ValueError(msg)
+        dparams_lim = self.get_dparams_limited(self.niters_ffa, use_cheby_coarsening)
+
+        generate_funcs = {
+            "taylor": (generate_bp_poly_taylor, True),
+            "chebyshev": (generate_bp_poly_chebyshev, True),
+            "taylor_fixed": (generate_bp_poly_taylor, False),
+            "chebyshev_fixed": (generate_bp_poly_chebyshev, False),
+        }
+
+        try:
+            generate_func, use_moving_grid = generate_funcs[kind]
+        except KeyError:
+            msg = f"Invalid kind: {kind}"
+            raise ValueError(msg) from None
+
+        return generate_func(
+            param_arr,
+            dparams_lim,
+            self.param_limits,
+            self.tseg_ffa,
+            nsegments_ffa,
+            self.nbins,
+            self.eta,
+            ref_seg,
+            use_moving_grid=use_moving_grid,
+            use_cheby_coarsening=use_cheby_coarsening,
+        )
 
     def generate_branching_pattern_circular(
         self,
         kind: str = "taylor",
         ref_seg: int = 0,
+        use_cheby_coarsening: bool = True,
     ) -> np.ndarray:
         """Generate the exact branching pattern for the circular pruning search.
 
@@ -751,34 +819,31 @@ class PulsarSearchConfig:
         dparams = self.get_dparams(self.niters_ffa)
         param_arr = self.get_param_arr(dparams)
         dparams_lim = self.get_dparams_limited(self.niters_ffa)
-        if kind == "taylor":
-            return generate_bp_circ_taylor(
-                param_arr,
-                dparams_lim,
-                self.param_limits,
-                self.tseg_ffa,
-                nsegments_ffa,
-                self.nbins,
-                self.eta,
-                ref_seg,
-                self.p_orb_min,
-                self.minimum_snap_cells,
-                self.use_conservative_tile,
-            )
-        if kind == "taylor_fixed":
-            return generate_bp_circ_taylor_fixed(
-                param_arr,
-                dparams_lim,
-                self.param_limits,
-                self.tseg_ffa,
-                nsegments_ffa,
-                self.nbins,
-                self.eta,
-                ref_seg,
-                self.minimum_snap_cells,
-            )
-        msg = f"Invalid kind: {kind}"
-        raise ValueError(msg)
+
+        generate_funcs = {
+            "taylor": (generate_bp_circ_taylor, True),
+            "taylor_fixed": (generate_bp_circ_taylor, False),
+        }
+        try:
+            generate_func, use_moving_grid = generate_funcs[kind]
+        except KeyError:
+            msg = f"Invalid kind: {kind}"
+            raise ValueError(msg) from None
+
+        return generate_func(
+            param_arr,
+            dparams_lim,
+            self.param_limits,
+            self.tseg_ffa,
+            nsegments_ffa,
+            self.nbins,
+            self.eta,
+            ref_seg,
+            self.p_orb_min,
+            self.minimum_snap_cells,
+            use_moving_grid=use_moving_grid,
+            use_cheby_coarsening=use_cheby_coarsening,
+        )
 
     def _bseg_brute_default(self) -> int:
         init_levels = 1 if self.nparams == 1 else 5

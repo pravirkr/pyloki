@@ -5,7 +5,7 @@ import math
 import numpy as np
 from numba import njit, vectorize
 
-from pyloki.utils import maths
+from pyloki.utils import maths, transforms
 from pyloki.utils.misc import C_VAL, FLOAT_EPSILON
 
 
@@ -63,8 +63,9 @@ def poly_taylor_step_f(
     nbins: int,
     eta: float,
     t_ref: float = 0,
+    use_cheby: bool = True,
 ) -> np.ndarray:
-    """Grid size for frequency and its derivatives {f_k, ..., f}.
+    """Grid size for frequency and its derivatives {f_k, ..., f_0}.
 
     Parameters
     ----------
@@ -78,6 +79,8 @@ def poly_taylor_step_f(
         Tolerance parameter, eta in bins, by default 1.
     t_ref : float, optional
         Reference time in segment e.g. tobs/2, etc., by default 0.
+    use_cheby: bool, optional
+        Whether to use Chebyshev coarsening factor, by default True.
 
     Returns
     -------
@@ -87,8 +90,9 @@ def poly_taylor_step_f(
     dphi = eta / nbins
     k = np.arange(nparams)
     dparams_f = dphi * maths.fact(k + 1) / (tobs - t_ref) ** (k + 1)
-    dparams_f_opt = 2**k * dparams_f
-    return dparams_f_opt[::-1]
+    if use_cheby:
+        dparams_f = 2**k * dparams_f
+    return dparams_f[::-1]
 
 
 @njit(cache=True, fastmath=True)
@@ -99,9 +103,10 @@ def poly_taylor_step_d_f(
     eta: float,
     f_max: float,
     t_ref: float = 0,
+    use_cheby: bool = True,
 ) -> np.ndarray:
     """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion (scalar)."""
-    dparams_f = poly_taylor_step_f(nparams, tobs, nbins, eta, t_ref)
+    dparams_f = poly_taylor_step_f(nparams, tobs, nbins, eta, t_ref, use_cheby)
     dparams = np.zeros(nparams, dtype=np.float64)
     dparams[:-1] = dparams_f[:-1] * C_VAL / f_max
     dparams[-1] = dparams_f[-1]
@@ -116,9 +121,10 @@ def poly_taylor_step_d(
     eta: float,
     f_max: float,
     t_ref: float = 0,
+    use_cheby: bool = True,
 ) -> np.ndarray:
     """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (scalar)."""
-    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref)
+    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref, use_cheby)
     return dparams_f * C_VAL / f_max
 
 
@@ -131,9 +137,10 @@ def poly_taylor_step_d_limited(
     f0: float,
     param_limits: np.ndarray,
     t_ref: float = 0,
+    use_cheby: bool = True,
 ) -> np.ndarray:
     """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (scalar)."""
-    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref)
+    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref, use_cheby)
     dparams = dparams_f * C_VAL / f0
     for iparam in range(poly_order - 1):
         param_min, param_max = param_limits[iparam]
@@ -154,9 +161,10 @@ def poly_taylor_step_d_vec(
     eta: float,
     f_max: np.ndarray,
     t_ref: float = 0,
+    use_cheby: bool = True,
 ) -> np.ndarray:
     """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (vector)."""
-    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref)
+    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref, use_cheby)
     return dparams_f[np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
 
 
@@ -169,9 +177,10 @@ def poly_taylor_step_d_vec_limited(
     f0_batch: np.ndarray,
     param_limits: np.ndarray,
     t_ref: float = 0,
+    use_cheby: bool = True,
 ) -> np.ndarray:
     """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (vector)."""
-    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref)
+    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref, use_cheby)
     dparams = dparams_f[np.newaxis, :] * C_VAL / f0_batch[:, np.newaxis]
     n_batch = f0_batch.shape[0]
     for iparam in range(poly_order - 1):
@@ -196,9 +205,10 @@ def poly_taylor_step_d_f_vec(
     eta: float,
     f_max: np.ndarray,
     t_ref: float = 0,
+    use_cheby: bool = True,
 ) -> np.ndarray:
     """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion (vector)."""
-    dparams_f = poly_taylor_step_f(nparams, tobs, nbins, eta, t_ref)
+    dparams_f = poly_taylor_step_f(nparams, tobs, nbins, eta, t_ref, use_cheby)
     dparams = np.zeros((len(f_max), nparams), dtype=np.float64)
     dparams[:, :-1] = dparams_f[:-1][np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
     dparams[:, -1] = dparams_f[-1]
@@ -213,15 +223,17 @@ def poly_taylor_shift_d_f_vec(
     nbins: int,
     f_cur: np.ndarray,
     t_ref: float = 0,
+    use_cheby: bool = True,
 ) -> np.ndarray:
     """Compute the bin shift for parameters {d_k,... d_2, f} (vector)."""
     nbatch, nparams = dparam_old.shape
     k = np.arange(nparams - 1, -1, -1)
     factors = (tobs_new - t_ref) ** (k + 1) * nbins / maths.fact(k + 1)
-    factors_opt = factors / 2**k
+    if use_cheby:
+        factors = factors / 2**k
     factors_broadcast = np.empty((nbatch, nparams), dtype=dparam_old.dtype)
     for i in range(nbatch):
-        factors_broadcast[i, :] = factors_opt
+        factors_broadcast[i, :] = factors
     # For all but last param, scale by f_cur / C_VAL
     scale = (f_cur / C_VAL)[:, np.newaxis]
     factors_broadcast[:, :-1] *= scale
@@ -237,11 +249,13 @@ def split_f(
     nbins: float,
     eta: float,
     t_ref: float = 0,
+    use_cheby: bool = True,
 ) -> bool:
     """Check if a parameter {f_k} should be split."""
     factor = (tobs_new - t_ref) ** (k + 1) * nbins / maths.fact(k + 1)
-    factor_opt = factor / 2**k
-    return abs(df_old - df_new) * factor_opt > (eta - FLOAT_EPSILON)
+    if use_cheby:
+        factor = factor / 2**k
+    return abs(df_old - df_new) * factor > (eta - FLOAT_EPSILON)
 
 
 @njit(cache=True, fastmath=True)
@@ -252,14 +266,16 @@ def poly_taylor_shift_d(
     nbins: int,
     f_cur: float,
     t_ref: float = 0,
+    use_cheby: bool = True,
 ) -> np.ndarray:
     """Bin shift for parameters {d_k_max,... d_2, d_1} (scalar)."""
     n_params = len(dparam_old)
     k = np.arange(n_params - 1, -1, -1)
     factors = (tobs_new - t_ref) ** (k + 1) * nbins / maths.fact(k + 1)
-    factors_opt = factors / 2**k
-    factors_opt *= f_cur / C_VAL
-    return np.abs(dparam_old - dparam_new) * factors_opt
+    if use_cheby:
+        factors = factors / 2**k
+    factors *= f_cur / C_VAL
+    return np.abs(dparam_old - dparam_new) * factors
 
 
 @njit(cache=True, fastmath=True)
@@ -270,15 +286,17 @@ def poly_taylor_shift_d_vec(
     nbins: int,
     f_cur: np.ndarray,
     t_ref: float = 0,
+    use_cheby: bool = True,
 ) -> np.ndarray:
     """Bin shift for parameters {d_k_max,... d_2, d_1} (vector)."""
     n_batch, n_params = dparam_old.shape
     k = np.arange(n_params - 1, -1, -1)
     factors = (tobs_new - t_ref) ** (k + 1) * nbins / maths.fact(k + 1)
-    factors_opt = factors / 2**k
+    if use_cheby:
+        factors = factors / 2**k
     factors_broadcast = np.empty((n_batch, n_params), dtype=dparam_old.dtype)
     for i in range(n_batch):
-        factors_broadcast[i, :] = factors_opt
+        factors_broadcast[i, :] = factors
     scale = (f_cur / C_VAL)[:, np.newaxis]
     factors_broadcast *= scale
     return np.abs(dparam_old - dparam_new) * factors_broadcast
@@ -293,14 +311,44 @@ def period_step(tobs: float, nbins: int, p_min: float, tol: float) -> float:
 
 @njit(cache=True, fastmath=True)
 def poly_cheb_step_vec(
-    nparams: int,
+    poly_order: int,
     nbins: int,
     eta: float,
     f_max: np.ndarray,
 ) -> np.ndarray:
     dphi = eta / nbins
-    dparams_f = np.zeros(nparams, np.float64) + dphi
+    dparams_f = np.zeros(poly_order, np.float64) + dphi
     return dparams_f[np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
+
+
+@njit(cache=True, fastmath=True)
+def poly_cheb_step_vec_limited(
+    n_params: int,
+    scale_cur: float,
+    nbins: int,
+    eta: float,
+    f0_batch: np.ndarray,
+    param_limits: np.ndarray,
+) -> np.ndarray:
+    dphi = eta / nbins
+    dparams_f = np.zeros(n_params, np.float64) + dphi
+    dparams = dparams_f[np.newaxis, :] * C_VAL / f0_batch[:, np.newaxis]
+    n_batch = f0_batch.shape[0]
+    param_limits_d = np.empty((n_batch, n_params, 2), dtype=np.float64)
+    for i in range(n_params):
+        param_limits_d[:, i, 0] = param_limits[i][0]
+        param_limits_d[:, i, 1] = param_limits[i][1]
+    param_limits_d[:, -1, 0] = (1 - param_limits[n_params - 1][1] / f0_batch) * C_VAL
+    param_limits_d[:, -1, 1] = (1 - param_limits[n_params - 1][0] / f0_batch) * C_VAL
+    param_limits_cheby = transforms.taylor_to_chebyshev_limits_full(
+        param_limits_d,
+        scale_cur,
+    )
+    for i in range(n_batch):
+        for j in range(n_params):
+            param_min, param_max = param_limits_cheby[i, j]
+            dparams[i, j] = min(param_max - param_min, dparams[i, j])
+    return dparams
 
 
 @njit(cache=True, fastmath=True)
@@ -438,7 +486,7 @@ def branch_logical_padded(
     # 0.5 < confidence_const < 1
     confidence_const = 0.5 * (1 + 1 / num_points)
     half_range = confidence_const * 1.0
-    start = - half_range
+    start = -half_range
     stop = half_range
     num_intervals = num_points + 1
     step = (stop - start) / num_intervals
