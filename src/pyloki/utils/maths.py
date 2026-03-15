@@ -284,15 +284,50 @@ def circ_taylor_transform_matrix(
     l_mat[2, 3] = s / omega
     l_mat[3, 2] = -omega * s
     l_mat[3, 3] = c
-    l_mat[4, 4] = c
-    l_mat[4, 5] = s / omega
-    l_mat[5, 4] = -omega * s
-    l_mat[5, 5] = c
-    if coeff_order == 1:
-        # reverse coefficient ordering
-        l_mat = l_mat[::-1, ::-1]
 
+    l_mat[4, 2] = -omega_sq * c
+    l_mat[4, 3] = -omega * s
+    l_mat[5, 2] = omega_cu * s
+    l_mat[5, 3] = -omega_sq * c
+
+    l_mat = l_mat[1:6, 1:6]      # drop d0 properly
+    if coeff_order == 1:
+        l_mat = l_mat[::-1, ::-1]
     return l_mat
+
+
+@njit(cache=True, fastmath=True)
+def circ_taylor_transform_matrix_n(
+    delta_t: float,
+    omega: float,
+) -> np.ndarray:
+    omega_sq = omega * omega
+    omega_cu = omega_sq * omega
+
+    phi = omega * delta_t
+    c = np.cos(phi)
+    s = np.sin(phi)
+
+    l_mat = np.zeros((6, 6), dtype=np.float64)
+    l_mat[0, 0] = 1.0
+    l_mat[0, 1] = delta_t
+    l_mat[0, 2] = (1.0 - c) / omega_sq
+    l_mat[0, 3] = (omega * delta_t - s) / omega_cu
+    l_mat[1, 1] = 1.0
+    l_mat[1, 2] = s / omega
+    l_mat[1, 3] = (1.0 - c) / omega_sq
+    l_mat[2, 2] = c
+    l_mat[2, 3] = s / omega
+    l_mat[3, 2] = -omega * s
+    l_mat[3, 3] = c
+
+    l_mat[4, 2] = -omega_sq * c
+    l_mat[4, 3] = -omega * s
+    l_mat[5, 2] = omega_cu * s
+    l_mat[5, 3] = -omega_sq * c
+
+    l_mat = l_mat[1:6, 1:6]      # drop d0 properly
+    return l_mat[::-1, ::-1]
 
 
 @njit(cache=True, fastmath=True)

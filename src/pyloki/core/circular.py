@@ -51,6 +51,14 @@ def get_circ_mask(
     """
     # Determine whether derivatives are significantly measured
     is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
+    # if snap not significant -> everything is Taylor
+    if not np.any(is_sig_snap):
+        return (
+            np.empty(0, dtype=np.int64),
+            np.empty(0, dtype=np.int64),
+            np.arange(snap.shape[0], dtype=np.int64),
+        )
+
     is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + FLOAT_EPSILON))
 
     # Snap-Dominated Region (Standard)
@@ -65,12 +73,15 @@ def get_circ_mask(
     # Crackle-Dominated Region (The Hole)
     # Condition: Snap is weak (in the null), but Crackle is strong.
     # Note: d2 and d4 vanish in the hole, so we rely on d3 and d5.
-    is_small_accel = np.abs(accel) < FLOAT_EPSILON
-    in_the_hole = (~is_sig_snap) & is_sig_crackle & is_small_accel
-
     # Check if implied Omega is physical (-d5/d3 > 0)
-    is_physical_crackle = ((-crackle * jerk) > 0) & (np.abs(jerk) > FLOAT_EPSILON)
-    mask_circular_crackle = in_the_hole & is_physical_crackle
+    is_physical_crackle = (
+        ((-crackle * jerk) > 0)
+        & (np.abs(crackle) > FLOAT_EPSILON)
+        & (np.abs(jerk) > FLOAT_EPSILON)
+    )
+    mask_circular_crackle = (
+        is_sig_snap & ~is_physical_snap & is_sig_crackle & is_physical_crackle
+    )
 
     # Taylor Region (Noise / Unresolved)
     # Everything that isn't a confident circular candidate
@@ -85,8 +96,6 @@ def get_circ_mask(
 
 @njit(cache=True, fastmath=True)
 def circ_validate_batch(
-    crackle: np.ndarray,
-    dcrackle: np.ndarray,
     snap: np.ndarray,
     dsnap: np.ndarray,
     jerk: np.ndarray,
@@ -95,7 +104,12 @@ def circ_validate_batch(
     x_mass_const: float,
     minimum_snap_cells: float,
 ) -> np.ndarray:
-    n_leaves = len(crackle)
+    """Conservative pruning of cells that can never become circular.
+
+    Hole region (where snap inference is impossible) is always preserved
+    because crackle may later classify those cells as circular.
+    """
+    n_leaves = snap.shape[0]
     mask_keep = np.zeros(n_leaves, dtype=np.bool_)
     omega_max_sq = (2 * np.pi / p_orb_min) ** 2
 
@@ -103,66 +117,39 @@ def circ_validate_batch(
     # |val / step| > thresh  <=>  |val| > thresh * |step|
     # dsnap and dcrackle are step sizes (always positive)
     is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
-    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + FLOAT_EPSILON))
 
-    # Unresolved Taylor cells are always kept
-    is_noise = (~is_sig_snap) & (~is_sig_crackle)
-    mask_keep |= is_noise
+    # unresolved cells are always kept
+    mask_keep |= ~is_sig_snap
 
-    # Snap-dominated region
-    idx_snap = np.flatnonzero(is_sig_snap)
-    if len(idx_snap) > 0:
+    # hole region (snap inference impossible)
+    snap_possible = (np.abs(accel) > FLOAT_EPSILON) & (np.abs(snap) > FLOAT_EPSILON)
+
+    hole = is_sig_snap & ~snap_possible
+    mask_keep |= hole
+
+    # snap-valid region
+    sign_valid = (-snap * accel) > 0
+    snap_region = is_sig_snap & snap_possible & sign_valid
+    idx_snap = np.flatnonzero(snap_region)
+    if idx_snap.size > 0:
         s_snap = snap[idx_snap]
         s_accel = accel[idx_snap]
         s_jerk = jerk[idx_snap]
-        # Check: Physical sign (-d4/d2 > 0)
-        valid_sign = (
-            ((-s_snap * s_accel) > 0)
-            & (np.abs(s_accel) > FLOAT_EPSILON)
-            & (np.abs(s_snap) > FLOAT_EPSILON)
-        )
-        s_omega_sq = np.zeros_like(s_snap)
-        s_omega_sq[valid_sign] = -s_snap[valid_sign] / s_accel[valid_sign]
+        s_omega_sq = -s_snap / s_accel
 
         # Check: Max Orbital Frequency
         valid_omega = s_omega_sq < omega_max_sq
 
         # |d2| < x * omega^(4/3)
         s_omega_sq_safe = np.abs(s_omega_sq)
-        limit_accel = x_mass_const * (s_omega_sq_safe ** (2 / 3))
-        valid_accel = np.abs(s_accel) < limit_accel
+        limit_accel = x_mass_const * (s_omega_sq_safe ** (2 / 3) + FLOAT_EPSILON)
+        valid_accel = np.abs(s_accel) <= limit_accel
 
         # |d3| < |d2| * omega
-        valid_jerk = (s_jerk**2) < (s_accel**2 * s_omega_sq_safe)
+        valid_jerk = (s_jerk**2) <= (s_accel**2 * s_omega_sq_safe)
 
-        mask_snap_local = valid_sign & valid_omega & valid_accel & valid_jerk
-        mask_keep[idx_snap] |= mask_snap_local
-
-    # Crackle-Dominated Region (The Hole)
-    # Only if snap is not significant but crackle is
-    is_hole = (~is_sig_snap) & is_sig_crackle & (np.abs(accel) < FLOAT_EPSILON)
-    idx_hole = np.flatnonzero(is_hole)
-    if len(idx_hole) > 0:
-        h_crackle = crackle[idx_hole]
-        h_jerk = jerk[idx_hole]
-        h_accel = accel[idx_hole]
-
-        valid_sign = ((-h_crackle * h_jerk) > 0) & (np.abs(h_jerk) > FLOAT_EPSILON)
-        h_omega_sq = np.zeros_like(h_crackle)
-        h_omega_sq[valid_sign] = -h_crackle[valid_sign] / h_jerk[valid_sign]
-
-        valid_omega = h_omega_sq < omega_max_sq
-
-        # |d2| < x * omega^(4/3)
-        h_omega_sq_safe = np.abs(h_omega_sq)
-        limit_accel = x_mass_const * (h_omega_sq_safe ** (2 / 3))
-        valid_accel = np.abs(h_accel) < limit_accel
-
-        # |d3| < |d2| * omega
-        valid_jerk = (h_jerk**2) < (h_accel**2 * h_omega_sq_safe)
-
-        mask_hole_local = valid_sign & valid_omega & valid_accel & valid_jerk
-        mask_keep[idx_hole] |= mask_hole_local
+        mask_valid = valid_omega & valid_accel & valid_jerk
+        mask_keep[idx_snap] |= mask_valid
 
     return np.flatnonzero(mask_keep)
 
@@ -217,28 +204,22 @@ def get_circ_taylor_mask_branch(
     minimum_snap_cells: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Get the indices of the leaves that need to be expanded (crackle)."""
-    crackle = leaves_params_batch[:, 0]
     snap = leaves_params_batch[:, 1]
     jerk = leaves_params_batch[:, 2]
     accel = leaves_params_batch[:, 3]
-
-    dcrackle = leaves_dparams_batch[:, 0]
     dsnap = leaves_dparams_batch[:, 1]
 
     is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
-    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + FLOAT_EPSILON))
-    in_the_hole = (~is_sig_snap) & is_sig_crackle & (np.abs(accel) < FLOAT_EPSILON)
-    is_physical_crackle = ((-crackle * jerk) > 0) & (np.abs(jerk) > FLOAT_EPSILON)
-    mask_circular_crackle = in_the_hole & is_physical_crackle
-
+    # Numerical Stability - acceleration and snap must be significantly non-zero
+    is_stable_snap = (np.abs(accel) > FLOAT_EPSILON) & (np.abs(snap) > FLOAT_EPSILON)
+    is_stable_jerk = np.abs(jerk) > FLOAT_EPSILON
+    mask_circular_crackle = is_sig_snap & ~is_stable_snap & is_stable_jerk
     # Optimization: Filter out 'crackle' candidates that don't actually need branching
     # True crackle candidates: in the hole AND step size is large enough
     mask_expand_crackle = mask_circular_crackle & batch_needs_crackle
     idx_expand_crackle = np.flatnonzero(mask_expand_crackle)
     # Keep indices: Taylor + Snap + Crackle-that-doesnt-need-branching
-    mask_keep = ~mask_expand_crackle
-    idx_keep = np.flatnonzero(mask_keep)
-
+    idx_keep = np.flatnonzero(~mask_expand_crackle)
     return idx_expand_crackle, idx_keep
 
 
@@ -254,7 +235,47 @@ def circ_taylor_branch_batch(
     branch_max: int,
     minimum_snap_cells: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Branch a batch of parameter sets to leaves."""
+    """Branch a batch of tree parameter nodes to leaves.
+
+    Identical to poly_taylor_branch_batch for all dims except crackle (j=0).
+    Crackle is deferred: all leaves first receive the parent crackle center,
+    then only leaves inside the circular-orbit instability hole AND whose
+    crackle step is still too coarse receive a second cartesian expansion
+    over crackle offsets.
+
+    The crackle basis column is always set consistently:
+      - For leaves that are crackle-expanded: scale from branch_logical_padded.
+      - For leaves whose parent needed crackle shrinking but were not expanded
+        (outside the instability hole): same scale, computed once per parent.
+      - For leaves whose parent did not need crackle branching: scale = 1.0.
+
+    Parameters
+    ----------
+    leaf_params_batch : np.ndarray
+        Shape (n_batch, n_params + 3).
+    leaf_bases_batch : np.ndarray
+        Shape (n_batch, n_params, n_params).
+    coord_cur : tuple[float, float]
+        (coord, t_obs_minus_t_ref).
+    nbins : int
+        Number of bins in the folded profile.
+    eta : float
+        Tolerance for the parameter step size in bins.
+    poly_order : int
+        Order of the Taylor polynomial (== n_params).
+    param_limits : np.ndarray
+        Limits for each parameter in Taylor basis (reverse order).
+    branch_max : int
+        Maximum branches per parameter per parent.
+    minimum_snap_cells : float
+        Minimum |snap| / dsnap to trigger crackle expansion.
+
+    Returns
+    -------
+    leaf_params_branch_batch : np.ndarray, shape (n_branch, n_params + 3)
+    leaf_bases_branch_batch  : np.ndarray, shape (n_branch, n_params, n_params)
+    origins_final            : np.ndarray, shape (n_branch,)
+    """
     n_batch, _ = leaf_params_batch.shape
     _, t_obs_minus_t_ref = coord_cur
     n_params = poly_order
@@ -284,38 +305,43 @@ def circ_taylor_branch_batch(
         f0_batch,
         t_ref=0,
     )
+    # Vectorized Selection (mask non-crackle branched params)
+    needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
+
     # Vectorized Padded Branching ( All params except crackle) ---
     pad_branched_fracs = np.empty((n_batch, n_params, branch_max), dtype=np.float64)
     branched_scales = np.empty((n_batch, n_params), dtype=np.float64)
     branched_counts = np.empty((n_batch, n_params), dtype=np.int64)
-    for i in range(n_batch):
-        for j in range(1, n_params):  # skip crackle (j=0)
-            # Get purely fractional offsets [-0.5, 0.5]
-            scale, count = psr_utils.branch_logical_padded(
-                pad_branched_fracs[i, j],
-                dparam_cur_batch[i, j],
-                dparam_new_batch[i, j],
-            )
-            branched_scales[i, j] = scale
-            branched_counts[i, j] = count
 
-    # Vectorized Selection (mask non-crackle branched params)
-    needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
     for i in range(n_batch):
-        for j in range(poly_order):
-            if j == 0 or not needs_branching[i, j]:
-                # crackle - don't branch yet, keep at current value
+        # j=0 crackle: frozen in first pass
+        branched_scales[i, 0] = 1.0
+        branched_counts[i, 0] = 1
+        for k in range(branch_max):
+            pad_branched_fracs[i, 0, k] = 0.0
+        # j>=1: standard branching
+        for j in range(1, n_params):
+            if needs_branching[i, j]:
+                scale, count = psr_utils.branch_logical_padded(
+                    pad_branched_fracs[i, j],
+                    dparam_cur_batch[i, j],
+                    dparam_new_batch[i, j],
+                )
+                branched_scales[i, j] = scale
+                branched_counts[i, j] = count
+            else:
                 branched_scales[i, j] = 1.0
                 branched_counts[i, j] = 1
                 for k in range(branch_max):
                     pad_branched_fracs[i, j, k] = 0.0
+
     # First Cartesian Product (All Except Crackle)
     # Note: These 'leaves' contain unbranched crackle (parent values)
     leaves_branch_fracs_batch, batch_origins = np_utils.cartesian_prod_padded(
         pad_branched_fracs,
         branched_counts,
         n_batch,
-        poly_order,
+        n_params,
     )
     n_branch_tmp = batch_origins.shape[0]
     leaf_params_branch_batch_tmp = np.empty((n_branch_tmp, n_params), dtype=np.float64)
@@ -334,9 +360,15 @@ def circ_taylor_branch_batch(
                 phys_disp += parent_basis[j, k] * leaves_branch_fracs_batch[i, k]
             child_param[j] = parent_param[j] + phys_disp
 
-    # Check if the batch item originating this leaf needs crackle branching
-    dparam_new_batch_act = dparam_cur_batch * branched_scales
-    leaves_branched_dparams_tmp = dparam_new_batch_act[batch_origins]
+    # Propagate branched dparams to children (used by mask for dsnap)
+    leaves_branched_dparams_tmp = np.empty((n_branch_tmp, n_params), dtype=np.float64)
+    for i in range(n_branch_tmp):
+        parent_idx = batch_origins[i]
+        for j in range(n_params):
+            leaves_branched_dparams_tmp[i, j] = (
+                dparam_cur_batch[parent_idx, j] * branched_scales[parent_idx, j]
+            )
+
     batch_needs_crackle = needs_branching[batch_origins, 0]
     idx_expand_crackle, idx_keep = get_circ_taylor_mask_branch(
         leaf_params_branch_batch_tmp,
@@ -347,6 +379,17 @@ def circ_taylor_branch_batch(
     n_keep = len(idx_keep)
     n_crackle_expand = len(idx_expand_crackle)
 
+    crackle_scale_per_parent = np.ones(n_batch, dtype=np.float64)
+    _scratch = np.empty(branch_max, dtype=np.float64)
+    for i in range(n_batch):
+        if needs_branching[i, 0]:
+            scale, _ = psr_utils.branch_logical_padded(
+                _scratch,
+                dparam_cur_batch[i, 0],
+                dparam_new_batch[i, 0],
+            )
+            crackle_scale_per_parent[i] = scale
+
     if n_crackle_expand == 0:
         n_branch = n_keep
         leaf_params_branch_batch = np.empty((n_branch, n_params + 3), dtype=np.float64)
@@ -354,7 +397,7 @@ def circ_taylor_branch_batch(
             (n_branch, n_params, n_params),
             dtype=np.float64,
         )
-        origins_final = batch_origins[idx_keep]
+        origins_final = np.empty(n_branch, dtype=np.int64)
         for i in range(n_branch):
             src = idx_keep[i]
             parent_idx = batch_origins[src]
@@ -367,10 +410,15 @@ def circ_taylor_branch_batch(
 
             # scale basis
             for j in range(n_params):
-                scale = branched_scales[parent_idx, j]
+                scale = (
+                    crackle_scale_per_parent[parent_idx]
+                    if j == 0
+                    else branched_scales[parent_idx, j]
+                )
                 for k in range(n_params):
                     child_basis[k, j] = parent_basis[k, j] * scale
 
+            origins_final[i] = parent_idx
         return leaf_params_branch_batch, leaf_bases_branch_batch, origins_final
 
     # Branch crackle parameter for these specific leaves
@@ -383,7 +431,7 @@ def circ_taylor_branch_batch(
         parent_idx = batch_origins[leaf_idx]
         scale, count = psr_utils.branch_logical_padded(
             crackle_fracs[i],
-            leaves_branched_dparams_tmp[leaf_idx, 0],
+            dparam_cur_batch[parent_idx, 0],
             dparam_new_batch[parent_idx, 0],
         )
         crackle_scales[i] = scale
@@ -406,7 +454,11 @@ def circ_taylor_branch_batch(
         child_param[:n_params] = leaf_params_branch_batch_tmp[src]
         child_param[n_params:] = parent_param[n_params:]
         for j in range(n_params):
-            scale = branched_scales[parent_idx, j]
+            scale = (
+                crackle_scale_per_parent[parent_idx]
+                if j == 0
+                else branched_scales[parent_idx, j]
+            )
             for k in range(n_params):
                 child_basis[k, j] = parent_basis[k, j] * scale
 
@@ -425,15 +477,15 @@ def circ_taylor_branch_batch(
             child_basis = leaf_bases_final[current]
             # displacement vector
             frac = crackle_fracs[i, a]
-            # crackle displacement
             for j in range(n_params):
                 child_param[j] = center[j] + parent_basis[j, 0] * frac
             child_param[n_params:] = parent_param[n_params:]
-            # scale basis
+
             for j in range(n_params):
                 scale = crackle_scales[i] if j == 0 else branched_scales[parent_idx, j]
                 for k in range(n_params):
                     child_basis[k, j] = parent_basis[k, j] * scale
+
             origins_final[current] = parent_idx
             current += 1
     return leaf_params_final, leaf_bases_final, origins_final
@@ -471,15 +523,11 @@ def circ_taylor_validate_batch(
     tuple[np.ndarray, np.ndarray]
         Filtered leaf parameter sets (only physically plausible) and their origins.
     """
-    crackle = leaf_params_batch[:, 0]
     snap = leaf_params_batch[:, 1]
     jerk = leaf_params_batch[:, 2]
     accel = leaf_params_batch[:, 3]
-    dcrackle = np.abs(leaf_bases_batch[:, 0, 0])
     dsnap = np.abs(leaf_bases_batch[:, 1, 1])
     idx = circ_validate_batch(
-        crackle,
-        dcrackle,
         snap,
         dsnap,
         jerk,
@@ -662,25 +710,28 @@ def circ_taylor_transform_batch(
         minimum_snap_cells=minimum_snap_cells,
     )
     delta_t = coord_next[0] - coord_cur[0]
-    if idx_circ_snap.size > 0:
+    for k in range(idx_circ_snap.size):
+        i = idx_circ_snap[k]
         transforms.shift_taylor_circular_params_basis(
-            leaf_params_batch[idx_circ_snap],
-            leaf_bases_batch[idx_circ_snap],
+            leaf_params_batch[i : i + 1],
+            leaf_bases_batch[i : i + 1],
             delta_t,
             p_orb_min,
         )
-    if idx_circ_crackle.size > 0:
+    for k in range(idx_circ_crackle.size):
+        i = idx_circ_crackle[k]
         transforms.shift_taylor_circular_params_basis(
-            leaf_params_batch[idx_circ_crackle],
-            leaf_bases_batch[idx_circ_crackle],
+            leaf_params_batch[i : i + 1],
+            leaf_bases_batch[i : i + 1],
             delta_t,
             p_orb_min,
             in_hole=True,
         )
-    if idx_taylor.size > 0:
+    for k in range(idx_taylor.size):
+        i = idx_taylor[k]
         transforms.shift_taylor_params_basis(
-            leaf_params_batch[idx_taylor],
-            leaf_bases_batch[idx_taylor],
+            leaf_params_batch[i : i + 1],
+            leaf_bases_batch[i : i + 1],
             delta_t,
         )
 

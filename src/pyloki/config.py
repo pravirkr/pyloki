@@ -206,7 +206,7 @@ class ParamLimits:
         # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
         x_orb = 0.005 * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
         max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
-        drifted_max_values_d = transforms.shift_taylor_params(
+        drifted_max_values_d = transforms.shift_taylor_params_1d(
             max_derivs[::-1],
             t_drift / 2.0,
         )
@@ -243,11 +243,11 @@ class ParamLimits:
         dvec = np.zeros(nparams + 1, dtype=np.float64)
         dvec[1:-2] = true_params[1:-1]  # till acceleration
         dvec[0] = d_range[0]
-        dvec_min_up = transforms.shift_taylor_params(dvec, t_obs / 2)
-        dvec_min_low = transforms.shift_taylor_params(dvec, -t_obs / 2)
+        dvec_min_up = transforms.shift_taylor_params_1d(dvec, t_obs / 2)
+        dvec_min_low = transforms.shift_taylor_params_1d(dvec, -t_obs / 2)
         dvec[0] = d_range[1]
-        dvec_max_up = transforms.shift_taylor_params(dvec, t_obs / 2)
-        dvec_max_low = transforms.shift_taylor_params(dvec, -t_obs / 2)
+        dvec_max_up = transforms.shift_taylor_params_1d(dvec, t_obs / 2)
+        dvec_max_low = transforms.shift_taylor_params_1d(dvec, -t_obs / 2)
         dvec_bound_low = np.minimum(dvec_min_low, dvec_max_low)
         dvec_bound_up = np.maximum(dvec_min_up, dvec_max_up)
         bounds_d = [
@@ -457,12 +457,14 @@ class PulsarSearchConfig:
 
     @property
     def x_mass_const(self) -> float:
-        """:obj:`float`: Mass constant for the search."""
+        """:obj:`float`: Mass constant for the search (inflated by 10% for safety)."""
         return (
-            0.005
-            * (self.m_p_min + self.m_c_max) ** (1 / 3)
+            C_VAL
+            * 0.005
+            * 1.1
+            * (2 * np.pi) ** (2 / 3)
             * self.m_c_max
-            / (self.m_p_min + self.m_c_max)
+            / (self.m_p_min + self.m_c_max) ** (2 / 3)
         )
 
     @property

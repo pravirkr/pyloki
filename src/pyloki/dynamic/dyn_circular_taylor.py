@@ -33,7 +33,7 @@ class PruneCircTaylorDPFuncts(structref.StructRefProxy):
         param_grid_count_init: np.ndarray,
         tseg_ffa: float,
         cfg: PulsarSearchConfig,
-        use_moving_grid: bool = True,
+        use_moving_grid: bool,
     ) -> Self:
         """Create a new instance of PruneCircTaylorDPFuncts."""
         return prune_circ_taylor_dp_functs_init(
@@ -184,7 +184,7 @@ class PruneCircTaylorComplexDPFuncts(structref.StructRefProxy):
         param_grid_count_init: np.ndarray,
         tseg_ffa: float,
         cfg: PulsarSearchConfig,
-        use_moving_grid: bool = True,
+        use_moving_grid: bool,
     ) -> Self:
         """Create a new instance of PruneCircTaylorComplexDPFuncts."""
         return prune_circ_taylor_complex_dp_functs_init(
@@ -524,7 +524,6 @@ def validate_func(
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    return leaf_params_batch, leaf_bases_batch, leaves_origins
     return circular.circ_taylor_validate_batch(
         leaf_params_batch,
         leaf_bases_batch,

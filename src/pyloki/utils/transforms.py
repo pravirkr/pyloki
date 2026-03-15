@@ -332,7 +332,7 @@ def shift_taylor_circular_basis(
 
 
 @njit(cache=True, fastmath=True)
-def shift_taylor_circular_params_basis(
+def shift_taylor_circular_params_basis_old(
     leaf_params_batch: np.ndarray,
     leaf_bases_batch: np.ndarray,
     delta_t: float,
@@ -349,17 +349,97 @@ def shift_taylor_circular_params_basis(
         in_hole=in_hole,
     )
 
-    l_mat = maths.circ_taylor_transform_matrix(delta_t, p_orb_min, 1)
+    omega = 2.0 * np.pi / p_orb_min
+    omega_sq = omega * omega
+
+    l_mat = maths.circ_taylor_transform_matrix(delta_t, p_orb_min)
     basis_tmp = np.empty((n_params, n_params), dtype=np.float64)
     for leaf in range(n_leaves):
-        # Basis transformation (l_mat.T @ B)
+        # Basis transformation (l_mat @ B_i)
         for r in range(n_params):
             for c in range(n_params):
                 acc = np.float64(0.0)
+                for k in range(n_params):
+                    acc += l_mat[r, k] * leaf_bases_batch[leaf, k, c]
+                basis_tmp[r, c] = acc
+        # reconstruct d5 and d4 basis columns from constraint
+        #for r in range(n_params):
+        #    basis_tmp[r, 0] = -omega_sq * basis_tmp[r, 2]
+        #    basis_tmp[r, 1] = -omega_sq * basis_tmp[r, 3]
+        basis_tmp[0, 0] = -omega_sq * basis_tmp[2, 2]  # d5 extent
+        basis_tmp[1, 1] = -omega_sq * basis_tmp[3, 3]  # d4 extent
+        leaf_bases_batch[leaf] = basis_tmp
+
+@njit(cache=True, fastmath=True)
+def shift_taylor_circular_params_basis(
+    leaf_params_batch: np.ndarray,
+    leaf_bases_batch: np.ndarray,
+    delta_t: float,
+    p_orb_min: float,
+    in_hole: bool = False,
+) -> None:
+    n_leaves, n_params, _ = leaf_bases_batch.shape
+    if n_params != 5:
+        msg = "5 parameters are needed for circular orbit propagation."
+        raise ValueError(msg)
+    d5_i = leaf_params_batch[:, 0]
+    d4_i = leaf_params_batch[:, 1]
+    d3_i = leaf_params_batch[:, 2]
+    d2_i = leaf_params_batch[:, 3]
+    d1_i = leaf_params_batch[:, 4]
+    d0_i = leaf_params_batch[:, 5]
+
+    # Pin-down the orbit
+    omega_orb_sq = -d5_i / d3_i if in_hole else -d4_i / d2_i
+    omega_orb = np.sqrt(omega_orb_sq)
+    # Evolve the phase to the new time t_j = t_i + delta_t
+    omega_dt = omega_orb * delta_t
+    cos_odt = np.cos(omega_dt)
+    sin_odt = np.sin(omega_dt)
+    # rotation
+    d2_j = d2_i * cos_odt + (d3_i / omega_orb) * sin_odt
+    d3_j = d3_i * cos_odt - (d2_i * omega_orb) * sin_odt
+    # circular constraints
+    d4_j = -omega_orb_sq * d2_j
+    d5_j = -omega_orb_sq * d3_j
+    # Secular parameters. Integrate to get {v, d}
+    d1_circ_i = -d3_i / omega_orb_sq
+    d1_circ_j = -d3_j / omega_orb_sq
+    d1_j = d1_circ_j + (d1_i - d1_circ_i)
+    d0_circ_j = -d2_j / omega_orb_sq
+    d0_circ_i = -d2_i / omega_orb_sq
+    d0_j = d0_circ_j + (d0_i - d0_circ_i) + (d1_i - d1_circ_i) * delta_t
+
+    leaf_params_batch[:, 0] = d5_j
+    leaf_params_batch[:, 1] = d4_j
+    leaf_params_batch[:, 2] = d3_j
+    leaf_params_batch[:, 3] = d2_j
+    leaf_params_batch[:, 4] = d1_j
+    leaf_params_batch[:, 5] = d0_j
+
+    t_mat = maths.poly_taylor_transform_matrix(n_params, delta_t)
+    basis_tmp = np.empty((n_params, n_params), dtype=np.float64)
+    for leaf in range(n_leaves):
+        # Basis transformation (t_mat.T @ B)
+        for r in range(n_params):
+            for c in range(n_params):
+                acc = 0.0
                 for m in range(n_params):
-                    acc += l_mat[m, r] * leaf_bases_batch[leaf, m, c]
+                    acc += t_mat[m, r] * leaf_bases_batch[leaf, m, c]
                 basis_tmp[r, c] = acc
         leaf_bases_batch[leaf] = basis_tmp
+
+    """
+    for leaf in range(n_leaves):
+        # Basis transformation (l_mat @ B_i)
+        for j in range(n_params):
+            old_extent = np.abs(leaf_bases_batch[leaf, j, j])
+            for k in range(n_params):
+                leaf_bases_batch[leaf, j, k] = 0.0
+            leaf_bases_batch[leaf, j, j] = old_extent
+        leaf_bases_batch[leaf, 0, 0] = omega_orb_sq[leaf] * np.abs(leaf_bases_batch[leaf, 2, 2])
+        leaf_bases_batch[leaf, 1, 1] = omega_orb_sq[leaf] * np.abs(leaf_bases_batch[leaf, 3, 3])
+    """
 
 
 @njit(cache=True, fastmath=True)

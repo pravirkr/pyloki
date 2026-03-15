@@ -67,14 +67,20 @@ class PruneStats:
 
     @property
     def branch_frac(self) -> float:
+        if self.n_branches == 0:
+            return 0.0
         return np.round(self.n_leaves_phy / self.n_branches, 2)
 
     @property
     def phys_frac(self) -> float:
+        if self.n_leaves == 0:
+            return 0.0
         return np.round(self.n_leaves_phy / self.n_leaves, 2)
 
     @property
     def surv_frac(self) -> float:
+        if self.n_leaves_phy == 0:
+            return 0.0
         return np.round(self.n_leaves_surv / self.n_leaves_phy, 2)
 
     def update(self, stats_dict: dict[str, float]) -> None:
