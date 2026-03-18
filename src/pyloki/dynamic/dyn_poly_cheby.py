@@ -48,6 +48,7 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
+            cfg.use_conservative_grid,
             use_moving_grid,
         )
 
@@ -102,11 +103,10 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
 
     def branch(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Branch the current parameter set into the finer grid of parameters (leaves).
 
         Parameters
@@ -120,24 +120,17 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
 
         Returns
         -------
-        tuple[np.ndarray, np.ndarray, np.ndarray]
+        np.ndarray
             The branched parameter set.
         """
-        return branch_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_cur,
-            coord_prev,
-        )
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
     def validate(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
         coord_cur: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Validate which of the leaves are physical.
 
         Parameters
@@ -149,7 +142,7 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
 
         Returns
         -------
-        tuple[np.ndarray, np.ndarray, np.ndarray]
+        np.ndarray
             Boolean mask indicating which of the leaves are physical.
 
         Notes
@@ -159,13 +152,7 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
         - pruning scans only functions that are physical at position (t/2).
         But same bounds apply everywhere.
         """
-        return validate_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            leaves_origins,
-            coord_cur,
-        )
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     def get_validation_params(
         self,
@@ -187,8 +174,7 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
 
     def resolve(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_add: tuple[float, float],
         coord_cur: tuple[float, float],
         coord_init: tuple[float, float],
@@ -208,17 +194,10 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
 
         Returns
         -------
-        tuple[np.ndarray, np.ndarray]
+        tuple[np.ndarray, int]
             The resolved parameter index and the relative phase shift.
         """
-        return resolve_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_add,
-            coord_cur,
-            coord_init,
-        )
+        return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
     def shift_add(
         self,
@@ -257,11 +236,10 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
 
     def transform(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_next: tuple[float, float],
         coord_cur: tuple[float, float],
-    ) -> None:
+    ) -> np.ndarray:
         """Transform the leaf parameters to the new coordinate system.
 
         Parameters
@@ -273,14 +251,12 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
         coord_cur : tuple[float, float]
             The current coordinate.
 
+        Returns
+        -------
+        np.ndarray
+            The transformed leaf parameter set.
         """
-        return transform_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_next,
-            coord_cur,
-        )
+        return transform_func(self, leaves_batch, coord_next, coord_cur)
 
     def get_transform_matrix(
         self,
@@ -295,18 +271,11 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
 
     def report(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_report: tuple[float, float],
         coord_end: tuple[float, float],
     ) -> np.ndarray:
-        return report_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_report,
-            coord_end,
-        )
+        return report_func(self, leaves_batch, coord_report, coord_end)
 
 
 class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
@@ -314,16 +283,13 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
         cls,
         param_arr: types.ListType[types.Array],
         dparams: np.ndarray,
-        param_grid_count_init: np.ndarray,
         tseg_ffa: float,
         cfg: PulsarSearchConfig,
-        use_moving_grid: bool = True,
     ) -> Self:
         """Create a new instance of PrunePolyChebyshevComplexDPFuncts."""
         return prune_chebyshev_complex_dp_functs_init(
             param_arr,
             dparams,
-            param_grid_count_init,
             tseg_ffa,
             cfg.nbins,
             cfg.eta,
@@ -332,7 +298,7 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            use_moving_grid,
+            cfg.use_conservative_grid,
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
@@ -347,33 +313,19 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
 
     def branch(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return branch_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_cur,
-            coord_prev,
-        )
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
     def validate(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
         coord_cur: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return validate_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            leaves_origins,
-            coord_cur,
-        )
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     def get_validation_params(
         self,
@@ -383,20 +335,12 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
 
     def resolve(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_add: tuple[float, float],
         coord_cur: tuple[float, float],
         coord_init: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return resolve_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_add,
-            coord_cur,
-            coord_init,
-        )
+        return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
     def shift_add(
         self,
@@ -418,18 +362,11 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
 
     def transform(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_next: tuple[float, float],
         coord_cur: tuple[float, float],
-    ) -> None:
-        return transform_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_next,
-            coord_cur,
-        )
+    ) -> np.ndarray:
+        return transform_func(self, leaves_batch, coord_next, coord_cur)
 
     def get_transform_matrix(
         self,
@@ -444,18 +381,11 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
 
     def report(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_report: tuple[float, float],
         coord_end: tuple[float, float],
     ) -> np.ndarray:
-        return report_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_report,
-            coord_end,
-        )
+        return report_func(self, leaves_batch, coord_report, coord_end)
 
 
 fields_prune_chebyshev_dp_funcs = [
@@ -470,6 +400,7 @@ fields_prune_chebyshev_dp_funcs = [
     ("score_widths", types.i8[::1]),
     ("poly_order", types.i8),
     ("branch_max", types.i8),
+    ("use_conservative_tile", types.bool_),
     ("use_moving_grid", types.bool_),
 ]
 
@@ -500,6 +431,7 @@ def prune_chebyshev_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
+    use_conservative_tile: bool,
     use_moving_grid: bool,
 ) -> PrunePolyChebyshevDPFuncts:
     """Initialize the PrunePolyChebyshevDPFuncts struct."""
@@ -515,6 +447,7 @@ def prune_chebyshev_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
+    self.use_conservative_tile = use_conservative_tile
     self.use_moving_grid = use_moving_grid
     return self
 
@@ -532,6 +465,7 @@ def prune_chebyshev_complex_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
+    use_conservative_tile: bool,
     use_moving_grid: bool,
 ) -> PrunePolyChebyshevComplexDPFuncts:
     """Initialize the PrunePolyChebyshevComplexDPFuncts struct."""
@@ -547,6 +481,7 @@ def prune_chebyshev_complex_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
+    self.use_conservative_tile = use_conservative_tile
     self.use_moving_grid = use_moving_grid
     return self
 
@@ -566,18 +501,18 @@ def seed_func(
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
 ) -> WorldTree:
-    leaf_params, leaf_bases = chebyshev.poly_chebyshev_seed(
+    leaves = chebyshev.poly_chebyshev_seed(
         self.param_arr,
         self.dparams,
         self.poly_order,
         coord_init,
     )
-    n_leaves = len(leaf_params)
+    n_leaves = len(leaves)
     folds = fold_segment.reshape((n_leaves, *fold_segment.shape[-2:]))
     scores = np.zeros(n_leaves, dtype=np.float32)
     scores = self.score(folds)
     backtracks = np.zeros((n_leaves, self.poly_order + 2), dtype=np.int32)
-    return WorldTree(leaf_params, leaf_bases, folds, scores, backtracks)
+    return WorldTree(leaves, folds, scores, backtracks)
 
 
 @njit(cache=True, fastmath=True)
@@ -586,33 +521,31 @@ def seed_complex_func(
     fold_segment: np.ndarray,
     coord_init: tuple[float, float],
 ) -> WorldTreeComplex:
-    leaf_params, leaf_bases = chebyshev.poly_chebyshev_seed(
+    leaves = chebyshev.poly_chebyshev_seed(
         self.param_arr,
         self.dparams,
         self.poly_order,
         coord_init,
     )
-    n_leaves = len(leaf_params)
+    n_leaves = len(leaves)
     folds = fold_segment.reshape((n_leaves, *fold_segment.shape[-2:]))
     scores = np.zeros(n_leaves, dtype=np.float32)
     scores = self.score(folds)
     backtracks = np.zeros((n_leaves, self.poly_order + 2), dtype=np.int32)
-    return WorldTreeComplex(leaf_params, leaf_bases, folds, scores, backtracks)
+    return WorldTreeComplex(leaves, folds, scores, backtracks)
 
 
 @njit(cache=True, fastmath=True)
 def branch_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     # Pass coord_cur for moving grid, coord_cur_fixed for fixed grid
     # Pass coord_prev for moving grid, coord_prev_fixed for fixed grid
     return chebyshev.poly_chebyshev_branch_batch(
-        leaf_params_batch,
-        leaf_bases_batch,
+        leaves_batch,
         coord_cur,
         coord_prev,
         self.nbins,
@@ -620,18 +553,18 @@ def branch_func(
         self.poly_order,
         self.param_limits,
         self.branch_max,
+        self.use_conservative_tile,
     )
 
 
 @njit(cache=True, fastmath=True)
 def validate_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    return leaf_params_batch, leaf_bases_batch, leaves_origins
+) -> tuple[np.ndarray, np.ndarray]:
+    return leaves_batch, leaves_origins
 
 
 @njit(cache=True, fastmath=True)
@@ -645,8 +578,7 @@ def get_validation_params_func(
 @njit(cache=True, fastmath=True)
 def resolve_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
@@ -654,7 +586,7 @@ def resolve_func(
     # Pass coord_cur for moving grid, coord_cur_fixed for fixed grid
     if self.use_moving_grid:
         return chebyshev.poly_chebyshev_resolve_batch(
-            leaf_params_batch,
+            leaves_batch,
             coord_add,
             coord_cur,
             coord_init,
@@ -663,7 +595,7 @@ def resolve_func(
             self.nbins,
         )
     return chebyshev.poly_chebyshev_fixed_resolve_batch(
-        leaf_params_batch,
+        leaves_batch,
         coord_add,
         coord_cur,
         coord_init,
@@ -719,19 +651,18 @@ def score_complex_func(
 @njit(cache=True, fastmath=True)
 def transform_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
-) -> None:
+) -> np.ndarray:
     if self.use_moving_grid:
-        chebyshev.poly_chebyshev_transform_batch(
-            leaf_params_batch,
-            leaf_bases_batch,
+        return chebyshev.poly_chebyshev_transform_batch(
+            leaves_batch,
             coord_next,
             coord_cur,
-            self.poly_order,
+            self.use_conservative_tile,
         )
+    return leaves_batch
 
 
 @njit(cache=True, fastmath=True)
@@ -751,26 +682,19 @@ def pack_func(self: PrunePolyChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
 @njit(cache=True, fastmath=True)
 def report_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_report: tuple[float, float],
     coord_end: tuple[float, float],
 ) -> np.ndarray:
     if not self.use_moving_grid:
         # Shift to the middle of the segment
         chebyshev.poly_chebyshev_transform_batch(
-            leaf_params_batch,
-            leaf_bases_batch,
+            leaves_batch,
             coord_report,
             coord_end,
-            self.poly_order,
+            self.use_conservative_tile,
         )
-    return chebyshev.poly_chebyshev_report_batch(
-        leaf_params_batch,
-        leaf_bases_batch,
-        coord_report,
-        self.poly_order,
-    )
+    return chebyshev.poly_chebyshev_report_batch(leaves_batch, coord_report)
 
 
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "load")
@@ -808,25 +732,17 @@ def ol_seed_func(
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "branch")
 def ol_branch_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevDPFuncts,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return branch_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_cur,
-            coord_prev,
-        )
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
     return impl
 
@@ -834,25 +750,17 @@ def ol_branch_func(
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "validate")
 def ol_validate_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevDPFuncts,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
         coord_cur: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return validate_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            leaves_origins,
-            coord_cur,
-        )
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     return impl
 
@@ -874,28 +782,19 @@ def ol_get_validation_params_func(
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "resolve")
 def ol_resolve_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevDPFuncts,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_add: tuple[float, float],
         coord_cur: tuple[float, float],
         coord_init: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return resolve_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_add,
-            coord_cur,
-            coord_init,
-        )
+        return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
     return impl
 
@@ -934,25 +833,17 @@ def ol_score_func(
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "transform")
 def ol_transform_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevDPFuncts,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_next: tuple[float, float],
         coord_cur: tuple[float, float],
-    ) -> None:
-        return transform_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_next,
-            coord_cur,
-        )
+    ) -> np.ndarray:
+        return transform_func(self, leaves_batch, coord_next, coord_cur)
 
     return impl
 
@@ -987,25 +878,17 @@ def ol_pack_func(
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "report")
 def ol_report_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_report: tuple[float, float],
     coord_end: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevDPFuncts,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_report: tuple[float, float],
         coord_end: tuple[float, float],
     ) -> np.ndarray:
-        return report_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_report,
-            coord_end,
-        )
+        return report_func(self, leaves_batch, coord_report, coord_end)
 
     return impl
 
@@ -1045,25 +928,17 @@ def ol_seed_complex_func(
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "branch")
 def ol_branch_complex_func(
     self: PrunePolyChebyshevComplexDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevComplexDPFuncts,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_cur: tuple[float, float],
         coord_prev: tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return branch_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_cur,
-            coord_prev,
-        )
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return branch_func(self, leaves_batch, coord_cur, coord_prev)
 
     return impl
 
@@ -1071,25 +946,17 @@ def ol_branch_complex_func(
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "validate")
 def ol_validate_complex_func(
     self: PrunePolyChebyshevComplexDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevComplexDPFuncts,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         leaves_origins: np.ndarray,
         coord_cur: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return validate_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            leaves_origins,
-            coord_cur,
-        )
+        return validate_func(self, leaves_batch, leaves_origins, coord_cur)
 
     return impl
 
@@ -1111,28 +978,19 @@ def ol_get_validation_params_complex_func(
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "resolve")
 def ol_resolve_complex_func(
     self: PrunePolyChebyshevComplexDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevComplexDPFuncts,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_add: tuple[float, float],
         coord_cur: tuple[float, float],
         coord_init: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return resolve_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_add,
-            coord_cur,
-            coord_init,
-        )
+        return resolve_func(self, leaves_batch, coord_add, coord_cur, coord_init)
 
     return impl
 
@@ -1180,25 +1038,17 @@ def ol_score_complex_func(
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "transform")
 def ol_transform_complex_func(
     self: PrunePolyChebyshevComplexDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevComplexDPFuncts,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_next: tuple[float, float],
         coord_cur: tuple[float, float],
-    ) -> None:
-        return transform_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_next,
-            coord_cur,
-        )
+    ) -> np.ndarray:
+        return transform_func(self, leaves_batch, coord_next, coord_cur)
 
     return impl
 
@@ -1233,24 +1083,16 @@ def ol_pack_complex_func(
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "report")
 def ol_report_complex_func(
     self: PrunePolyChebyshevComplexDPFuncts,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_report: tuple[float, float],
     coord_end: tuple[float, float],
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevComplexDPFuncts,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         coord_report: tuple[float, float],
         coord_end: tuple[float, float],
     ) -> np.ndarray:
-        return report_func(
-            self,
-            leaf_params_batch,
-            leaf_bases_batch,
-            coord_report,
-            coord_end,
-        )
+        return report_func(self, leaves_batch, coord_report, coord_end)
 
     return impl

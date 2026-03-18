@@ -59,8 +59,6 @@ def get_circ_mask(
             np.arange(snap.shape[0], dtype=np.int64),
         )
 
-    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + FLOAT_EPSILON))
-
     # Snap-Dominated Region (Standard)
     # We check if implied Omega is physical (-d4/d2 > 0)
     is_physical_snap = (
@@ -71,6 +69,8 @@ def get_circ_mask(
     mask_circular_snap = is_sig_snap & is_physical_snap
 
     # Crackle-Dominated Region (The Hole)
+    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + FLOAT_EPSILON))
+
     # Condition: Snap is weak (in the null), but Crackle is strong.
     # Note: d2 and d4 vanish in the hole, so we rely on d3 and d5.
     # Check if implied Omega is physical (-d5/d3 > 0)
@@ -156,8 +156,7 @@ def circ_validate_batch(
 
 @njit(cache=True, fastmath=True)
 def get_circ_taylor_mask(
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     minimum_snap_cells: float = 5,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Generate a robust mask to identify circular orbit candidates.
@@ -166,25 +165,23 @@ def get_circ_taylor_mask(
 
     Parameters
     ----------
-    leaf_params_batch : np.ndarray
-        Shape (n_batch, nparams + 3)
-    leaf_bases_batch : np.ndarray
-        Shape (n_batch, nparams, nparams)
+    leaves_batch : np.ndarray
+        Shape (n_batch, nparams + 2, 2)
     minimum_snap_cells: float
         Threshold for significant snap (number of snap grid cells). Defaults to 5.
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray, np.ndarray]
+    tuple[np.ndarray, np.ndarray]
         A boolean array where True indicates a high-quality circular orbit candidate.
 
     """
-    crackle = leaf_params_batch[:, 0]
-    snap = leaf_params_batch[:, 1]
-    jerk = leaf_params_batch[:, 2]
-    accel = leaf_params_batch[:, 3]
-    dcrackle = np.abs(leaf_bases_batch[:, 0, 0])
-    dsnap = np.abs(leaf_bases_batch[:, 1, 1])
+    crackle = leaves_batch[:, 0, 0]
+    dcrackle = leaves_batch[:, 0, 1]
+    snap = leaves_batch[:, 1, 0]
+    dsnap = leaves_batch[:, 1, 1]
+    jerk = leaves_batch[:, 2, 0]
+    accel = leaves_batch[:, 3, 0]
     return get_circ_mask(
         crackle,
         dcrackle,
@@ -225,8 +222,7 @@ def get_circ_taylor_mask_branch(
 
 @njit(cache=True, fastmath=True)
 def circ_taylor_branch_batch(
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
     nbins: int,
     eta: float,
@@ -234,7 +230,7 @@ def circ_taylor_branch_batch(
     param_limits: np.ndarray,
     branch_max: int,
     minimum_snap_cells: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Branch a batch of tree parameter nodes to leaves.
 
     Identical to poly_taylor_branch_batch for all dims except crackle (j=0).
@@ -251,10 +247,8 @@ def circ_taylor_branch_batch(
 
     Parameters
     ----------
-    leaf_params_batch : np.ndarray
-        Shape (n_batch, n_params + 3).
-    leaf_bases_batch : np.ndarray
-        Shape (n_batch, n_params, n_params).
+    leaves_batch : np.ndarray
+        Shape (n_batch, n_params + 2, 2).
     coord_cur : tuple[float, float]
         (coord, t_obs_minus_t_ref).
     nbins : int
@@ -272,21 +266,18 @@ def circ_taylor_branch_batch(
 
     Returns
     -------
-    leaf_params_branch_batch : np.ndarray, shape (n_branch, n_params + 3)
-    leaf_bases_branch_batch  : np.ndarray, shape (n_branch, n_params, n_params)
+    leaves_branch_batch : np.ndarray, shape (n_branch, n_params + 2, 2)
     origins_final            : np.ndarray, shape (n_branch,)
     """
-    n_batch, _ = leaf_params_batch.shape
+    n_batch, _, _ = leaves_batch.shape
     _, t_obs_minus_t_ref = coord_cur
     n_params = poly_order
 
-    dparam_cur_batch = np.empty((n_batch, n_params), dtype=np.float64)
-    f0_batch = np.empty(n_batch, dtype=np.float64)
-    for i in range(n_batch):
-        f0_batch[i] = leaf_params_batch[i, n_params + 1]
-        for j in range(n_params):
-            # basis diagonal -> current valid extent
-            dparam_cur_batch[i, j] = np.abs(leaf_bases_batch[i, j, j])
+    param_cur_batch = leaves_batch[:, :-2, 0]
+    dparam_cur_batch = leaves_batch[:, :-2, 1]
+    d0_cur_batch = leaves_batch[:, -2, 0]
+    f0_batch = leaves_batch[:, -1, 0]
+    basis_flag_batch = leaves_batch[:, -1, 1]
 
     dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
         n_params,
@@ -305,201 +296,125 @@ def circ_taylor_branch_batch(
         f0_batch,
         t_ref=0,
     )
-    # Vectorized Selection (mask non-crackle branched params)
-    needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
-
-    # Vectorized Padded Branching ( All params except crackle) ---
-    pad_branched_fracs = np.empty((n_batch, n_params, branch_max), dtype=np.float64)
-    branched_scales = np.empty((n_batch, n_params), dtype=np.float64)
+    # Vectorized Padded Branching ( All params except crackle)
+    pad_branched_params = np.empty((n_batch, n_params, branch_max), dtype=np.float64)
+    branched_dparams = np.empty((n_batch, n_params), dtype=np.float64)
     branched_counts = np.empty((n_batch, n_params), dtype=np.int64)
 
     for i in range(n_batch):
-        # j=0 crackle: frozen in first pass
-        branched_scales[i, 0] = 1.0
-        branched_counts[i, 0] = 1
-        for k in range(branch_max):
-            pad_branched_fracs[i, 0, k] = 0.0
-        # j>=1: standard branching
-        for j in range(1, n_params):
-            if needs_branching[i, j]:
-                scale, count = psr_utils.branch_logical_padded(
-                    pad_branched_fracs[i, j],
-                    dparam_cur_batch[i, j],
-                    dparam_new_batch[i, j],
-                )
-                branched_scales[i, j] = scale
-                branched_counts[i, j] = count
-            else:
-                branched_scales[i, j] = 1.0
+        for j in range(1, poly_order):  # skip crackle (j=0)
+            dparam_act, count = psr_utils.branch_param_padded(
+                pad_branched_params[i, j],
+                param_cur_batch[i, j],
+                dparam_cur_batch[i, j],
+                dparam_new_batch[i, j],
+            )
+            branched_dparams[i, j] = dparam_act
+            branched_counts[i, j] = count
+
+    # Vectorized Selection (mask non-crackle branched params)
+    needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
+    for i in range(n_batch):
+        for j in range(poly_order):
+            if not needs_branching[i, j] or j == 0:
+                # crackle - don't branch yet, keep at current value
+                pad_branched_params[i, j, :] = 0
+                pad_branched_params[i, j, 0] = param_cur_batch[i, j]
+                branched_dparams[i, j] = dparam_cur_batch[i, j]
                 branched_counts[i, j] = 1
-                for k in range(branch_max):
-                    pad_branched_fracs[i, j, k] = 0.0
 
     # First Cartesian Product (All Except Crackle)
     # Note: These 'leaves' contain unbranched crackle (parent values)
-    leaves_branch_fracs_batch, batch_origins = np_utils.cartesian_prod_padded(
-        pad_branched_fracs,
+    leaf_params_branch_cart, batch_origins = np_utils.cartesian_prod_padded(
+        pad_branched_params,
         branched_counts,
         n_batch,
-        n_params,
+        poly_order,
     )
-    n_branch_tmp = batch_origins.shape[0]
-    leaf_params_branch_batch_tmp = np.empty((n_branch_tmp, n_params), dtype=np.float64)
-    # Child centers and basis
-    for i in range(n_branch_tmp):
-        parent_idx = batch_origins[i]
-        parent_param = leaf_params_batch[parent_idx]
-        parent_basis = leaf_bases_batch[parent_idx]
-        child_param = leaf_params_branch_batch_tmp[i]
-        # Compute physical displacement and write child centers
-        # \disp = parent_basis @ leaves_branch_fracs_batch[i]
-        # New center = Old center + Physical Displacement
-        for j in range(n_params):
-            phys_disp = 0.0
-            for k in range(n_params):
-                phys_disp += parent_basis[j, k] * leaves_branch_fracs_batch[i, k]
-            child_param[j] = parent_param[j] + phys_disp
 
-    # Propagate branched dparams to children (used by mask for dsnap)
-    leaves_branched_dparams_tmp = np.empty((n_branch_tmp, n_params), dtype=np.float64)
-    for i in range(n_branch_tmp):
-        parent_idx = batch_origins[i]
-        for j in range(n_params):
-            leaves_branched_dparams_tmp[i, j] = (
-                dparam_cur_batch[parent_idx, j] * branched_scales[parent_idx, j]
-            )
-
+    # Check if the batch item originating this leaf needs crackle branching
+    leaves_branched_dparams = branched_dparams[batch_origins]
     batch_needs_crackle = needs_branching[batch_origins, 0]
     idx_expand_crackle, idx_keep = get_circ_taylor_mask_branch(
-        leaf_params_branch_batch_tmp,
-        leaves_branched_dparams_tmp,
+        leaf_params_branch_cart,
+        leaves_branched_dparams,
         batch_needs_crackle,
         minimum_snap_cells=minimum_snap_cells,
     )
     n_keep = len(idx_keep)
     n_crackle_expand = len(idx_expand_crackle)
 
-    crackle_scale_per_parent = np.ones(n_batch, dtype=np.float64)
-    _scratch = np.empty(branch_max, dtype=np.float64)
-    for i in range(n_batch):
-        if needs_branching[i, 0]:
-            scale, _ = psr_utils.branch_logical_padded(
-                _scratch,
-                dparam_cur_batch[i, 0],
-                dparam_new_batch[i, 0],
-            )
-            crackle_scale_per_parent[i] = scale
-
+    # If no expansion needed, return early (fast path)
     if n_crackle_expand == 0:
-        n_branch = n_keep
-        leaf_params_branch_batch = np.empty((n_branch, n_params + 3), dtype=np.float64)
-        leaf_bases_branch_batch = np.empty(
-            (n_branch, n_params, n_params),
-            dtype=np.float64,
-        )
-        origins_final = np.empty(n_branch, dtype=np.int64)
-        for i in range(n_branch):
-            src = idx_keep[i]
-            parent_idx = batch_origins[src]
-            parent_param = leaf_params_batch[parent_idx]
-            parent_basis = leaf_bases_batch[parent_idx]
-            child_param = leaf_params_branch_batch[i]
-            child_basis = leaf_bases_branch_batch[i]
-            child_param[:n_params] = leaf_params_branch_batch_tmp[src]
-            child_param[n_params:] = parent_param[n_params:]
-
-            # scale basis
-            for j in range(n_params):
-                scale = (
-                    crackle_scale_per_parent[parent_idx]
-                    if j == 0
-                    else branched_scales[parent_idx, j]
-                )
-                for k in range(n_params):
-                    child_basis[k, j] = parent_basis[k, j] * scale
-
-            origins_final[i] = parent_idx
-        return leaf_params_branch_batch, leaf_bases_branch_batch, origins_final
+        total_leaves = n_keep
+        leaves_final = np.empty((total_leaves, poly_order + 2, 2), dtype=np.float64)
+        leaves_final[:, :-2, 0] = leaf_params_branch_cart
+        leaves_final[:, :-2, 1] = leaves_branched_dparams
+        leaves_final[:, -2, 0] = d0_cur_batch[batch_origins]
+        leaves_final[:, -1, 0] = f0_batch[batch_origins]
+        leaves_final[:, -1, 1] = basis_flag_batch[batch_origins]
+        return leaves_final, batch_origins
 
     # Branch crackle parameter for these specific leaves
-    crackle_fracs = np.empty((n_crackle_expand, branch_max), dtype=np.float64)
-    crackle_scales = np.empty(n_crackle_expand, dtype=np.float64)
-    crackle_counts = np.empty(n_crackle_expand, dtype=np.int64)
+    crackle_branched_params = np.empty((n_crackle_expand, branch_max), dtype=np.float64)
+    crackle_branched_dparams = np.empty(n_crackle_expand, dtype=np.float64)
+    crackle_branched_counts = np.empty(n_crackle_expand, dtype=np.int64)
+    crackle_origins = batch_origins[idx_expand_crackle]
 
     for i in range(n_crackle_expand):
-        leaf_idx = idx_expand_crackle[i]
-        parent_idx = batch_origins[leaf_idx]
-        scale, count = psr_utils.branch_logical_padded(
-            crackle_fracs[i],
-            dparam_cur_batch[parent_idx, 0],
-            dparam_new_batch[parent_idx, 0],
+        orig_batch_idx = crackle_origins[i]
+        # We know needs_branching is True here, so we always branch
+        dparam_act, count = psr_utils.branch_param_padded(
+            crackle_branched_params[i],
+            leaf_params_branch_cart[idx_expand_crackle[i], 0],
+            leaves_branched_dparams[idx_expand_crackle[i], 0],
+            dparam_new_batch[orig_batch_idx, 0],
         )
-        crackle_scales[i] = scale
-        crackle_counts[i] = count
+        crackle_branched_dparams[i] = dparam_act
+        crackle_branched_counts[i] = count
 
     # Construct Final Array
-    total_crackle = np.sum(crackle_counts)
-    total_leaves = n_keep + total_crackle
-    leaf_params_final = np.empty((total_leaves, n_params + 3), dtype=np.float64)
-    leaf_bases_final = np.empty((total_leaves, n_params, n_params), dtype=np.float64)
+    total_crackle_branches = np.sum(crackle_branched_counts)
+    total_leaves = n_keep + total_crackle_branches
+    leaves_final = np.empty((total_leaves, poly_order + 2, 2), dtype=np.float64)
     origins_final = np.empty(total_leaves, dtype=np.int64)
 
-    for i in range(n_keep):
-        src = idx_keep[i]
-        parent_idx = batch_origins[src]
-        parent_param = leaf_params_batch[parent_idx]
-        parent_basis = leaf_bases_batch[parent_idx]
-        child_param = leaf_params_final[i]
-        child_basis = leaf_bases_final[i]
-        child_param[:n_params] = leaf_params_branch_batch_tmp[src]
-        child_param[n_params:] = parent_param[n_params:]
-        for j in range(n_params):
-            scale = (
-                crackle_scale_per_parent[parent_idx]
-                if j == 0
-                else branched_scales[parent_idx, j]
-            )
-            for k in range(n_params):
-                child_basis[k, j] = parent_basis[k, j] * scale
+    if n_keep > 0:
+        leaves_final[:n_keep, :-2, 0] = leaf_params_branch_cart[idx_keep]
+        leaves_final[:n_keep, :-2, 1] = leaves_branched_dparams[idx_keep]
+        origins_keep = batch_origins[idx_keep]
+        leaves_final[:n_keep, -2, 0] = d0_cur_batch[origins_keep]
+        leaves_final[:n_keep, -1, 0] = f0_batch[origins_keep]
+        origins_final[:n_keep] = origins_keep
 
-        origins_final[i] = parent_idx
-
-    current = n_keep
+    current_idx = n_keep
     for i in range(n_crackle_expand):
-        leaf_idx = idx_expand_crackle[i]
-        parent_idx = batch_origins[leaf_idx]
-        parent_param = leaf_params_batch[parent_idx]
-        parent_basis = leaf_bases_batch[parent_idx]
-        center = leaf_params_branch_batch_tmp[leaf_idx]
-        count = crackle_counts[i]
-        for a in range(count):
-            child_param = leaf_params_final[current]
-            child_basis = leaf_bases_final[current]
-            # displacement vector
-            frac = crackle_fracs[i, a]
-            for j in range(n_params):
-                child_param[j] = center[j] + parent_basis[j, 0] * frac
-            child_param[n_params:] = parent_param[n_params:]
+        count_i = crackle_branched_counts[i]
+        end_idx = current_idx + count_i
+        src_idx = idx_expand_crackle[i]
+        src_origin = crackle_origins[i]
 
-            for j in range(n_params):
-                scale = crackle_scales[i] if j == 0 else branched_scales[parent_idx, j]
-                for k in range(n_params):
-                    child_basis[k, j] = parent_basis[k, j] * scale
+        leaves_final[current_idx:end_idx, :-2, 0] = leaf_params_branch_cart[src_idx]
+        leaves_final[current_idx:end_idx, :-2, 1] = leaves_branched_dparams[src_idx]
+        leaves_final[current_idx:end_idx, 0, 0] = crackle_branched_params[i, :count_i]
+        leaves_final[current_idx:end_idx, 0, 1] = crackle_branched_dparams[i]
+        leaves_final[current_idx:end_idx, -2, 0] = d0_cur_batch[src_origin]
+        leaves_final[current_idx:end_idx, -1, 0] = f0_batch[src_origin]
+        leaves_final[current_idx:end_idx, -1, 1] = basis_flag_batch[src_origin]
+        origins_final[current_idx:end_idx] = src_origin
+        current_idx = end_idx
 
-            origins_final[current] = parent_idx
-            current += 1
-    return leaf_params_final, leaf_bases_final, origins_final
+    return leaves_final, origins_final
 
 
 @njit(cache=True, fastmath=True)
 def circ_taylor_validate_batch(
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
     p_orb_min: float,
     x_mass_const: float,
     minimum_snap_cells: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Validate a batch of leaf params.
 
     Filters out unphysical orbits. Currently removes cases with imaginary orbital
@@ -507,10 +422,8 @@ def circ_taylor_validate_batch(
 
     Parameters
     ----------
-    leaf_params_batch : np.ndarray
-        The leaf parameter sets to validate. Shape: (N, nparams + 3)
-    leaf_bases_batch : np.ndarray
-        The leaf basis sets to validate. Shape: (N, nparams, nparams)
+    leaves_batch : np.ndarray
+        The leaf parameter sets to validate. Shape: (N, nparams + 2, 2)
     leaves_origins : np.ndarray
         The origins of the leaves. Shape: (N,)
     p_orb_min : float
@@ -523,10 +436,10 @@ def circ_taylor_validate_batch(
     tuple[np.ndarray, np.ndarray]
         Filtered leaf parameter sets (only physically plausible) and their origins.
     """
-    snap = leaf_params_batch[:, 1]
-    jerk = leaf_params_batch[:, 2]
-    accel = leaf_params_batch[:, 3]
-    dsnap = np.abs(leaf_bases_batch[:, 1, 1])
+    snap = leaves_batch[:, 1, 0]
+    dsnap = leaves_batch[:, 1, 1]
+    jerk = leaves_batch[:, 2, 0]
+    accel = leaves_batch[:, 3, 0]
     idx = circ_validate_batch(
         snap,
         dsnap,
@@ -536,13 +449,12 @@ def circ_taylor_validate_batch(
         x_mass_const,
         minimum_snap_cells=minimum_snap_cells,
     )
-    return leaf_params_batch[idx], leaf_bases_batch[idx], leaves_origins[idx]
+    return leaves_batch[idx], leaves_origins[idx]
 
 
 @njit(cache=True, fastmath=True)
 def circ_taylor_resolve_batch(
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
@@ -553,17 +465,16 @@ def circ_taylor_resolve_batch(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
     # only works for circular orbit when nparams = 5
-    n_batch, _ = leaf_params_batch.shape
+    n_batch, _, _ = leaves_batch.shape
     t0_cur, _ = coord_cur
     t0_init, _ = coord_init
     t0_add, _ = coord_add
 
-    param_vec_batch = leaf_params_batch[:, :-2]
-    f0_batch = leaf_params_batch[:, -2]
+    param_vec_batch = leaves_batch[:, :-1, 0]
+    f0_batch = leaves_batch[:, -1, 0]
 
     idx_circ_snap, idx_circ_crackle, idx_taylor = get_circ_taylor_mask(
-        leaf_params_batch,
-        leaf_bases_batch,
+        leaves_batch,
         minimum_snap_cells=minimum_snap_cells,
     )
     dvec_t_add = np.empty((n_batch, 6), dtype=np.float64)
@@ -628,8 +539,7 @@ def circ_taylor_resolve_batch(
 
 @njit(cache=True, fastmath=True)
 def circ_taylor_fixed_resolve_batch(
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
     coord_init: tuple[float, float],
@@ -639,17 +549,16 @@ def circ_taylor_fixed_resolve_batch(
     minimum_snap_cells: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
-    n_batch, _ = leaf_params_batch.shape
+    n_batch, _, _ = leaves_batch.shape
     _, _ = coord_cur
     t0_init, _ = coord_init
     t0_add, _ = coord_add
 
-    param_vec_batch = leaf_params_batch[:, :-2]
-    f0_batch = leaf_params_batch[:, -2]
+    param_vec_batch = leaves_batch[:, :-1, 0]
+    f0_batch = leaves_batch[:, -1, 0]
 
     idx_circ_snap, idx_circ_crackle, idx_taylor = get_circ_taylor_mask(
-        leaf_params_batch,
-        leaf_bases_batch,
+        leaves_batch,
         minimum_snap_cells=minimum_snap_cells,
     )
     dvec_t_add = np.empty((n_batch, 6), dtype=np.float64)
@@ -696,44 +605,89 @@ def circ_taylor_fixed_resolve_batch(
 
 @njit(cache=True, fastmath=True)
 def circ_taylor_transform_batch(
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
-    p_orb_min: float,
+    use_conservative_tile: bool,
     minimum_snap_cells: float,
-) -> None:
+) -> np.ndarray:
     """Re-center (in-place) the leaves to the next segment reference time."""
     idx_circ_snap, idx_circ_crackle, idx_taylor = get_circ_taylor_mask(
-        leaf_params_batch,
-        leaf_bases_batch,
+        leaves_batch,
         minimum_snap_cells=minimum_snap_cells,
     )
     delta_t = coord_next[0] - coord_cur[0]
-    for k in range(idx_circ_snap.size):
-        i = idx_circ_snap[k]
-        transforms.shift_taylor_circular_params_basis(
-            leaf_params_batch[i : i + 1],
-            leaf_bases_batch[i : i + 1],
+    leaves_batch_trans = leaves_batch.copy()
+    if idx_circ_snap.size > 0:
+        leaves_batch_trans[idx_circ_snap, :-1] = transforms.shift_taylor_circular_full(
+            leaves_batch[idx_circ_snap, :-1],
             delta_t,
-            p_orb_min,
+            use_conservative_tile,
         )
-    for k in range(idx_circ_crackle.size):
-        i = idx_circ_crackle[k]
-        transforms.shift_taylor_circular_params_basis(
-            leaf_params_batch[i : i + 1],
-            leaf_bases_batch[i : i + 1],
+    if idx_circ_crackle.size > 0:
+        leaves_batch_trans[idx_circ_crackle, :-1] = (
+            transforms.shift_taylor_circular_full(
+                leaves_batch[idx_circ_crackle, :-1],
+                delta_t,
+                use_conservative_tile,
+                in_hole=True,
+            )
+        )
+    if idx_taylor.size > 0:
+        leaves_batch_trans[idx_taylor, :-1] = transforms.shift_taylor_full(
+            leaves_batch[idx_taylor, :-1],
             delta_t,
-            p_orb_min,
-            in_hole=True,
+            use_conservative_tile,
         )
-    for k in range(idx_taylor.size):
-        i = idx_taylor[k]
-        transforms.shift_taylor_params_basis(
-            leaf_params_batch[i : i + 1],
-            leaf_bases_batch[i : i + 1],
-            delta_t,
-        )
+    return leaves_batch_trans
+
+
+@njit(cache=True, fastmath=True)
+def get_circ_chebyshev_mask(
+    leaves_batch: np.ndarray,
+    t_s: float,
+    minimum_snap_cells: float = 5,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Generate a robust mask to identify circular orbit candidates.
+
+    Filters out physically implausible and numerically unstable orbits.
+
+    Parameters
+    ----------
+    leaves_batch : np.ndarray
+        Shape (n_batch, nparams + 2, 2)
+    minimum_snap_cells: float
+        Threshold for significant snap (number of snap grid cells). Defaults to 5.
+
+    Returns
+    -------
+    np.ndarray
+        A boolean array where True indicates a high-quality circular orbit candidate.
+
+    """
+    alpha_5 = leaves_batch[:, 0, 0]
+    dalpha_5 = leaves_batch[:, 0, 1]
+    alpha_4 = leaves_batch[:, 1, 0]
+    dalpha_4 = leaves_batch[:, 1, 1]
+    alpha_3 = leaves_batch[:, 2, 0]
+    alpha_2 = leaves_batch[:, 3, 0]
+    # Calculate accel and snap
+    crackle = (1920 / t_s**5) * alpha_5
+    dcrackle = (1920 / t_s**5) * dalpha_5
+    snap = (192 / t_s**4) * alpha_4
+    dsnap = (192 / t_s**4) * dalpha_4
+    jerk = (24 / t_s**3) * (alpha_3 - 5 * alpha_5)
+    accel = (4 / t_s**2) * (alpha_2 - 4 * alpha_4)
+
+    return get_circ_mask(
+        crackle,
+        dcrackle,
+        snap,
+        dsnap,
+        jerk,
+        accel,
+        minimum_snap_cells=minimum_snap_cells,
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -895,9 +849,9 @@ def generate_bp_circ_taylor(
     nbins: int,
     eta: float,
     ref_seg: int,
-    p_orb_min: float,
     minimum_snap_cells: float,
     use_moving_grid: bool,
+    use_conservative_tile: bool,
     use_cheby_coarsening: bool = True,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor circular pruning search."""
@@ -911,16 +865,13 @@ def generate_bp_circ_taylor(
     weights = np.ones(n_freqs, dtype=np.float64)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
-    leaf_bases = np.zeros((n_freqs, n_params, n_params), dtype=np.float64)
+    dparam_cur_batch = np.empty((n_freqs, n_params + 1), dtype=np.float64)
+    dparam_cur_next = np.empty((n_freqs, n_params + 1), dtype=np.float64)
+    dparam_new_batch_d = np.empty((n_freqs, n_params + 1), dtype=np.float64)
     for i in range(n_freqs):
-        for j in range(n_params - 1):
-            leaf_bases[i, j, j] = dparams_lim[j]
-        # f = f0(1 - v / C) => dv = -(C/f0) * df
-        leaf_bases[i, n_params - 1, n_params - 1] = dparams_lim[n_params - 1] * (
-            C_VAL / f0_batch[i]
-        )
-    dparam_cur_batch = np.empty((n_freqs, n_params), dtype=np.float64)
-    branched_scales = np.empty((n_freqs, n_params), dtype=np.float64)
+        dparam_cur_batch[i, :n_params] = dparams_lim
+    # f = f0(1 - v / C) => dv = -(C/f0) * df
+    dparam_cur_batch[:, n_params - 1] *= C_VAL / f0_batch
 
     # Track when first snap branching occurs for each frequency
     snap_first_branched = np.zeros(n_freqs, dtype=np.bool_)
@@ -931,10 +882,6 @@ def generate_bp_circ_taylor(
             moving_grid=use_moving_grid,
         )
         _, t_obs_minus_t_ref = coord_cur
-        for i in range(n_freqs):
-            for j in range(n_params):
-                # basis diagonal -> current valid extent
-                dparam_cur_batch[i, j] = np.abs(leaf_bases[i, j, j])
 
         dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
             n_params,
@@ -946,6 +893,7 @@ def generate_bp_circ_taylor(
             t_ref=0,
             use_cheby=use_cheby_coarsening,
         )
+        dparam_new_batch_d[:, :-1] = dparam_new_batch
         shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
             dparam_cur_batch,
             dparam_new_batch,
@@ -961,22 +909,19 @@ def generate_bp_circ_taylor(
         for i in range(n_freqs):
             for j in range(1, n_params):
                 if shift_bins_batch[i, j] < (eta - FLOAT_EPSILON):
-                    branched_scales[i, j] = 1.0
+                    dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
                 numerator = dparam_cur_batch[i, j] + FLOAT_EPSILON
                 ratio = numerator / dparam_new_batch[i, j]
                 num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
                 n_branches[i] *= num_points
-                branched_scales[i, j] = 1.0 / num_points
+                dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
                 if j == 1:
                     n_branch_snap[i] = num_points
-        # Scale the parent basis. The child tile geometry is the same as the parent
-        # but scaled by the branching factor.
-        leaf_bases = leaf_bases * branched_scales[:, None, :]
 
         # Determine validation fraction
         snap_val = param_limits[1, 1]  # Take max
-        dsnap = np.abs(leaf_bases[:, 1, 1])
+        dsnap = dparam_cur_next[:, 1]
         snap_active_mask = np.abs(snap_val) > (
             minimum_snap_cells * (dsnap + FLOAT_EPSILON)
         )
@@ -1001,12 +946,16 @@ def generate_bp_circ_taylor(
             idx_circ_snap = np.flatnonzero(snap_active_mask)
             idx_taylor = np.flatnonzero(~snap_active_mask)
             if idx_circ_snap.size > 0:
-                transforms.shift_taylor_circular_basis(
-                    leaf_bases[idx_circ_snap],
+                dparam_cur_next[idx_circ_snap] = transforms.shift_taylor_errors(
+                    dparam_cur_next[idx_circ_snap],
                     delta_t,
-                    p_orb_min,
+                    use_conservative_tile,
                 )
             if idx_taylor.size > 0:
-                transforms.shift_taylor_basis(leaf_bases[idx_taylor], delta_t)
-
+                dparam_cur_next[idx_taylor] = transforms.shift_taylor_errors(
+                    dparam_cur_next[idx_taylor],
+                    delta_t,
+                    use_conservative_tile,
+                )
+        dparam_cur_batch = dparam_cur_next
     return branching_pattern

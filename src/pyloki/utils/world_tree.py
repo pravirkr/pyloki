@@ -22,57 +22,39 @@ class WorldTreeComplexTemplate(types.StructRef):
 
 
 class WorldTree(structref.StructRefProxy):
-    """Container for hierarchical grid-search candidates for pruning.
+    """A struct to hold candidates for pruning.
 
     Parameters
     ----------
-    leaf_params : np.ndarray
-        Leaf parameter vectors defining the centers of grid tiles.
-        Shape: (n_leaves, n_params + 3)
-    leaf_bases: np.ndarray
-        Basis matrices describing the extent and orientation of each
-        parameter-space tile.
-        Shape: (n_leaves, n_params, n_params)
+    leaves : np.ndarray
+        Array of leaves. Shape: (n_leaves, nparams + 2, 2)
     folds : np.ndarray
-        Folded profiles for each leaf.
-        Shape: (n_leaves, 2, nbins)
+        Array of folded profiles. Shape: (n_leaves, 2, nbins)
     scores : np.ndarray
-        Detection scores associated with each leaf.
-        Shape: (n_leaves,)
+        Array of scores. Shape: (n_leaves,)
     backtracks : np.ndarray
-        Backtracking information used during tree traversal.
-        Shape: (n_leaves, n_params + 2)
+        Array of backtracks. Shape: (n_leaves, nparams + 2)
 
     Notes
     -----
-    The `leaf_params` array is organized as:
-
-    - 0 .. n_params        : polynomial coefficients [d_k, ..., d_1, d_0]
-    - n_params + 1         : f0 (frequency at t_init)
-    - n_params + 2         : basis flag
-                             (0 = polynomial basis, 1 = physical basis)
+    The last row rows of the leaves is reserved.
+    - row (-1) : f0, _
     """
 
     def __new__(
         cls,
-        leaf_params: np.ndarray,
-        leaf_bases: np.ndarray,
+        leaves: np.ndarray,
         folds: np.ndarray,
         scores: np.ndarray,
         backtracks: np.ndarray,
     ) -> Self:
         """Create a new instance of WorldTree."""
-        return world_tree_init(leaf_params, leaf_bases, folds, scores, backtracks)
+        return world_tree_init(leaves, folds, scores, backtracks)
 
     @property
     @njit(cache=True, fastmath=True)
-    def leaf_params(self) -> np.ndarray:
-        return self.leaf_params
-
-    @property
-    @njit(cache=True, fastmath=True)
-    def leaf_bases(self) -> np.ndarray:
-        return self.leaf_bases
+    def leaves(self) -> np.ndarray:
+        return self.leaves
 
     @property
     @njit(cache=True, fastmath=True)
@@ -128,24 +110,22 @@ class WorldTree(structref.StructRefProxy):
     def get_new(self, max_sugg: int) -> WorldTree:
         return get_new_func(self, max_sugg)
 
-    def get_best(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    def get_best(self) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
 
     def add(
         self,
-        leaf_param: np.ndarray,
-        leaf_base: np.ndarray,
+        leaf: np.ndarray,
         fold: np.ndarray,
         score: float,
         backtrack: np.ndarray,
     ) -> bool:
         """Add a candidate leaf to the world tree if there is space."""
-        return add_func(self, leaf_param, leaf_base, fold, score, backtrack)
+        return add_func(self, leaf, fold, score, backtrack)
 
     def add_batch(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         folds_batch: np.ndarray,
         scores_batch: np.ndarray,
         backtracks_batch: np.ndarray,
@@ -158,8 +138,7 @@ class WorldTree(structref.StructRefProxy):
         """
         return add_batch_func(
             self,
-            leaf_params_batch,
-            leaf_bases_batch,
+            leaves_batch,
             folds_batch,
             scores_batch,
             backtracks_batch,
@@ -199,16 +178,14 @@ class WorldTreeComplex(structref.StructRefProxy):
 
     def __new__(
         cls,
-        leaf_params: np.ndarray,
-        leaf_bases: np.ndarray,
+        leaves: np.ndarray,
         folds: np.ndarray,
         scores: np.ndarray,
         backtracks: np.ndarray,
     ) -> Self:
         """Create a new instance of WorldTree."""
         return world_tree_complex_init(
-            leaf_params,
-            leaf_bases,
+            leaves,
             folds,
             scores,
             backtracks,
@@ -216,13 +193,8 @@ class WorldTreeComplex(structref.StructRefProxy):
 
     @property
     @njit(cache=True, fastmath=True)
-    def leaf_params(self) -> np.ndarray:
-        return self.leaf_params
-
-    @property
-    @njit(cache=True, fastmath=True)
-    def leaf_bases(self) -> np.ndarray:
-        return self.leaf_bases
+    def leaves(self) -> np.ndarray:
+        return self.leaves
 
     @property
     @njit(cache=True, fastmath=True)
@@ -278,23 +250,21 @@ class WorldTreeComplex(structref.StructRefProxy):
     def get_new(self, max_sugg: int) -> WorldTree:
         return get_new_func_complex(self, max_sugg)
 
-    def get_best(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    def get_best(self) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
 
     def add(
         self,
-        leaf_param: np.ndarray,
-        leaf_base: np.ndarray,
+        leaf: np.ndarray,
         fold: np.ndarray,
         score: float,
         backtrack: np.ndarray,
     ) -> bool:
-        return add_func(self, leaf_param, leaf_base, fold, score, backtrack)
+        return add_func(self, leaf, fold, score, backtrack)
 
     def add_batch(
         self,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         folds_batch: np.ndarray,
         scores_batch: np.ndarray,
         backtracks_batch: np.ndarray,
@@ -302,8 +272,7 @@ class WorldTreeComplex(structref.StructRefProxy):
     ) -> float:
         return add_batch_func(
             self,
-            leaf_params_batch,
-            leaf_bases_batch,
+            leaves_batch,
             folds_batch,
             scores_batch,
             backtracks_batch,
@@ -336,8 +305,7 @@ class WorldTreeComplex(structref.StructRefProxy):
 
 
 fields_world_tree = [
-    ("leaf_params", types.f8[:, ::1]),
-    ("leaf_bases", types.f8[:, :, ::1]),
+    ("leaves", types.f8[:, :, ::1]),
     ("folds", types.f4[:, :, ::1]),
     ("scores", types.f4[:]),
     ("backtracks", types.i4[:, ::1]),
@@ -350,8 +318,7 @@ structref.define_boxing(WorldTreeTemplate, WorldTree)
 WorldTreeType = WorldTreeTemplate(fields_world_tree)
 
 fields_world_tree_complex = [
-    ("leaf_params", types.f8[:, ::1]),
-    ("leaf_bases", types.f8[:, :, ::1]),
+    ("leaves", types.f8[:, :, ::1]),
     ("folds", types.c8[:, :, ::1]),
     ("scores", types.f4[:]),
     ("backtracks", types.i4[:, ::1]),
@@ -368,53 +335,45 @@ WorldTreeComplexType = WorldTreeComplexTemplate(
 
 @njit(cache=True, fastmath=True)
 def world_tree_init(
-    leaf_params: np.ndarray,
-    leaf_bases: np.ndarray,
+    leaves: np.ndarray,
     folds: np.ndarray,
     scores: np.ndarray,
     backtracks: np.ndarray,
 ) -> WorldTree:
     self = structref.new(WorldTreeType)
-    self.leaf_params = leaf_params
-    self.leaf_bases = leaf_bases
+    self.leaves = leaves
     self.folds = folds
     self.scores = scores
     self.backtracks = backtracks
-    self.valid_size = leaf_params.shape[0]
-    self.size = leaf_params.shape[0]
-    self.nparams = leaf_params.shape[1] - 3
+    self.valid_size = leaves.shape[0]
+    self.size = leaves.shape[0]
+    self.nparams = leaves.shape[1] - 2
     return self
 
 
 @njit(cache=True, fastmath=True)
 def world_tree_complex_init(
-    leaf_params: np.ndarray,
-    leaf_bases: np.ndarray,
+    leaves: np.ndarray,
     folds: np.ndarray,
     scores: np.ndarray,
     backtracks: np.ndarray,
 ) -> WorldTreeComplex:
     self = structref.new(WorldTreeComplexType)
-    self.leaf_params = leaf_params
-    self.leaf_bases = leaf_bases
+    self.leaves = leaves
     self.folds = folds
     self.scores = scores
     self.backtracks = backtracks
-    self.valid_size = leaf_params.shape[0]
-    self.size = leaf_params.shape[0]
-    self.nparams = leaf_params.shape[1] - 3
+    self.valid_size = leaves.shape[0]
+    self.size = leaves.shape[0]
+    self.nparams = leaves.shape[1] - 2
     return self
 
 
 @njit(cache=True, fastmath=True)
 def get_new_func(self: WorldTree, max_sugg: int) -> WorldTree:
-    leaf_params = np.empty(
-        (max_sugg, *self.leaf_params.shape[1:]),
-        dtype=self.leaf_params.dtype,
-    )
-    leaf_bases = np.empty(
-        (max_sugg, *self.leaf_bases.shape[1:]),
-        dtype=self.leaf_bases.dtype,
+    leaves = np.empty(
+        (max_sugg, *self.leaves.shape[1:]),
+        dtype=self.leaves.dtype,
     )
     folds = np.empty((max_sugg, *self.folds.shape[1:]), dtype=self.folds.dtype)
     scores = np.empty(max_sugg, dtype=self.scores.dtype)
@@ -422,7 +381,7 @@ def get_new_func(self: WorldTree, max_sugg: int) -> WorldTree:
         (max_sugg, self.backtracks.shape[1]),
         dtype=self.backtracks.dtype,
     )
-    tree_new = WorldTree(leaf_params, leaf_bases, folds, scores, backtracks)
+    tree_new = WorldTree(leaves, folds, scores, backtracks)
     tree_new.valid_size = 0
     return tree_new
 
@@ -432,13 +391,9 @@ def get_new_func_complex(
     self: WorldTreeComplex,
     max_sugg: int,
 ) -> WorldTreeComplex:
-    leaf_params = np.empty(
-        (max_sugg, *self.leaf_params.shape[1:]),
-        dtype=self.leaf_params.dtype,
-    )
-    leaf_bases = np.empty(
-        (max_sugg, *self.leaf_bases.shape[1:]),
-        dtype=self.leaf_bases.dtype,
+    leaves = np.empty(
+        (max_sugg, *self.leaves.shape[1:]),
+        dtype=self.leaves.dtype,
     )
     folds = np.empty((max_sugg, *self.folds.shape[1:]), dtype=self.folds.dtype)
     scores = np.empty(max_sugg, dtype=self.scores.dtype)
@@ -446,17 +401,16 @@ def get_new_func_complex(
         (max_sugg, self.backtracks.shape[1]),
         dtype=self.backtracks.dtype,
     )
-    tree_new = WorldTreeComplex(leaf_params, leaf_bases, folds, scores, backtracks)
+    tree_new = WorldTreeComplex(leaves, folds, scores, backtracks)
     tree_new.valid_size = 0
     return tree_new
 
 
 @njit(cache=True, fastmath=True)
-def get_best_func(self: WorldTree) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+def get_best_func(self: WorldTree) -> tuple[np.ndarray, np.ndarray, float]:
     idx_max = np.argmax(self.scores[: self.valid_size])
     return (
-        self.leaf_params[idx_max].copy(),
-        self.leaf_bases[idx_max].copy(),
+        self.leaves[idx_max].copy(),
         self.folds[idx_max].copy(),
         self.scores[idx_max],
     )
@@ -465,8 +419,7 @@ def get_best_func(self: WorldTree) -> tuple[np.ndarray, np.ndarray, np.ndarray, 
 @njit(cache=True, fastmath=True)
 def add_func(
     self: WorldTree,
-    leaf_param: np.ndarray,
-    leaf_base: np.ndarray,
+    leaf: np.ndarray,
     fold: np.ndarray,
     score: float,
     backtrack: np.ndarray,
@@ -474,8 +427,7 @@ def add_func(
     pos = self.valid_size
     if pos >= self.size:
         return False
-    self.leaf_params[pos] = leaf_param
-    self.leaf_bases[pos] = leaf_base
+    self.leaves[pos] = leaf
     self.folds[pos] = fold
     self.scores[pos] = score
     self.backtracks[pos] = backtrack
@@ -486,8 +438,7 @@ def add_func(
 @njit(cache=True, fastmath=True)
 def add_batch_func(
     self: WorldTree,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     folds_batch: np.ndarray,
     scores_batch: np.ndarray,
     backtracks_batch: np.ndarray,
@@ -501,8 +452,7 @@ def add_batch_func(
     # If there is enough space, add all (fast path)
     if num_to_add <= space_left:
         pos = self.valid_size
-        self.leaf_params[pos : pos + num_to_add] = leaf_params_batch
-        self.leaf_bases[pos : pos + num_to_add] = leaf_bases_batch
+        self.leaves[pos : pos + num_to_add] = leaves_batch
         self.folds[pos : pos + num_to_add] = folds_batch
         self.scores[pos : pos + num_to_add] = scores_batch
         self.backtracks[pos : pos + num_to_add] = backtracks_batch
@@ -519,8 +469,7 @@ def add_batch_func(
         return effective_threshold
     # Batched assignment
     pos = self.valid_size
-    self.leaf_params[pos : pos + n_to_add] = leaf_params_batch[pending_idxs]
-    self.leaf_bases[pos : pos + n_to_add] = leaf_bases_batch[pending_idxs]
+    self.leaves[pos : pos + n_to_add] = leaves_batch[pending_idxs]
     self.folds[pos : pos + n_to_add] = folds_batch[pending_idxs]
     self.scores[pos : pos + n_to_add] = scores_batch[pending_idxs]
     self.backtracks[pos : pos + n_to_add] = backtracks_batch[pending_idxs]
@@ -559,8 +508,7 @@ def prune_on_overload_func(
 @njit(cache=True, fastmath=True)
 def trim_empty_func(self: WorldTree) -> WorldTree:
     return WorldTree(
-        self.leaf_params[: self.valid_size],
-        self.leaf_bases[: self.valid_size],
+        self.leaves[: self.valid_size],
         self.folds[: self.valid_size],
         self.scores[: self.valid_size],
         self.backtracks[: self.valid_size],
@@ -570,8 +518,7 @@ def trim_empty_func(self: WorldTree) -> WorldTree:
 @njit(cache=True, fastmath=True)
 def trim_empty_func_complex(self: WorldTreeComplex) -> WorldTreeComplex:
     return WorldTreeComplex(
-        self.leaf_params[: self.valid_size],
-        self.leaf_bases[: self.valid_size],
+        self.leaves[: self.valid_size],
         self.folds[: self.valid_size],
         self.scores[: self.valid_size],
         self.backtracks[: self.valid_size],
@@ -581,7 +528,7 @@ def trim_empty_func_complex(self: WorldTreeComplex) -> WorldTreeComplex:
 @njit(cache=True, fastmath=True)
 def trim_repeats_func(self: WorldTree) -> None:
     idx = get_unique_indices_scores(
-        self.leaf_params[: self.valid_size, : self.nparams],
+        self.leaves[: self.valid_size, : self.nparams, 0],
         self.scores[: self.valid_size],
     )
     idx_bool = np.zeros(self.valid_size, dtype=np.bool_)
@@ -593,7 +540,7 @@ def trim_repeats_func(self: WorldTree) -> None:
 def trim_repeats_threshold_func(self: WorldTree) -> float:
     threshold = np.median(self.scores[: self.valid_size])
     idx = get_unique_indices_scores(
-        self.leaf_params[: self.valid_size, : self.nparams],
+        self.leaves[: self.valid_size, : self.nparams, 0],
         self.scores[: self.valid_size],
     )
     idx_bool = np.zeros(self.valid_size, dtype=np.bool_)
@@ -612,8 +559,7 @@ def keep_func(self: WorldTree, indices: np.ndarray) -> None:
         return
     idx_valid = np.where(indices)[0]
     # move valid data to the front
-    self.leaf_params[:count] = self.leaf_params[idx_valid]
-    self.leaf_bases[:count] = self.leaf_bases[idx_valid]
+    self.leaves[:count] = self.leaves[idx_valid]
     self.folds[:count] = self.folds[idx_valid]
     self.scores[:count] = self.scores[idx_valid]
     self.backtracks[:count] = self.backtracks[idx_valid]
@@ -623,20 +569,18 @@ def keep_func(self: WorldTree, indices: np.ndarray) -> None:
 
 @overload(WorldTree)
 def overload_world_tree_construct(
-    leaf_params: np.ndarray,
-    leaf_bases: np.ndarray,
+    leaves: np.ndarray,
     folds: np.ndarray,
     scores: np.ndarray,
     backtracks: np.ndarray,
 ) -> types.FunctionType:
     def impl(
-        leaf_params: np.ndarray,
-        leaf_bases: np.ndarray,
+        leaves: np.ndarray,
         folds: np.ndarray,
         scores: np.ndarray,
         backtracks: np.ndarray,
     ) -> WorldTree:
-        return world_tree_init(leaf_params, leaf_bases, folds, scores, backtracks)
+        return world_tree_init(leaves, folds, scores, backtracks)
 
     return impl
 
@@ -651,7 +595,7 @@ def ol_get_new_func(self: WorldTree, max_sugg: int) -> types.FunctionType:
 
 @overload_method(WorldTreeTemplate, "get_best")
 def ol_get_best_func(self: WorldTree) -> types.FunctionType:
-    def impl(self: WorldTree) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    def impl(self: WorldTree) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
 
     return impl
@@ -660,21 +604,19 @@ def ol_get_best_func(self: WorldTree) -> types.FunctionType:
 @overload_method(WorldTreeTemplate, "add")
 def ol_add_func(
     self: WorldTree,
-    leaf_param: np.ndarray,
-    leaf_base: np.ndarray,
+    leaf: np.ndarray,
     fold: np.ndarray,
     score: float,
     backtrack: np.ndarray,
 ) -> types.FunctionType:
     def impl(
         self: WorldTree,
-        leaf_param: np.ndarray,
-        leaf_base: np.ndarray,
+        leaf: np.ndarray,
         fold: np.ndarray,
         score: float,
         backtrack: np.ndarray,
     ) -> bool:
-        return add_func(self, leaf_param, leaf_base, fold, score, backtrack)
+        return add_func(self, leaf, fold, score, backtrack)
 
     return impl
 
@@ -682,8 +624,7 @@ def ol_add_func(
 @overload_method(WorldTreeTemplate, "add_batch")
 def ol_add_batch_func(
     self: WorldTree,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     folds_batch: np.ndarray,
     scores_batch: np.ndarray,
     backtracks_batch: np.ndarray,
@@ -691,8 +632,7 @@ def ol_add_batch_func(
 ) -> types.FunctionType:
     def impl(
         self: WorldTree,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         folds_batch: np.ndarray,
         scores_batch: np.ndarray,
         backtracks_batch: np.ndarray,
@@ -700,8 +640,7 @@ def ol_add_batch_func(
     ) -> float:
         return add_batch_func(
             self,
-            leaf_params_batch,
-            leaf_bases_batch,
+            leaves_batch,
             folds_batch,
             scores_batch,
             backtracks_batch,
@@ -761,26 +700,18 @@ def ol_keep_func(self: WorldTree, indices: np.ndarray) -> types.FunctionType:
 
 @overload(WorldTreeComplex)
 def overload_world_tree_construct_complex(
-    leaf_params: np.ndarray,
-    leaf_bases: np.ndarray,
+    leaves: np.ndarray,
     folds: np.ndarray,
     scores: np.ndarray,
     backtracks: np.ndarray,
 ) -> types.FunctionType:
     def impl(
-        leaf_params: np.ndarray,
-        leaf_bases: np.ndarray,
+        leaves: np.ndarray,
         folds: np.ndarray,
         scores: np.ndarray,
         backtracks: np.ndarray,
     ) -> WorldTreeComplex:
-        return world_tree_complex_init(
-            leaf_params,
-            leaf_bases,
-            folds,
-            scores,
-            backtracks,
-        )
+        return world_tree_complex_init(leaves, folds, scores, backtracks)
 
     return impl
 
@@ -800,9 +731,7 @@ def ol_get_new_func_complex(
 def ol_get_best_func_complex(
     self: WorldTreeComplex,
 ) -> types.FunctionType:
-    def impl(
-        self: WorldTreeComplex,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    def impl(self: WorldTreeComplex) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
 
     return impl
@@ -811,21 +740,19 @@ def ol_get_best_func_complex(
 @overload_method(WorldTreeComplexTemplate, "add")
 def ol_add_func_complex(
     self: WorldTreeComplex,
-    leaf_param: np.ndarray,
-    leaf_base: np.ndarray,
+    leaf: np.ndarray,
     fold: np.ndarray,
     score: float,
     backtrack: np.ndarray,
 ) -> types.FunctionType:
     def impl(
         self: WorldTreeComplex,
-        leaf_param: np.ndarray,
-        leaf_base: np.ndarray,
+        leaf: np.ndarray,
         fold: np.ndarray,
         score: float,
         backtrack: np.ndarray,
     ) -> bool:
-        return add_func(self, leaf_param, leaf_base, fold, score, backtrack)
+        return add_func(self, leaf, fold, score, backtrack)
 
     return impl
 
@@ -833,8 +760,7 @@ def ol_add_func_complex(
 @overload_method(WorldTreeComplexTemplate, "add_batch")
 def ol_add_batch_func_complex(
     self: WorldTreeComplex,
-    leaf_params_batch: np.ndarray,
-    leaf_bases_batch: np.ndarray,
+    leaves_batch: np.ndarray,
     folds_batch: np.ndarray,
     scores_batch: np.ndarray,
     backtracks_batch: np.ndarray,
@@ -842,8 +768,7 @@ def ol_add_batch_func_complex(
 ) -> types.FunctionType:
     def impl(
         self: WorldTreeComplex,
-        leaf_params_batch: np.ndarray,
-        leaf_bases_batch: np.ndarray,
+        leaves_batch: np.ndarray,
         folds_batch: np.ndarray,
         scores_batch: np.ndarray,
         backtracks_batch: np.ndarray,
@@ -851,8 +776,7 @@ def ol_add_batch_func_complex(
     ) -> float:
         return add_batch_func(
             self,
-            leaf_params_batch,
-            leaf_bases_batch,
+            leaves_batch,
             folds_batch,
             scores_batch,
             backtracks_batch,
@@ -920,13 +844,13 @@ def ol_keep_func_complex(
 
 
 @njit(cache=True, fastmath=True)
-def get_unique_indices(leaf_params: np.ndarray) -> np.ndarray:
-    n_leaves = leaf_params.shape[0]
+def get_unique_indices(leaves: np.ndarray) -> np.ndarray:
+    nparams = leaves.shape[0]
     unique_dict = {}
-    unique_indices = np.empty(n_leaves, dtype=np.int64)
+    unique_indices = np.empty(nparams, dtype=np.int64)
     count = 0
-    for ii in range(n_leaves):
-        key = int(np.round(leaf_params[ii][-1] * 10**9))
+    for ii in range(nparams):
+        key = int(np.round(leaves[ii][-1:, 0][0] * 10**9))
         if key not in unique_dict:
             unique_dict[key] = True
             unique_indices[count] = ii
@@ -936,18 +860,15 @@ def get_unique_indices(leaf_params: np.ndarray) -> np.ndarray:
 
 
 @njit(cache=True, fastmath=True)
-def get_unique_indices_scores(
-    leaf_params: np.ndarray,
-    scores: np.ndarray,
-) -> np.ndarray:
-    n_leaves = leaf_params.shape[0]
+def get_unique_indices_scores(leaves: np.ndarray, scores: np.ndarray) -> np.ndarray:
+    nparams = leaves.shape[0]
     unique_dict: dict[int, bool] = {}
     scores_dict: dict[int, float] = {}
     count_dict: dict[int, int] = {}
-    unique_indices = np.empty(n_leaves, dtype=np.int64)
+    unique_indices = np.empty(nparams, dtype=np.int64)
     count = 0
-    for ii in range(n_leaves):
-        key = int(np.sum(leaf_params[ii][-2:] * 10**9) + 0.5)
+    for ii in range(nparams):
+        key = int(np.sum(leaves[ii][-2:, 0] * 10**9) + 0.5)
         if unique_dict.get(key, False):
             if scores[ii] > scores_dict[key]:
                 scores_dict[key] = scores[ii]
