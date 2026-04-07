@@ -35,8 +35,8 @@ def get_circ_mask(
     accel : array
         Second derivative (d2).
     minimum_snap_cells : float
-        Detection threshold for significant snap/crackle measurements
-        expressed in units of the derivative uncertainty.
+        Threshold for significant snap/crackle measurements expressed in units of the
+        derivative uncertainty. Also used to gatekeep the circular classification.
 
     Returns
     -------
@@ -49,39 +49,20 @@ def get_circ_mask(
     idx_taylor : ndarray
         Indices of cells not consistent with circular motion.
     """
-    # Determine whether derivatives are significantly measured
+    # Determine whether snap and crackle are significantly measured
     is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
-    # if snap not significant -> everything is Taylor
-    if not np.any(is_sig_snap):
-        return (
-            np.empty(0, dtype=np.int64),
-            np.empty(0, dtype=np.int64),
-            np.arange(snap.shape[0], dtype=np.int64),
-        )
+    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + FLOAT_EPSILON))
 
     # Snap-Dominated Region (Standard)
     # We check if implied Omega is physical (-d4/d2 > 0)
-    is_physical_snap = (
-        ((-snap * accel) > 0)
-        & (np.abs(accel) > FLOAT_EPSILON)
-        & (np.abs(snap) > FLOAT_EPSILON)
-    )
+    is_physical_snap = ((-snap * accel) > 0) & (np.abs(accel) > FLOAT_EPSILON)
     mask_circular_snap = is_sig_snap & is_physical_snap
 
     # Crackle-Dominated Region (The Hole)
-    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + FLOAT_EPSILON))
-
-    # Condition: Snap is weak (in the null), but Crackle is strong.
-    # Note: d2 and d4 vanish in the hole, so we rely on d3 and d5.
-    # Check if implied Omega is physical (-d5/d3 > 0)
-    is_physical_crackle = (
-        ((-crackle * jerk) > 0)
-        & (np.abs(crackle) > FLOAT_EPSILON)
-        & (np.abs(jerk) > FLOAT_EPSILON)
-    )
-    mask_circular_crackle = (
-        is_sig_snap & ~is_physical_snap & is_sig_crackle & is_physical_crackle
-    )
+    # Condition: snap-accel system is degenerate (both near zero) or unphysical,
+    # but crackle-jerk is significant and physical.
+    is_physical_crackle = ((-crackle * jerk) > 0) & (np.abs(jerk) > FLOAT_EPSILON)
+    mask_circular_crackle = ~mask_circular_snap & is_sig_crackle & is_physical_crackle
 
     # Taylor Region (Noise / Unresolved)
     # Everything that isn't a confident circular candidate
@@ -98,7 +79,6 @@ def get_circ_mask(
 def circ_validate_batch(
     snap: np.ndarray,
     dsnap: np.ndarray,
-    jerk: np.ndarray,
     accel: np.ndarray,
     p_orb_min: float,
     x_mass_const: float,
@@ -109,48 +89,36 @@ def circ_validate_batch(
     Hole region (where snap inference is impossible) is always preserved
     because crackle may later classify those cells as circular.
     """
-    n_leaves = snap.shape[0]
-    mask_keep = np.zeros(n_leaves, dtype=np.bool_)
     omega_max_sq = (2 * np.pi / p_orb_min) ** 2
 
     # Classification (for gatekeeping)
     # |val / step| > thresh  <=>  |val| > thresh * |step|
     # dsnap and dcrackle are step sizes (always positive)
     is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
+    snap_possible = np.abs(accel) > FLOAT_EPSILON
+    sign_valid = (-snap * accel) > 0.0
 
-    # unresolved cells are always kept
-    mask_keep |= ~is_sig_snap
-
-    # hole region (snap inference impossible)
-    snap_possible = (np.abs(accel) > FLOAT_EPSILON) & (np.abs(snap) > FLOAT_EPSILON)
-
-    hole = is_sig_snap & ~snap_possible
-    mask_keep |= hole
-
-    # snap-valid region
-    sign_valid = (-snap * accel) > 0
+    # Region where omega_sq is well-defined and positive
     snap_region = is_sig_snap & snap_possible & sign_valid
-    idx_snap = np.flatnonzero(snap_region)
-    if idx_snap.size > 0:
-        s_snap = snap[idx_snap]
-        s_accel = accel[idx_snap]
-        s_jerk = jerk[idx_snap]
-        s_omega_sq = -s_snap / s_accel
 
-        # Check: Max Orbital Frequency
-        valid_omega = s_omega_sq < omega_max_sq
+    # Region where snap is significant but sign is WRONG — definitely non-circular
+    snap_unphysical = is_sig_snap & snap_possible & ~sign_valid
 
+    # Start: keep everything
+    mask_keep = np.ones(len(snap), dtype=np.bool_)
+    # Kill the unphysical ones outright
+    mask_keep[snap_unphysical] = False
+    # Inside snap_region, apply physical validity checks
+    if np.any(snap_region):
+        idx = np.flatnonzero(snap_region)
+        omega_sq = -snap[idx] / accel[idx]  # guaranteed > 0 here
+        limit_accel = x_mass_const * (omega_sq ** (2.0 / 3.0) + FLOAT_EPSILON)
+
+        valid_omega = omega_sq < omega_max_sq
         # |d2| < x * omega^(4/3)
-        s_omega_sq_safe = np.abs(s_omega_sq)
-        limit_accel = x_mass_const * (s_omega_sq_safe ** (2 / 3) + FLOAT_EPSILON)
-        valid_accel = np.abs(s_accel) <= limit_accel
-
-        # |d3| < |d2| * omega
-        valid_jerk = (s_jerk**2) <= (s_accel**2 * s_omega_sq_safe)
-
-        mask_valid = valid_omega & valid_accel & valid_jerk
-        mask_keep[idx_snap] |= mask_valid
-
+        valid_accel = np.abs(accel[idx]) <= limit_accel
+        # Never check jerk here - we do not want too stringent of a check here
+        mask_keep[idx] = valid_omega & valid_accel
     return np.flatnonzero(mask_keep)
 
 
@@ -208,9 +176,9 @@ def get_circ_taylor_mask_branch(
 
     is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
     # Numerical Stability - acceleration and snap must be significantly non-zero
-    is_stable_snap = (np.abs(accel) > FLOAT_EPSILON) & (np.abs(snap) > FLOAT_EPSILON)
+    is_physical_snap = ((-snap * accel) > 0) & (np.abs(accel) > FLOAT_EPSILON)
     is_stable_jerk = np.abs(jerk) > FLOAT_EPSILON
-    mask_circular_crackle = is_sig_snap & ~is_stable_snap & is_stable_jerk
+    mask_circular_crackle = is_sig_snap & ~is_physical_snap & is_stable_jerk
     # Optimization: Filter out 'crackle' candidates that don't actually need branching
     # True crackle candidates: in the hole AND step size is large enough
     mask_expand_crackle = mask_circular_crackle & batch_needs_crackle
@@ -239,12 +207,6 @@ def circ_taylor_branch_batch(
     crackle step is still too coarse receive a second cartesian expansion
     over crackle offsets.
 
-    The crackle basis column is always set consistently:
-      - For leaves that are crackle-expanded: scale from branch_logical_padded.
-      - For leaves whose parent needed crackle shrinking but were not expanded
-        (outside the instability hole): same scale, computed once per parent.
-      - For leaves whose parent did not need crackle branching: scale = 1.0.
-
     Parameters
     ----------
     leaves_batch : np.ndarray
@@ -267,7 +229,7 @@ def circ_taylor_branch_batch(
     Returns
     -------
     leaves_branch_batch : np.ndarray, shape (n_branch, n_params + 2, 2)
-    origins_final            : np.ndarray, shape (n_branch,)
+    origins_final : np.ndarray, shape (n_branch,)
     """
     n_batch, _, _ = leaves_batch.shape
     _, t_obs_minus_t_ref = coord_cur
@@ -279,6 +241,22 @@ def circ_taylor_branch_batch(
     f0_batch = leaves_batch[:, -1, 0]
     basis_flag_batch = leaves_batch[:, -1, 1]
 
+    dparam_new_batch_actual = psr_utils.poly_taylor_step_d_vec(
+        n_params,
+        t_obs_minus_t_ref,
+        nbins,
+        eta,
+        f0_batch,
+        t_ref=0,
+    )
+    shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
+        dparam_cur_batch,
+        dparam_new_batch_actual,
+        t_obs_minus_t_ref,
+        nbins,
+        f0_batch,
+        t_ref=0,
+    )
     dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
         n_params,
         t_obs_minus_t_ref,
@@ -288,14 +266,7 @@ def circ_taylor_branch_batch(
         param_limits,
         t_ref=0,
     )
-    shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
-        dparam_cur_batch,
-        dparam_new_batch,
-        t_obs_minus_t_ref,
-        nbins,
-        f0_batch,
-        t_ref=0,
-    )
+
     # Vectorized Padded Branching ( All params except crackle)
     pad_branched_params = np.empty((n_batch, n_params, branch_max), dtype=np.float64)
     branched_dparams = np.empty((n_batch, n_params), dtype=np.float64)
@@ -438,12 +409,10 @@ def circ_taylor_validate_batch(
     """
     snap = leaves_batch[:, 1, 0]
     dsnap = leaves_batch[:, 1, 1]
-    jerk = leaves_batch[:, 2, 0]
     accel = leaves_batch[:, 3, 0]
     idx = circ_validate_batch(
         snap,
         dsnap,
-        jerk,
         accel,
         p_orb_min,
         x_mass_const,
@@ -865,9 +834,9 @@ def generate_bp_circ_taylor(
     weights = np.ones(n_freqs, dtype=np.float64)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
-    dparam_cur_batch = np.empty((n_freqs, n_params + 1), dtype=np.float64)
-    dparam_cur_next = np.empty((n_freqs, n_params + 1), dtype=np.float64)
-    dparam_new_batch_d = np.empty((n_freqs, n_params + 1), dtype=np.float64)
+    dparam_cur_batch = np.empty((n_freqs, n_params), dtype=np.float64)
+    dparam_cur_next = np.empty((n_freqs, n_params), dtype=np.float64)
+    dparam_d_vec = np.empty((n_freqs, n_params + 1), dtype=np.float64)
     for i in range(n_freqs):
         dparam_cur_batch[i, :n_params] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
@@ -883,6 +852,24 @@ def generate_bp_circ_taylor(
         )
         _, t_obs_minus_t_ref = coord_cur
 
+        dparam_new_batch_actual = psr_utils.poly_taylor_step_d_vec(
+            n_params,
+            t_obs_minus_t_ref,
+            nbins,
+            eta,
+            f0_batch,
+            t_ref=0,
+            use_cheby=use_cheby_coarsening,
+        )
+        shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
+            dparam_cur_batch,
+            dparam_new_batch_actual,
+            t_obs_minus_t_ref,
+            nbins,
+            f0_batch,
+            t_ref=0,
+            use_cheby=use_cheby_coarsening,
+        )
         dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
             n_params,
             t_obs_minus_t_ref,
@@ -893,16 +880,7 @@ def generate_bp_circ_taylor(
             t_ref=0,
             use_cheby=use_cheby_coarsening,
         )
-        dparam_new_batch_d[:, :-1] = dparam_new_batch
-        shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
-            dparam_cur_batch,
-            dparam_new_batch,
-            t_obs_minus_t_ref,
-            nbins,
-            f0_batch,
-            t_ref=0,
-            use_cheby=use_cheby_coarsening,
-        )
+
         n_branch_snap = np.ones(n_freqs, dtype=np.float64)
         n_branches = np.ones(n_freqs, dtype=np.float64)
 
@@ -943,19 +921,13 @@ def generate_bp_circ_taylor(
         if use_moving_grid:
             # Transform basis to the next segment
             delta_t = coord_next[0] - coord_cur[0]
-            idx_circ_snap = np.flatnonzero(snap_active_mask)
-            idx_taylor = np.flatnonzero(~snap_active_mask)
-            if idx_circ_snap.size > 0:
-                dparam_cur_next[idx_circ_snap] = transforms.shift_taylor_errors(
-                    dparam_cur_next[idx_circ_snap],
-                    delta_t,
-                    use_conservative_tile,
-                )
-            if idx_taylor.size > 0:
-                dparam_cur_next[idx_taylor] = transforms.shift_taylor_errors(
-                    dparam_cur_next[idx_taylor],
-                    delta_t,
-                    use_conservative_tile,
-                )
-        dparam_cur_batch = dparam_cur_next
+            dparam_d_vec[:, :-1] = dparam_cur_next
+            dparam_d_vec_new = transforms.shift_taylor_errors(
+                dparam_d_vec,
+                delta_t,
+                use_conservative_tile,
+            )
+            dparam_cur_batch = dparam_d_vec_new[:, :-1]
+        else:
+            dparam_cur_batch = dparam_cur_next
     return branching_pattern

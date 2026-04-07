@@ -642,15 +642,15 @@ def shift_cheby_full(
     tc2, ts2 = coord_next
     c_mat = maths.poly_chebyshev_transform_matrix(poly_order, tc1, ts1, tc2, ts2, 1)
     alpha_vec_new = np.empty_like(alpha_full_vec)
-    alpha_values = np.ascontiguousarray(alpha_full_vec[:, 0])
-    alpha_errors = np.ascontiguousarray(alpha_full_vec[:, 1])
+    alpha_values = np.ascontiguousarray(alpha_full_vec[..., 0])
+    alpha_errors = np.ascontiguousarray(alpha_full_vec[..., 1])
     alpha_values_new = alpha_values @ c_mat
     if use_conservative_tile:
         alpha_errors_new = np.sqrt((alpha_errors**2) @ (c_mat**2))
     else:
         alpha_errors_new = alpha_errors * np.abs(np.diag(c_mat))
-    alpha_vec_new[:, 0] = alpha_values_new
-    alpha_vec_new[:, 1] = alpha_errors_new
+    alpha_vec_new[..., 0] = alpha_values_new
+    alpha_vec_new[..., 1] = alpha_errors_new
     return alpha_vec_new
 
 

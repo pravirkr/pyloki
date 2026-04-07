@@ -110,6 +110,22 @@ def poly_taylor_branch_batch(
     f0_batch = leaves_batch[:, -1, 0]
     basis_flag_batch = leaves_batch[:, -1, 1]
 
+    dparam_new_batch_actual = psr_utils.poly_taylor_step_d_vec(
+        n_params,
+        t_obs_minus_t_ref,
+        nbins,
+        eta,
+        f0_batch,
+        t_ref=0,
+    )
+    shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
+        dparam_cur_batch,
+        dparam_new_batch_actual,
+        t_obs_minus_t_ref,
+        nbins,
+        f0_batch,
+        t_ref=0,
+    )
     dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
         n_params,
         t_obs_minus_t_ref,
@@ -119,14 +135,7 @@ def poly_taylor_branch_batch(
         param_limits,
         t_ref=0,
     )
-    shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
-        dparam_cur_batch,
-        dparam_new_batch,
-        t_obs_minus_t_ref,
-        nbins,
-        f0_batch,
-        t_ref=0,
-    )
+
     # Vectorized Padded Branching
     pad_branched_params = np.empty((n_batch, n_params, branch_max), dtype=np.float64)
     branched_dparams = np.empty((n_batch, n_params), dtype=np.float64)
@@ -391,9 +400,9 @@ def generate_bp_poly_taylor(
     weights = np.ones(n_freqs, dtype=np.float64)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
 
-    dparam_cur_batch = np.empty((n_freqs, n_params + 1), dtype=np.float64)
-    dparam_cur_next = np.empty((n_freqs, n_params + 1), dtype=np.float64)
-    dparam_new_batch_d = np.empty((n_freqs, n_params + 1), dtype=np.float64)
+    dparam_cur_batch = np.empty((n_freqs, n_params), dtype=np.float64)
+    dparam_cur_next = np.empty((n_freqs, n_params), dtype=np.float64)
+    dparam_d_vec = np.empty((n_freqs, n_params + 1), dtype=np.float64)
     for i in range(n_freqs):
         dparam_cur_batch[i, :n_params] = dparams_lim
     # f = f0(1 - v / C) => dv = -(C/f0) * df
@@ -407,6 +416,24 @@ def generate_bp_poly_taylor(
         )
         _, t_obs_minus_t_ref = coord_cur
 
+        dparam_new_batch_actual = psr_utils.poly_taylor_step_d_vec(
+            n_params,
+            t_obs_minus_t_ref,
+            nbins,
+            eta,
+            f0_batch,
+            t_ref=0,
+            use_cheby=use_cheby_coarsening,
+        )
+        shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
+            dparam_cur_batch,
+            dparam_new_batch_actual,
+            t_obs_minus_t_ref,
+            nbins,
+            f0_batch,
+            t_ref=0,
+            use_cheby=use_cheby_coarsening,
+        )
         dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
             n_params,
             t_obs_minus_t_ref,
@@ -414,16 +441,6 @@ def generate_bp_poly_taylor(
             eta,
             f0_batch,
             param_limits,
-            t_ref=0,
-            use_cheby=use_cheby_coarsening,
-        )
-        dparam_new_batch_d[:, :-1] = dparam_new_batch
-        shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
-            dparam_cur_batch,
-            dparam_new_batch_d,
-            t_obs_minus_t_ref,
-            nbins,
-            f0_batch,
             t_ref=0,
             use_cheby=use_cheby_coarsening,
         )
@@ -435,7 +452,7 @@ def generate_bp_poly_taylor(
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
                 numerator = dparam_cur_batch[i, j] + FLOAT_EPSILON
-                ratio = numerator / dparam_new_batch_d[i, j]
+                ratio = numerator / dparam_new_batch[i, j]
                 num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
@@ -449,10 +466,13 @@ def generate_bp_poly_taylor(
         if use_moving_grid:
             # Transform dparams to the next segment
             delta_t = coord_next[0] - coord_cur[0]
-            dparam_cur_next = transforms.shift_taylor_errors(
-                dparam_cur_next,
+            dparam_d_vec[:, :-1] = dparam_cur_next
+            dparam_d_vec_new = transforms.shift_taylor_errors(
+                dparam_d_vec,
                 delta_t,
                 use_conservative_tile,
             )
-        dparam_cur_batch = dparam_cur_next
+            dparam_cur_batch = dparam_d_vec_new[:, :-1]
+        else:
+            dparam_cur_batch = dparam_cur_next
     return branching_pattern

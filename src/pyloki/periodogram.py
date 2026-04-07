@@ -52,7 +52,7 @@ class Periodogram:
 
     def find_best_indices(self) -> tuple[int, ...]:
         flat_index = np.argmax(self.data.values)
-        return np.unravel_index(int(flat_index), self.data.shape)
+        return np.unravel_index(int(flat_index), self.data.shape)  # ty:ignore[invalid-return-type]
 
     def find_best_params(self) -> dict[str, float]:
         best_snr = self.data.max().item()

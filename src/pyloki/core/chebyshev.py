@@ -107,7 +107,7 @@ def poly_chebyshev_branch_batch(
     np.ndarray
         Array of leaf parameter sets. Shape is (n_branch, poly_order + 2, 2).
     """
-    n_batch, _ = leaves_batch.shape
+    n_batch, _, _ = leaves_batch.shape
     _, scale_cur = coord_cur
     n_params = poly_order
     f0_batch = leaves_batch[:, -1, 0]
@@ -124,6 +124,18 @@ def poly_chebyshev_branch_batch(
     dparam_cur_batch = param_set_trans_batch[:, :-1, 1]
     alpha0_cur_batch = param_set_trans_batch[:, -1, 0]
 
+    dparam_new_batch_actual = psr_utils.poly_cheb_step_vec(
+        n_params,
+        nbins,
+        eta,
+        f0_batch,
+    )
+    shift_bins_batch = psr_utils.poly_cheb_shift_vec(
+        dparam_cur_batch,
+        dparam_new_batch_actual,
+        nbins,
+        f0_batch,
+    )
     dparam_new_batch = psr_utils.poly_cheb_step_vec_limited(
         n_params,
         scale_cur,
@@ -132,12 +144,7 @@ def poly_chebyshev_branch_batch(
         f0_batch,
         param_limits,
     )
-    shift_bins_batch = psr_utils.poly_cheb_shift_vec(
-        dparam_cur_batch,
-        dparam_new_batch,
-        nbins,
-        f0_batch,
-    )
+
     # Vectorized Padded Branching
     pad_branched_params = np.empty((n_batch, n_params, branch_max), dtype=np.float64)
     branched_dparams = np.empty((n_batch, n_params), dtype=np.float64)
@@ -458,6 +465,18 @@ def generate_bp_poly_chebyshev(
             coord_prev,
             use_conservative_tile,
         )
+        dparam_new_batch_actual = psr_utils.poly_cheb_step_vec(
+            n_params + 1,
+            nbins,
+            eta,
+            f0_batch,
+        )
+        shift_bins_batch = psr_utils.poly_cheb_shift_vec(
+            dparam_cur_batch,
+            dparam_new_batch_actual,
+            nbins,
+            f0_batch,
+        )
         dparam_new_batch = psr_utils.poly_cheb_step_vec_limited(
             n_params + 1,
             scale_cur,
@@ -466,12 +485,7 @@ def generate_bp_poly_chebyshev(
             f0_batch,
             param_limits,
         )
-        shift_bins_batch = psr_utils.poly_cheb_shift_vec(
-            dparam_cur_batch,
-            dparam_new_batch,
-            nbins,
-            f0_batch,
-        )
+
         n_branches = np.ones(n_freqs, dtype=np.int64)
 
         for i in range(n_freqs):

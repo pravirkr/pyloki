@@ -48,7 +48,7 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            cfg.use_conservative_grid,
+            cfg.use_conservative_tile,
             use_moving_grid,
         )
 
@@ -283,13 +283,16 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
         cls,
         param_arr: types.ListType[types.Array],
         dparams: np.ndarray,
+        param_grid_count_init: np.ndarray,
         tseg_ffa: float,
         cfg: PulsarSearchConfig,
+        use_moving_grid: bool = True,
     ) -> Self:
         """Create a new instance of PrunePolyChebyshevComplexDPFuncts."""
         return prune_chebyshev_complex_dp_functs_init(
             param_arr,
             dparams,
+            param_grid_count_init,
             tseg_ffa,
             cfg.nbins,
             cfg.eta,
@@ -298,7 +301,8 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            cfg.use_conservative_grid,
+            cfg.use_conservative_tile,
+            use_moving_grid,
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:

@@ -145,8 +145,34 @@ class CircularModulating(Modulating):
         d2 = -C_VAL * x_sin_nu * omega**2
         d3 = -C_VAL * x_cos_nu * omega**3
         d4 = -d2 * omega**2
+        d5 = -d3 * omega**2
 
-        return {"shift": d0, "vel": d1, "acc": d2, "jerk": d3, "snap": d4}
+        return {
+            "shift": d0,
+            "vel": d1,
+            "acc": d2,
+            "jerk": d3,
+            "snap": d4,
+            "crackle": d5,
+        }
+
+    def to_derivatives_gauge(self, f_ref: float) -> dict[str, float]:
+        """Gauge-fixed derivatives with d1 = 0 convention.
+
+        This transformation does not preserve x but preserves
+        all observable frequency derivatives.
+        """
+        derivs = self.to_derivatives()
+        d1 = derivs["vel"]
+        s_factor = 1.0 - d1 / C_VAL
+        return {
+            "freq": s_factor * f_ref,
+            "vel": 0.0,
+            "acc": derivs["acc"] / s_factor,
+            "jerk": derivs["jerk"] / s_factor,
+            "snap": derivs["snap"] / s_factor,
+            "crackle": derivs["crackle"] / s_factor,
+        }
 
     def to_derivatives_series(self, n: int) -> dict[str, np.ndarray]:
         if n < 0:

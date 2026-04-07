@@ -370,7 +370,7 @@ class PulsarSearchConfig:
     )
     ducy_max: float = attrs.field(default=0.2, validator=attrs.validators.gt(0.0))
     wtsp: float = attrs.field(default=1.5, validator=attrs.validators.gt(0.0))
-    prune_poly_order: int = attrs.field(  # ty: ignore[no-matching-overload]
+    prune_poly_order: int = attrs.field(
         default=3,
         validator=[
             attrs.validators.instance_of(int | np.integer),
@@ -389,7 +389,7 @@ class PulsarSearchConfig:
         validator=[attrs.validators.instance_of(int | np.integer), _is_power_of_two],
     )
     use_fourier: bool = attrs.field(default=True)
-    branch_max: int = attrs.field(  # ty: ignore[no-matching-overload]
+    branch_max: int = attrs.field(
         default=16,
         validator=[
             attrs.validators.instance_of(int | np.integer),
