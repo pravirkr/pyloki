@@ -430,54 +430,6 @@ def branch_param_padded(
     param_cur: float,
     dparam_cur: float,
     dparam_new: float,
-    param_min: float = -np.inf,
-    param_max: float = np.inf,
-) -> tuple[float, int]:
-    count = 0
-    dparam_new_actual = dparam_new  # Default if no branching occurs or edge cases
-    eps = 1e-12
-    if dparam_cur <= eps or dparam_new <= eps:
-        msg = "Both dparam_cur and dparam_new must be positive."
-        raise ValueError(msg)
-    if param_max <= param_min + eps:
-        msg = "param_max must be greater than param_min."
-        raise ValueError(msg)
-
-    param_range = (param_max - param_min) / 2.0
-    if dparam_new > (param_range + eps):
-        # If the desired new step size is too large, return the current value
-        out_values[0] = param_cur
-        return dparam_new, 1
-    # Compute number of intervals with conservative ceil logic
-    num_points = int(np.ceil(((dparam_cur + eps) / dparam_new) - eps))
-    if num_points <= 0:
-        msg = "Invalid input: ensure dparam_cur > dparam_new."
-        raise ValueError(msg)
-    # Confidence-based symmetric range shrinkage
-    # 0.5 < confidence_const < 1
-    confidence_const = 0.5 * (1 + 1 / num_points)
-    half_range = confidence_const * dparam_cur
-    start = param_cur - half_range
-    stop = param_cur + half_range
-    num_intervals = num_points + 1
-    step = (stop - start) / num_intervals
-
-    # Generate points and fill the start of the padded array
-    count = min(num_points, len(out_values))
-    for i in range(count):
-        out_values[i] = start + (i + 1) * step
-
-    # Calculate actual dparam based on generated points
-    dparam_new_actual = dparam_cur / num_points
-    return dparam_new_actual, count
-
-
-@njit(cache=True, fastmath=True)
-def branch_param_padded1(
-    out_values: np.ndarray,  # Slice to write into (shape MAX_BRANCH_VALS,)
-    param_cur: float,
-    dparam_cur: float,
-    dparam_new: float,
 ) -> tuple[float, int]:
     """Generate parameters as `branch_param`, but for padded arrays."""
     if dparam_cur <= FLOAT_EPSILON or dparam_new <= FLOAT_EPSILON:
@@ -499,14 +451,41 @@ def branch_param_padded1(
     num_intervals = num_points + 1
     step = (stop - start) / num_intervals
 
+    branch_max = len(out_values)
+    if num_points > branch_max:
+        msg = "Invalid input: increase branch_max."
+        raise ValueError(msg)
+
     # Generate points and fill the start of the padded array
-    count = min(num_points, len(out_values))
-    for i in range(count):
+    for i in range(num_points):
         out_values[i] = start + (i + 1) * step
 
     # Calculate actual dparam based on generated points
     dparam_new_actual = dparam_cur / num_points
-    return dparam_new_actual, count
+    return dparam_new_actual, num_points
+
+
+@njit(cache=True, fastmath=True)
+def branch_dparam_crackle(
+    dparam_cur: float,
+    dparam_new: float,
+    branch_max: int,
+) -> float:
+    if dparam_cur <= FLOAT_EPSILON or dparam_new <= FLOAT_EPSILON:
+        msg = "Both dparam_cur and dparam_new must be positive."
+        raise ValueError(msg)
+    # Compute number of intervals with conservative ceil logic
+    num_points = int(
+        np.ceil(((dparam_cur + FLOAT_EPSILON) / dparam_new) - FLOAT_EPSILON),
+    )
+    if num_points <= 0:
+        msg = "Invalid input: ensure dparam_cur > dparam_new."
+        raise ValueError(msg)
+    if num_points > branch_max:
+        msg = "Invalid input: increase branch_max."
+        raise ValueError(msg)
+    # Calculate actual dparam based on generated points
+    return dparam_cur / num_points
 
 
 @njit(cache=True, fastmath=True)

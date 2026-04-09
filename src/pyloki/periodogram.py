@@ -488,7 +488,7 @@ class ScatteredPeriodogram:
                 f"expected shape {expected_scores_shape}"
             )
             raise ValueError(msg)
-        nparams = param_sets.shape[1]
+        nparams = param_sets.shape[1] - 2
         if len(self.param_names) != nparams:
             msg = f"Got {len(self.param_names)} names for {nparams} parameters"
             raise ValueError(msg)

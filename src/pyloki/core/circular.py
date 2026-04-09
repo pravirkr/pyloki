@@ -283,12 +283,23 @@ def circ_taylor_branch_batch(
             branched_dparams[i, j] = dparam_act
             branched_counts[i, j] = count
 
+    # crackle case (j=0) don't branch yet, keep at current value
+    for i in range(n_batch):
+        dparam_act = psr_utils.branch_dparam_crackle(
+            dparam_cur_batch[i, 0],
+            dparam_new_batch[i, 0],
+            branch_max,
+        )
+        pad_branched_params[i, 0, :] = 0
+        pad_branched_params[i, 0, 0] = param_cur_batch[i, 0]
+        branched_dparams[i, 0] = dparam_act
+        branched_counts[i, 0] = 1
+
     # Vectorized Selection (mask non-crackle branched params)
     needs_branching = shift_bins_batch >= (eta - FLOAT_EPSILON)
     for i in range(n_batch):
         for j in range(poly_order):
-            if not needs_branching[i, j] or j == 0:
-                # crackle - don't branch yet, keep at current value
+            if not needs_branching[i, j]:
                 pad_branched_params[i, j, :] = 0
                 pad_branched_params[i, j, 0] = param_cur_batch[i, j]
                 branched_dparams[i, j] = dparam_cur_batch[i, j]
@@ -338,7 +349,7 @@ def circ_taylor_branch_batch(
         dparam_act, count = psr_utils.branch_param_padded(
             crackle_branched_params[i],
             leaf_params_branch_cart[idx_expand_crackle[i], 0],
-            leaves_branched_dparams[idx_expand_crackle[i], 0],
+            dparam_cur_batch[orig_batch_idx, 0],
             dparam_new_batch[orig_batch_idx, 0],
         )
         crackle_branched_dparams[i] = dparam_act
@@ -356,6 +367,7 @@ def circ_taylor_branch_batch(
         origins_keep = batch_origins[idx_keep]
         leaves_final[:n_keep, -2, 0] = d0_cur_batch[origins_keep]
         leaves_final[:n_keep, -1, 0] = f0_batch[origins_keep]
+        leaves_final[:n_keep, -1, 1] = basis_flag_batch[origins_keep]
         origins_final[:n_keep] = origins_keep
 
     current_idx = n_keep
