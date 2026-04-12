@@ -6,7 +6,7 @@ import numpy as np
 from numba import njit, vectorize
 
 from pyloki.utils import maths, transforms
-from pyloki.utils.misc import C_VAL, FLOAT_EPSILON
+from pyloki.utils.misc import C_VAL, FLOAT_EPSILON, ZERO_EPSILON
 
 
 @vectorize(nopython=True, cache=True)
@@ -404,12 +404,12 @@ def branch_param(
     ValueError
         If the provided spacings are not positive.
     """
-    if dparam_cur <= FLOAT_EPSILON or dparam_new <= FLOAT_EPSILON:
+    if dparam_cur <= ZERO_EPSILON or dparam_new <= ZERO_EPSILON:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
     # Determine number of refined points
     num_points = int(
-        np.ceil(((dparam_cur + FLOAT_EPSILON) / dparam_new) - FLOAT_EPSILON),
+        np.ceil(((dparam_cur) / dparam_new) - FLOAT_EPSILON),
     )
     if num_points <= 0:
         msg = "Invalid input: ensure dparam_cur > dparam_new."
@@ -432,12 +432,12 @@ def branch_param_padded(
     dparam_new: float,
 ) -> tuple[float, int]:
     """Generate parameters as `branch_param`, but for padded arrays."""
-    if dparam_cur <= FLOAT_EPSILON or dparam_new <= FLOAT_EPSILON:
+    if dparam_cur <= ZERO_EPSILON or dparam_new <= ZERO_EPSILON:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
     # Compute number of intervals with conservative ceil logic
     num_points = int(
-        np.ceil(((dparam_cur + FLOAT_EPSILON) / dparam_new) - FLOAT_EPSILON),
+        np.ceil(((dparam_cur) / dparam_new) - FLOAT_EPSILON),
     )
     if num_points <= 0:
         msg = "Invalid input: ensure dparam_cur > dparam_new."
@@ -471,12 +471,12 @@ def branch_dparam_crackle(
     dparam_new: float,
     branch_max: int,
 ) -> float:
-    if dparam_cur <= FLOAT_EPSILON or dparam_new <= FLOAT_EPSILON:
+    if dparam_cur <= ZERO_EPSILON or dparam_new <= ZERO_EPSILON:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
     # Compute number of intervals with conservative ceil logic
     num_points = int(
-        np.ceil(((dparam_cur + FLOAT_EPSILON) / dparam_new) - FLOAT_EPSILON),
+        np.ceil(((dparam_cur) / dparam_new) - FLOAT_EPSILON),
     )
     if num_points <= 0:
         msg = "Invalid input: ensure dparam_cur > dparam_new."
@@ -609,14 +609,14 @@ def get_nearest_indices_2d_batch(
     step_inv_freq = (n_freq + 1) / (freq_max - freq_min)
     for i in range(n_batch):
         raw_accel_idx = ((accel_batch[i] - accel_min) * step_inv_accel) - 1.0
-        accel_idx = int(raw_accel_idx + 0.5)  # explicit half-up
+        accel_idx = int(raw_accel_idx + 0.5 + FLOAT_EPSILON)  # explicit half-up
         if accel_idx < 0:
             accel_idx = 0
         elif accel_idx >= n_accel:
             accel_idx = n_accel - 1
         out[i, -2] = accel_idx
         raw_freq_idx = ((freq_batch[i] - freq_min) * step_inv_freq) - 1.0
-        freq_idx = int(raw_freq_idx + 0.5)  # explicit half-up
+        freq_idx = int(raw_freq_idx + 0.5 + FLOAT_EPSILON)  # explicit half-up
         if freq_idx < 0:
             freq_idx = 0
         elif freq_idx >= n_freq:

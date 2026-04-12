@@ -4,7 +4,7 @@ import numpy as np
 from numba import njit, types
 
 from pyloki.utils import np_utils, psr_utils, transforms
-from pyloki.utils.misc import C_VAL, FLOAT_EPSILON
+from pyloki.utils.misc import C_VAL, FLOAT_EPSILON, ZERO_EPSILON
 from pyloki.utils.snail import MiddleOutScheme
 
 
@@ -50,18 +50,18 @@ def get_circ_mask(
         Indices of cells not consistent with circular motion.
     """
     # Determine whether snap and crackle are significantly measured
-    is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
-    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * (dcrackle + FLOAT_EPSILON))
+    is_sig_snap = np.abs(snap) > (minimum_snap_cells * dsnap)
+    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * dcrackle)
 
     # Snap-Dominated Region (Standard)
     # We check if implied Omega is physical (-d4/d2 > 0)
-    is_physical_snap = ((-snap * accel) > 0) & (np.abs(accel) > FLOAT_EPSILON)
+    is_physical_snap = ((-snap * accel) > 0) & (np.abs(accel) > ZERO_EPSILON)
     mask_circular_snap = is_sig_snap & is_physical_snap
 
     # Crackle-Dominated Region (The Hole)
     # Condition: snap-accel system is degenerate (both near zero) or unphysical,
     # but crackle-jerk is significant and physical.
-    is_physical_crackle = ((-crackle * jerk) > 0) & (np.abs(jerk) > FLOAT_EPSILON)
+    is_physical_crackle = ((-crackle * jerk) > 0) & (np.abs(jerk) > ZERO_EPSILON)
     mask_circular_crackle = ~mask_circular_snap & is_sig_crackle & is_physical_crackle
 
     # Taylor Region (Noise / Unresolved)
@@ -94,8 +94,8 @@ def circ_validate_batch(
     # Classification (for gatekeeping)
     # |val / step| > thresh  <=>  |val| > thresh * |step|
     # dsnap and dcrackle are step sizes (always positive)
-    is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
-    snap_possible = np.abs(accel) > FLOAT_EPSILON
+    is_sig_snap = np.abs(snap) > (minimum_snap_cells * dsnap)
+    snap_possible = np.abs(accel) > ZERO_EPSILON
     sign_valid = (-snap * accel) > 0.0
 
     # Region where omega_sq is well-defined and positive
@@ -112,7 +112,7 @@ def circ_validate_batch(
     if np.any(snap_region):
         idx = np.flatnonzero(snap_region)
         omega_sq = -snap[idx] / accel[idx]  # guaranteed > 0 here
-        limit_accel = x_mass_const * (omega_sq ** (2.0 / 3.0) + FLOAT_EPSILON)
+        limit_accel = x_mass_const * (omega_sq ** (2.0 / 3.0))
 
         valid_omega = omega_sq < omega_max_sq
         # |d2| < x * omega^(4/3)
@@ -174,10 +174,10 @@ def get_circ_taylor_mask_branch(
     accel = leaves_params_batch[:, 3]
     dsnap = leaves_dparams_batch[:, 1]
 
-    is_sig_snap = np.abs(snap) > (minimum_snap_cells * (dsnap + FLOAT_EPSILON))
+    is_sig_snap = np.abs(snap) > (minimum_snap_cells * dsnap)
     # Numerical Stability - acceleration and snap must be significantly non-zero
-    is_physical_snap = ((-snap * accel) > 0) & (np.abs(accel) > FLOAT_EPSILON)
-    is_stable_jerk = np.abs(jerk) > FLOAT_EPSILON
+    is_physical_snap = ((-snap * accel) > 0) & (np.abs(accel) > ZERO_EPSILON)
+    is_stable_jerk = np.abs(jerk) > ZERO_EPSILON
     mask_circular_crackle = is_sig_snap & ~is_physical_snap & is_stable_jerk
     # Optimization: Filter out 'crackle' candidates that don't actually need branching
     # True crackle candidates: in the hole AND step size is large enough
@@ -901,8 +901,7 @@ def generate_bp_circ_taylor(
                 if shift_bins_batch[i, j] < (eta - FLOAT_EPSILON):
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
-                numerator = dparam_cur_batch[i, j] + FLOAT_EPSILON
-                ratio = numerator / dparam_new_batch[i, j]
+                ratio = dparam_cur_batch[i, j] / dparam_new_batch[i, j]
                 num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
@@ -912,9 +911,7 @@ def generate_bp_circ_taylor(
         # Determine validation fraction
         snap_val = param_limits[1, 1]  # Take max
         dsnap = dparam_cur_next[:, 1]
-        snap_active_mask = np.abs(snap_val) > (
-            minimum_snap_cells * (dsnap + FLOAT_EPSILON)
-        )
+        snap_active_mask = np.abs(snap_val) > (minimum_snap_cells * dsnap)
         # Apply 0.5x if this is the first time snap becomes active
         just_active = snap_active_mask & (~snap_first_branched)
         # Correction factor array

@@ -334,25 +334,27 @@ def poly_chebyshev_report_batch(
     coord_report: tuple[float, float],
 ) -> np.ndarray:
     _, scale = coord_report
+    param_sets_batch = leaves_batch.copy()
     cheby_coeffs_batch = leaves_batch[:, :-1, :]
     f0_batch = leaves_batch[:, -1, 0]
 
     param_sets_batch_d = transforms.cheby_to_taylor_full(cheby_coeffs_batch, scale)
-    param_sets_batch = param_sets_batch_d[:, :-1]
-    v_final = param_sets_batch[:, -1, 0]
-    dv_final = param_sets_batch[:, -1, 1]
+    param_sets_vals = param_sets_batch_d[:, :-2, 0]
+    param_sets_sigs = param_sets_batch_d[:, :-2, 1]
+    param_sets_batch[:, -2, 0] = param_sets_batch_d[:, -1, 0]
+    param_sets_batch[:, -2, 1] = param_sets_batch_d[:, -1, 1]
+    v_final = param_sets_batch_d[:, -2, 0]
+    dv_final = param_sets_batch_d[:, -2, 1]
     s_factor = 1 - v_final / C_VAL
     # Gauge transform + error propagation
-    param_sets_vals = param_sets_batch[:, :-1, 0]
-    param_sets_sigs = param_sets_batch[:, :-1, 1]
-    param_sets_batch[:, :-1, 0] = param_sets_vals / s_factor[:, None]
-    param_sets_batch[:, :-1, 1] = np.sqrt(
+    param_sets_batch[:, :-3, 0] = param_sets_vals / s_factor[:, None]
+    param_sets_batch[:, :-3, 1] = np.sqrt(
         (param_sets_sigs / s_factor[:, None]) ** 2
         + ((param_sets_vals / (C_VAL * s_factor[:, None] ** 2)) ** 2)
         * (dv_final[:, None] ** 2),
     )
-    param_sets_batch[:, -1, 0] = f0_batch * s_factor
-    param_sets_batch[:, -1, 1] = f0_batch * dv_final / C_VAL
+    param_sets_batch[:, -3, 0] = f0_batch * s_factor
+    param_sets_batch[:, -3, 1] = f0_batch * dv_final / C_VAL
     return param_sets_batch
 
 
@@ -493,8 +495,7 @@ def generate_bp_poly_chebyshev(
                 if shift_bins_batch[i, j] < (eta - FLOAT_EPSILON):
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
-                numerator = dparam_cur_batch[i, j] + FLOAT_EPSILON
-                ratio = numerator / dparam_new_batch[i, j]
+                ratio = dparam_cur_batch[i, j] / dparam_new_batch[i, j]
                 num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points

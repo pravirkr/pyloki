@@ -207,6 +207,8 @@ class ScatteredPeriodogram:
 
     @property
     def n_runs(self) -> int:
+        if self.data.empty or "run_id" not in self.data.columns:
+            return 0
         return self.data["run_id"].nunique()
 
     def add_run(self, param_sets: np.ndarray, scores: np.ndarray, run_id: str) -> None:
@@ -247,18 +249,23 @@ class ScatteredPeriodogram:
             Summary of top candidates.
         """
         data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
+        if data.empty:
+            scope = " (no candidates in this selection)" if run_id is not None else ""
+            return f"Top candidates:{scope}\nNo candidates."
+
         top_df = data.nlargest(n, "score")
         summary: list[str] = []
         summary.append("Top candidates:")
 
+        first = data.iloc[0]
         param_formatters = {}
         for p in self.param_names:
-            d = self.data[f"d{p}"][0]
+            d = float(first[f"d{p}"])
             decimals = get_precision(d)
             param_formatters[p] = f"{{:.{decimals}f}}"
 
         dparams_str = ", ".join(
-            f"d{p}: {self.data[f'd{p}'][0]:.10g}" for p in self.param_names
+            f"d{p}: {first[f'd{p}']:.10g}" for p in self.param_names
         )
         summary.append(f"dparams: {dparams_str}")
         for _, row in top_df.iterrows():
@@ -278,22 +285,24 @@ class ScatteredPeriodogram:
         str
             Summary of best candidates from each run.
         """
+        if self.data.empty:
+            return "Best candidate in each run:\nNo candidates."
+
         # Group by run_id and find the row with maximum score in each group
         best_per_run = self.data.loc[self.data.groupby("run_id")["score"].idxmax()]
 
         summary: list[str] = []
         summary.append("Best candidate in each run:")
 
-        # Get parameter formatters (same as in get_summary_cands)
+        first = self.data.iloc[0]
         param_formatters = {}
         for p in self.param_names:
-            d = self.data[f"d{p}"][0]  # Use first value as reference for precision
+            d = float(first[f"d{p}"])
             decimals = get_precision(d)
             param_formatters[p] = f"{{:.{decimals}f}}"
 
-        # Show dparams once at the top
         dparams_str = ", ".join(
-            f"d{p}: {self.data[f'd{p}'][0]:.10g}" for p in self.param_names
+            f"d{p}: {first[f'd{p}']:.10g}" for p in self.param_names
         )
         summary.append(f"dparams: {dparams_str}")
 
@@ -324,6 +333,19 @@ class ScatteredPeriodogram:
         data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
         set_seaborn()
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        if data.empty:
+            ax.text(
+                0.5,
+                0.5,
+                "No candidates to plot",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+            ax.set_xlabel(f"Trial {param_x}")
+            ax.set_ylabel(f"Trial {param_y}")
+            ax.set_title(f"{param_x} vs {param_y}")
+            return fig
         scatter = sns.scatterplot(
             data=data,
             x=param_x,
@@ -379,6 +401,17 @@ class ScatteredPeriodogram:
         data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
         set_seaborn()
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        if data.empty:
+            ax.text(
+                0.5,
+                0.5,
+                "No candidates to plot",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+            ax.set_title("Score Distribution")
+            return fig
 
         if kind == "scatter":
             ax.scatter(
@@ -446,6 +479,16 @@ class ScatteredPeriodogram:
 
     def get_stats(self) -> pd.DataFrame:
         """Get statistics for each parameter."""
+        if self.data.empty:
+            return pd.DataFrame(
+                columns=[
+                    "parameter",
+                    "mean",
+                    "std",
+                    "median",
+                    "mean_uncertainty",
+                ],
+            )
         stats = []
         for param in self.param_names:
             param_stats = self.data[param].describe()
@@ -494,15 +537,26 @@ class ScatteredPeriodogram:
             raise ValueError(msg)
 
     def __str__(self) -> str:
+        summary = [
+            "ScatteredPeriodogram Summary:",
+            f"Parameters: {', '.join(self.param_names)}",
+        ]
+        if self.data.empty:
+            summary += [
+                "Total runs: 0",
+                "Total candidates: 0",
+                "\nRun Statistics:",
+                "(no data)",
+            ]
+            return "\n".join(summary)
+
         run_stats = self.data.groupby("run_id").agg(
             {
                 "score": ["count", "min", "max"],
             },
         )
 
-        summary = [
-            "ScatteredPeriodogram Summary:",
-            f"Parameters: {', '.join(self.param_names)}",
+        summary += [
             f"Total runs: {len(run_stats)}",
             f"Total candidates: {len(self.data)}",
             "\nRun Statistics:",
@@ -526,6 +580,8 @@ class PruningStatsPlotter:
 
     @property
     def n_runs(self) -> int:
+        if self.data.empty or "run_id" not in self.data.columns:
+            return 0
         return self.data["run_id"].nunique()
 
     def add_run(self, level_stats: np.ndarray, run_id: str) -> None:
