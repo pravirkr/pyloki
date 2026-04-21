@@ -308,6 +308,53 @@ def poly_chebyshev_fixed_resolve_batch(
     )
     return param_idx_batch, relative_phase_batch
 
+@njit(cache=True, fastmath=True)
+def poly_chebyshev_ascend_resolve_batch(
+    leaves_batch: np.ndarray,
+    coord_segments: np.ndarray,
+    coord_cur: tuple[float, float],
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
+    nbins: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    t0_cur, scale_cur = coord_cur
+    n_leaves = len(leaves_batch)
+    nsegments = len(coord_segments)
+    n_params = param_limits.shape[0]
+
+    param_vec_batch = leaves_batch[:, :-1, 0]
+    f0_batch = leaves_batch[:, -1, 0]
+
+    param_idx_batch_arr = np.empty((n_leaves, nsegments, n_params), dtype=np.int64)
+    relative_phase_batch_arr = np.empty((n_leaves, nsegments), dtype=np.float64)
+
+    for isegment in range(nsegments):
+        t0_seg, _ = coord_segments[isegment]
+        dvec_t_seg = transforms.cheby_to_taylor_param_shift(
+            param_vec_batch,
+            t0_cur,
+            scale_cur,
+            t0_seg,
+        )
+        accel_new_batch = dvec_t_seg[:, -3]
+        freq_new_batch = f0_batch * (1 - dvec_t_seg[:, -2] / C_VAL)
+        delay_batch = dvec_t_seg[:, -1] / C_VAL
+        relative_phase_batch = psr_utils.get_phase_idx(
+            t0_seg - t0_cur,
+            f0_batch,
+            nbins,
+            delay_batch,
+        )
+        param_idx_batch = psr_utils.get_nearest_indices_2d_batch(
+            accel_new_batch,
+            freq_new_batch,
+            param_grid_count_init,
+            param_limits,
+        )
+        param_idx_batch_arr[:, isegment, :] = param_idx_batch
+        relative_phase_batch_arr[:, isegment] = relative_phase_batch
+    return param_idx_batch_arr, relative_phase_batch_arr
+
 
 @njit(cache=True, fastmath=True)
 def poly_chebyshev_transform_batch(

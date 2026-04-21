@@ -12,6 +12,8 @@ from pyloki.detection import scoring
 from pyloki.utils.world_tree import WorldTree, WorldTreeComplex
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pyloki.config import PulsarSearchConfig
 
 
@@ -129,6 +131,27 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
     def pack(self, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
 
+    def ascend(
+        self,
+        leaves_batch: np.ndarray,
+        dyp_folds: np.ndarray,
+        load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+        idx_segments: np.ndarray,
+        coord_segments: np.ndarray,
+        coord_cur: tuple[float, float],
+        batch_size: int,
+    ) -> np.ndarray:
+        return ascend_func(
+            self,
+            leaves_batch,
+            dyp_folds,
+            load_func,
+            idx_segments,
+            coord_segments,
+            coord_cur,
+            batch_size,
+        )
+
     def report(
         self,
         leaves_batch: np.ndarray,
@@ -241,6 +264,27 @@ class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
 
     def pack(self, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
+
+    def ascend(
+        self,
+        leaves_batch: np.ndarray,
+        dyp_folds: np.ndarray,
+        load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+        idx_segments: np.ndarray,
+        coord_segments: np.ndarray,
+        coord_cur: tuple[float, float],
+        batch_size: int,
+    ) -> np.ndarray:
+        return ascend_complex_func(
+            self,
+            leaves_batch,
+            dyp_folds,
+            load_func,
+            idx_segments,
+            coord_segments,
+            coord_cur,
+            batch_size,
+        )
 
     def report(
         self,
@@ -539,6 +583,88 @@ def pack_func(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> np.ndarray:
 
 
 @njit(cache=True, fastmath=True)
+def ascend_func(
+    self: PrunePolyTaylorDPFuncts,
+    leaves: np.ndarray,
+    dyp_folds: np.ndarray,
+    load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    idx_segments: np.ndarray,
+    coord_segments: np.ndarray,
+    coord_cur: tuple[float, float],
+    batch_size: int,
+) -> np.ndarray:
+    n_leaves = len(leaves)
+    batch_size = max(1, min(batch_size, n_leaves))
+    scores_new = np.zeros(n_leaves, dtype=np.float32)
+    # Loop over branches in batches
+    for i_batch_start in range(0, n_leaves, batch_size):
+        i_batch_end = min(i_batch_start + batch_size, n_leaves)
+        batch_leaves = leaves[i_batch_start:i_batch_end]
+        param_idx_arr, relative_phase_arr = taylor.poly_taylor_ascend_resolve_batch(
+            batch_leaves,
+            coord_segments,
+            coord_cur,
+            self.param_grid_count_init,
+            self.param_limits,
+            self.nbins,
+        )
+        batch_combined_res = common.shift_add_ascend_batch(
+            dyp_folds,
+            load_func,
+            idx_segments,
+            param_idx_arr,
+            relative_phase_arr,
+        )
+        batch_scores = scoring.snr_score_batch_func(
+            batch_combined_res,
+            self.score_widths,
+        )
+        scores_new[i_batch_start:i_batch_end] = batch_scores
+    return scores_new
+
+
+@njit(cache=True, fastmath=True)
+def ascend_complex_func(
+    self: PrunePolyTaylorComplexDPFuncts,
+    leaves: np.ndarray,
+    dyp_folds: np.ndarray,
+    load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    idx_segments: np.ndarray,
+    coord_segments: np.ndarray,
+    coord_cur: tuple[float, float],
+    batch_size: int,
+) -> np.ndarray:
+    n_leaves = len(leaves)
+    batch_size = max(1, min(batch_size, n_leaves))
+    scores_new = np.zeros(n_leaves, dtype=np.float32)
+    # Loop over branches in batches
+    for i_batch_start in range(0, n_leaves, batch_size):
+        i_batch_end = min(i_batch_start + batch_size, n_leaves)
+        batch_leaves = leaves[i_batch_start:i_batch_end]
+        param_idx_arr, relative_phase_arr = taylor.poly_taylor_ascend_resolve_batch(
+            batch_leaves,
+            coord_segments,
+            coord_cur,
+            self.param_grid_count_init,
+            self.param_limits,
+            self.nbins,
+        )
+        batch_combined_res = common.shift_add_ascend_complex_batch(
+            dyp_folds,
+            load_func,
+            idx_segments,
+            param_idx_arr,
+            relative_phase_arr,
+        )
+        batch_scores = scoring.snr_score_batch_func_complex(
+            batch_combined_res,
+            self.score_widths,
+        )
+        scores_new[i_batch_start:i_batch_end] = batch_scores
+    return scores_new
+
+
+@njit(cache=True, fastmath=True)
 def report_func(
     self: PrunePolyTaylorDPFuncts,
     leaves_batch: np.ndarray,
@@ -730,6 +856,41 @@ def ol_get_transform_matrix_func(
 def ol_pack_func(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> types.FunctionType:
     def impl(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
+
+    return impl
+
+
+@overload_method(PrunePolyTaylorDPFunctsTemplate, "ascend")
+def ol_ascend_func(
+    self: PrunePolyTaylorDPFuncts,
+    leaves_batch: np.ndarray,
+    dyp_folds: np.ndarray,
+    load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    idx_segments: np.ndarray,
+    coord_segments: np.ndarray,
+    coord_cur: tuple[float, float],
+    batch_size: int,
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorDPFuncts,
+        leaves_batch: np.ndarray,
+        dyp_folds: np.ndarray,
+        load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+        idx_segments: np.ndarray,
+        coord_segments: np.ndarray,
+        coord_cur: tuple[float, float],
+        batch_size: int,
+    ) -> np.ndarray:
+        return ascend_func(
+            self,
+            leaves_batch,
+            dyp_folds,
+            load_func,
+            idx_segments,
+            coord_segments,
+            coord_cur,
+            batch_size,
+        )
 
     return impl
 
@@ -935,6 +1096,41 @@ def ol_pack_complex_func(
 ) -> types.FunctionType:
     def impl(self: PrunePolyTaylorComplexDPFuncts, data: np.ndarray) -> np.ndarray:
         return pack_func(self, data)
+
+    return impl
+
+
+@overload_method(PrunePolyTaylorComplexDPFunctsTemplate, "ascend")
+def ol_ascend_complex_func(
+    self: PrunePolyTaylorComplexDPFuncts,
+    leaves_batch: np.ndarray,
+    dyp_folds: np.ndarray,
+    load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    idx_segments: np.ndarray,
+    coord_segments: np.ndarray,
+    coord_cur: tuple[float, float],
+    batch_size: int,
+) -> types.FunctionType:
+    def impl(
+        self: PrunePolyTaylorComplexDPFuncts,
+        leaves_batch: np.ndarray,
+        dyp_folds: np.ndarray,
+        load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+        idx_segments: np.ndarray,
+        coord_segments: np.ndarray,
+        coord_cur: tuple[float, float],
+        batch_size: int,
+    ) -> np.ndarray:
+        return ascend_complex_func(
+            self,
+            leaves_batch,
+            dyp_folds,
+            load_func,
+            idx_segments,
+            coord_segments,
+            coord_cur,
+            batch_size,
+        )
 
     return impl
 

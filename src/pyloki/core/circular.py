@@ -585,6 +585,78 @@ def circ_taylor_fixed_resolve_batch(
 
 
 @njit(cache=True, fastmath=True)
+def circ_taylor_ascend_resolve_batch(
+    leaves_batch: np.ndarray,
+    coord_segments: np.ndarray,
+    coord_cur: tuple[float, float],
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
+    nbins: int,
+    minimum_snap_cells: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    # only works for circular orbit when nparams = 5
+    n_batch, _, _ = leaves_batch.shape
+    t0_cur, _ = coord_cur
+    nsegments = len(coord_segments)
+    n_params = param_limits.shape[0]
+
+    param_vec_batch = leaves_batch[:, :-1, 0]
+    f0_batch = leaves_batch[:, -1, 0]
+
+    param_idx_batch_arr = np.empty((n_batch, nsegments, n_params), dtype=np.int64)
+    relative_phase_batch_arr = np.empty((n_batch, nsegments), dtype=np.float64)
+
+    idx_circ_snap, idx_circ_crackle, idx_taylor = get_circ_taylor_mask(
+        leaves_batch,
+        minimum_snap_cells=minimum_snap_cells,
+    )
+
+    for isegment in range(nsegments):
+        dvec_t_seg = np.empty((n_batch, 6), dtype=np.float64)
+        t0_seg, _ = coord_segments[isegment]
+        if idx_circ_snap.size > 0:
+            dvec_t_add_circ_snap = transforms.shift_taylor_circular_params(
+                param_vec_batch[idx_circ_snap],
+                t0_seg - t0_cur,
+            )
+            dvec_t_seg[idx_circ_snap] = dvec_t_add_circ_snap
+
+        if idx_circ_crackle.size > 0:
+            dvec_t_add_circ_crackle = transforms.shift_taylor_circular_params(
+                param_vec_batch[idx_circ_crackle],
+                t0_seg - t0_cur,
+                in_hole=True,
+            )
+            dvec_t_seg[idx_circ_crackle] = dvec_t_add_circ_crackle
+
+        if idx_taylor.size > 0:
+            dvec_t_add_norm = transforms.shift_taylor_params(
+                param_vec_batch[idx_taylor],
+                t0_seg - t0_cur,
+            )
+            dvec_t_seg[idx_taylor] = dvec_t_add_norm
+
+        accel_new_batch = dvec_t_seg[:, -3]
+        freq_new_batch = f0_batch * (1 - dvec_t_seg[:, -2] / C_VAL)
+        delay_batch = dvec_t_seg[:, -1] / C_VAL
+        relative_phase_batch = psr_utils.get_phase_idx(
+            t0_seg - t0_cur,
+            f0_batch,
+            nbins,
+            delay_batch,
+        )
+        param_idx_batch = psr_utils.get_nearest_indices_2d_batch(
+            accel_new_batch,
+            freq_new_batch,
+            param_grid_count_init,
+            param_limits,
+        )
+        param_idx_batch_arr[:, isegment, :] = param_idx_batch
+        relative_phase_batch_arr[:, isegment] = relative_phase_batch
+    return param_idx_batch_arr, relative_phase_batch_arr
+
+
+@njit(cache=True, fastmath=True)
 def circ_taylor_transform_batch(
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],

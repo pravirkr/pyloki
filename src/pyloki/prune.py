@@ -552,11 +552,26 @@ class Pruning:
             get_leaves=lambda: self.world_tree.size_lb,
         ):
             self.execute_iter(log_file)
-        # Transform the world tree params to middle of the data
+
+        # Reintegrate the world tree params. Survivors can ascend!
         coord_end = self.scheme.get_previous_coord(
-            self.prune_level,
+            self.prune_level + 1,
             self.use_moving_grid,
         )
+        segment_idx, segment_coords = self.scheme.get_segment_coords_so_far(
+            self.prune_level,
+        )
+        scores_ascend = self.prune_funcs.ascend(
+            self.world_tree.leaves,
+            self.dyp.fold,
+            self.load_func,
+            segment_idx,
+            segment_coords,
+            coord_end,
+            self.batch_size,
+        )
+
+        # Transform the world tree params to middle of the data
         coord_report = self.scheme.get_report_coord(self.use_moving_grid)
         leaves_report = self.prune_funcs.report(
             self.world_tree.leaves,
@@ -569,6 +584,7 @@ class Pruning:
                 self.scheme.data,
                 leaves_report,
                 self.world_tree.scores,
+                scores_ascend,
                 self.pstats,
             )
         with log_file.open("a") as f:

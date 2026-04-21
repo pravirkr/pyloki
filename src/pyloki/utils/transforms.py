@@ -355,7 +355,7 @@ def shift_taylor_circular_errors(
 def shift_taylor_circular_full(
     taylor_full_vec: np.ndarray,
     delta_t: float,
-    use_conservative_tile: bool,
+    use_conservative_tile: bool,  # noqa: ARG001
     in_hole: bool = False,
 ) -> np.ndarray:
     _, n_poly, _ = taylor_full_vec.shape

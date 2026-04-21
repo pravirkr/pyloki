@@ -211,35 +211,52 @@ class ScatteredPeriodogram:
             return 0
         return self.data["run_id"].nunique()
 
-    def add_run(self, param_sets: np.ndarray, scores: np.ndarray, run_id: str) -> None:
+    def add_run(
+        self,
+        param_sets: np.ndarray,
+        scores_ep: np.ndarray,
+        scores: np.ndarray,
+        run_id: str,
+    ) -> None:
         """Add a pruning run results to the existing dataframe.
 
         Parameters
         ----------
         param_sets : np.ndarray
             Parameter sets (n_sugg, n_params, 2).
+        scores_ep : np.ndarray
+            Scores (EP) for each parameter set (n_sugg,).
         scores : np.ndarray
-            Scores for each parameter set (n_sugg,).
+            Integrated scores for each parameter set (n_sugg,).
         run_id : str
             Unique Identifier for the specific run being added.
         """
-        self._validate_inputs(param_sets, scores)
+        self._validate_inputs(param_sets, scores_ep, scores)
         run_data = {}
         for i, name in enumerate(self.param_names):
             run_data[name] = param_sets[:, i, 0]
             run_data[f"d{name}"] = param_sets[:, i, 1]
+        run_data["score_ep"] = scores_ep
         run_data["score"] = scores
         run_df = pd.DataFrame.from_dict(run_data)
         run_df["run_id"] = run_id
         self.data = pd.concat([self.data, run_df], ignore_index=True)
 
-    def get_summary_cands(self, n: int = 10, run_id: str | None = None) -> str:
+    def get_summary_cands(
+        self,
+        n: int = 10,
+        score_type: str = "score",
+        run_id: str | None = None,
+    ) -> str:
         """Return top N candidates, optionally for a specific run.
 
         Parameters
         ----------
         n : int, optional
             Number of top candidates to return, by default 10.
+        score_type : str, optional
+            Type of score to use, by default "score".
+            Can be "score_ep" or "score".
         run_id : str | None, optional
             Unique identifier for a specific run, by default None.
 
@@ -248,12 +265,16 @@ class ScatteredPeriodogram:
         str
             Summary of top candidates.
         """
+        if score_type not in ["score_ep", "score"]:
+            msg = f"Invalid score type: {score_type}"
+            raise ValueError(msg)
+        score_col = score_type
         data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
         if data.empty:
             scope = " (no candidates in this selection)" if run_id is not None else ""
             return f"Top candidates:{scope}\nNo candidates."
 
-        top_df = data.nlargest(n, "score")
+        top_df = data.nlargest(n, score_col)
         summary: list[str] = []
         summary.append("Top candidates:")
 
@@ -273,12 +294,19 @@ class ScatteredPeriodogram:
                 f"{p}: {param_formatters[p].format(row[p])}" for p in self.param_names
             )
             summary.append(
-                f"Run: {row['run_id']}, S/N: {row['score']:.2f}, {params_str}",
+                f"Run: {row['run_id']}, S/N (EP): {row['score_ep']:.2f}, "
+                f"S/N: {row['score']:.2f}, {params_str}",
             )
         return "\n".join(summary)
 
-    def get_best_in_each_run(self) -> str:
+    def get_best_in_each_run(self, score_type: str = "score") -> str:
         """Return the best candidate from each run.
+
+        Parameters
+        ----------
+        score_type : str, optional
+            Type of score to use, by default "score".
+            Can be "score_ep" or "score".
 
         Returns
         -------
@@ -288,8 +316,12 @@ class ScatteredPeriodogram:
         if self.data.empty:
             return "Best candidate in each run:\nNo candidates."
 
+        if score_type not in ["score_ep", "score"]:
+            msg = f"Invalid score type: {score_type}"
+            raise ValueError(msg)
+        score_col = score_type
         # Group by run_id and find the row with maximum score in each group
-        best_per_run = self.data.loc[self.data.groupby("run_id")["score"].idxmax()]
+        best_per_run = self.data.loc[self.data.groupby("run_id")[score_col].idxmax()]
 
         summary: list[str] = []
         summary.append("Best candidate in each run:")
@@ -313,7 +345,8 @@ class ScatteredPeriodogram:
                 f"{p}: {param_formatters[p].format(row[p])}" for p in self.param_names
             )
             summary.append(
-                f"Run: {row['run_id']}, S/N: {row['score']:.2f}, {params_str}",
+                f"Run: {row['run_id']}, S/N (EP): {row['score_ep']:.2f}, "
+                f"S/N: {row['score']:.2f}, {params_str}",
             )
         return "\n".join(summary)
 
@@ -321,6 +354,7 @@ class ScatteredPeriodogram:
         self,
         param_x: str,
         param_y: str,
+        score_type: str = "score",
         run_id: str | None = None,
         true_values: dict[str, float] | None = None,
         x_lim: tuple[float, float] | None = None,
@@ -330,6 +364,10 @@ class ScatteredPeriodogram:
         cmap: str = "magma_r",
     ) -> plt.Figure:
         """Plot correlation between two parameters with optional true values."""
+        if score_type not in ["score_ep", "score"]:
+            msg = f"Invalid score type: {score_type}"
+            raise ValueError(msg)
+        score_col = score_type
         data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
         set_seaborn()
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
@@ -350,8 +388,8 @@ class ScatteredPeriodogram:
             data=data,
             x=param_x,
             y=param_y,
-            hue="score",
-            size="score",
+            hue=score_col,
+            size=score_col,
             sizes=(20, 200),
             palette=cmap,
             alpha=0.7,
@@ -360,10 +398,11 @@ class ScatteredPeriodogram:
             legend="auto",
             ax=ax,
         )
-        norm = plt.Normalize(data["score"].min(), data["score"].max())
+        norm = plt.Normalize(data[score_col].min(), data[score_col].max())
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
-        fig.colorbar(sm, ax=ax, pad=0.02, aspect=30, label="Score")
+        label = "Score (EP)" if score_type == "score_ep" else "Score (Integrated)"
+        fig.colorbar(sm, ax=ax, pad=0.02, aspect=30, label=label)
         scatter.legend_.remove()
 
         if true_values:
@@ -393,11 +432,17 @@ class ScatteredPeriodogram:
     def plot_scores(
         self,
         kind: str = "scatter",
+        score_type: str = "score",
         run_id: str | None = None,
         figsize: tuple[float, float] = (7, 3.5),
         dpi: int = 100,
     ) -> plt.Figure:
         """Plot score distribution as scatter or histogram."""
+        if score_type not in ["score_ep", "score"]:
+            msg = f"Invalid score type: {score_type}"
+            raise ValueError(msg)
+        score_col = score_type
+        label = "Score (EP)" if score_type == "score_ep" else "Score (Integrated)"
         data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
         set_seaborn()
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
@@ -410,13 +455,13 @@ class ScatteredPeriodogram:
                 va="center",
                 transform=ax.transAxes,
             )
-            ax.set_title("Score Distribution")
+            ax.set_title(f"{label} Distribution")
             return fig
 
         if kind == "scatter":
             ax.scatter(
                 range(len(data)),
-                data["score"],
+                data[score_col],
                 s=12,
                 edgecolor="tab:blue",
                 facecolor="white",
@@ -432,9 +477,9 @@ class ScatteredPeriodogram:
                     if idx < len(data):
                         ax.axvline(idx, color="gray", linestyle=":", alpha=0.5)
                     prev_idx = idx
-                    ax.set_title("Score Distribution Across Runs")
+                    ax.set_title(f"{label} Distribution Across Runs")
             else:
-                ax.set_title(f"Score Distribution for Run {run_id}")
+                ax.set_title(f"{label} Distribution for Run {run_id}")
             ax.set_xlabel("Candidate Index")
             ax.set_ylabel("Score (S/N)")
 
@@ -442,18 +487,18 @@ class ScatteredPeriodogram:
             if run_id is not None:
                 sns.histplot(
                     data=data,
-                    x="score",
+                    x=score_col,
                     bins=50,
                     ax=ax,
                     element="step",
                     linewidth=1.2,
                     edgecolor="black",
                 )
-                ax.set_title(f"Score Distribution for Run {run_id}")
+                ax.set_title(f"{label} Distribution for Run {run_id}")
             else:
                 sns.histplot(
                     data=data,
-                    x="score",
+                    x=score_col,
                     hue="run_id",
                     bins=50,
                     element="step",
@@ -462,7 +507,7 @@ class ScatteredPeriodogram:
                     edgecolor="black",
                     ax=ax,
                 )
-                ax.set_title("Score Distribution Across Runs")
+                ax.set_title(f"{label} Distribution Across Runs")
                 sns.move_legend(
                     ax,
                     "upper right",
@@ -516,11 +561,17 @@ class ScatteredPeriodogram:
             for run_id_str, run_group in f["runs"].items():
                 run_id = run_id_str.split("seg_")[-1]
                 param_sets = run_group["param_sets"][:]
+                scores_ep = run_group["scores_ep"][:]
                 scores = run_group["scores"][:]
-                pgram.add_run(param_sets, scores, run_id)
+                pgram.add_run(param_sets, scores_ep, scores, run_id)
         return pgram
 
-    def _validate_inputs(self, param_sets: np.ndarray, scores: np.ndarray) -> None:
+    def _validate_inputs(
+        self,
+        param_sets: np.ndarray,
+        scores_ep: np.ndarray,
+        scores: np.ndarray,
+    ) -> None:
         if param_sets.ndim != 3 or param_sets.shape[-1] != 2:
             msg = f"param_sets should be (n_sugg, n_params, 2), got {param_sets.shape}"
             raise ValueError(msg)
@@ -528,6 +579,12 @@ class ScatteredPeriodogram:
         if scores.shape != expected_scores_shape:
             msg = (
                 f"scores shape {scores.shape} does not match "
+                f"expected shape {expected_scores_shape}"
+            )
+            raise ValueError(msg)
+        if scores_ep.shape != expected_scores_shape:
+            msg = (
+                f"scores_ep shape {scores_ep.shape} does not match "
                 f"expected shape {expected_scores_shape}"
             )
             raise ValueError(msg)

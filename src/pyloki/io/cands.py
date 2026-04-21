@@ -231,7 +231,7 @@ class PruneStatsCollection:
         timer_dtype = np.dtype([(name, np.float32) for name in self.TIMER_NAMES])
         timer_stats = np.zeros(1, dtype=timer_dtype)
         for name in self.TIMER_NAMES:
-            timer_stats[name] = self.timers[name]
+            timer_stats[0][name] = self.timers[name]
 
         return level_stats, timer_stats
 
@@ -327,6 +327,7 @@ class PruneResultWriter:
         scheme: np.ndarray,
         leaves_report: np.ndarray,
         scores: np.ndarray,
+        scores_ascend: np.ndarray,
         pstats: PruneStatsCollection,
     ) -> None:
         if self.runs_group is None:
@@ -340,7 +341,8 @@ class PruneResultWriter:
         for name, data in [
             ("scheme", scheme),
             ("param_sets", leaves_report),
-            ("scores", scores),
+            ("scores_ep", scores),
+            ("scores", scores_ascend),
             ("level_stats", level_stats),
             ("timer_stats", timer_stats),
         ]:

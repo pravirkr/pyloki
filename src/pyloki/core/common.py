@@ -433,6 +433,67 @@ def shift_add_complex_batch(
 
 
 @njit(cache=True, fastmath=True)
+def shift_add_ascend_batch(
+    dyp_folds: np.ndarray,
+    load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    idx_segments: np.ndarray,
+    param_idx_batch: np.ndarray,
+    shift_batch: np.ndarray,
+) -> np.ndarray:
+    n_batch, _ = shift_batch.shape
+    nsegments = len(idx_segments)
+    n_comps = dyp_folds.shape[-2]
+    nbins = dyp_folds.shape[-1]
+    res = np.zeros((n_batch, n_comps, nbins), dtype=dyp_folds.dtype)
+    for irow in range(n_batch):
+        for isegment in range(nsegments):
+            dyp_fold_segment = dyp_folds[idx_segments[isegment]]
+            fold_row = load_func(dyp_fold_segment, param_idx_batch[irow, isegment])
+            shift = int(np.float32(shift_batch[irow, isegment]) + np.float32(0.5))
+            if shift == nbins:
+                shift = 0
+            src_idx = (-shift) % nbins
+            for j in range(nbins):
+                res[irow, 0, j] += fold_row[0, src_idx]
+                res[irow, 1, j] += fold_row[1, src_idx]
+                src_idx += 1
+                if src_idx == nbins:
+                    src_idx = 0
+    return res
+
+
+@njit(cache=True, fastmath=True)
+def shift_add_ascend_complex_batch(
+    dyp_folds: np.ndarray,
+    load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    idx_segments: np.ndarray,
+    param_idx_batch: np.ndarray,
+    shift_batch: np.ndarray,
+) -> np.ndarray:
+    n_batch, _ = shift_batch.shape
+    nsegments = len(idx_segments)
+    n_comps = dyp_folds.shape[-2]
+    nbins_f = dyp_folds.shape[-1]
+    nbins = (nbins_f - 1) * 2
+    res = np.zeros((n_batch, n_comps, nbins_f), dtype=dyp_folds.dtype)
+    for irow in range(n_batch):
+        for isegment in range(nsegments):
+            dyp_fold_segment = dyp_folds[idx_segments[isegment]]
+            fold_row = load_func(dyp_fold_segment, param_idx_batch[irow, isegment])
+            shift_float = np.float32(shift_batch[irow, isegment])
+            # Precompute phase step and delta
+            angle = np.float32(-2.0 * np.float32(np.pi) * shift_float / nbins)
+            delta = np.complex64(np.cos(angle) + 1j * np.sin(angle))
+            phase = np.complex64(1.0 + 0.0j)
+            for k in range(nbins_f):
+                res[irow, 0, k] += fold_row[0, k] * phase
+                res[irow, 1, k] += fold_row[1, k] * phase
+                phase *= delta
+
+    return res
+
+
+@njit(cache=True, fastmath=True)
 def get_trans_matrix(
     coord_next: tuple[float, float],  # noqa: ARG001
     coord_prev: tuple[float, float],  # noqa: ARG001

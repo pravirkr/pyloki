@@ -129,6 +129,11 @@ class MiddleOutScheme(structref.StructRefProxy):
         return get_segment_coord_func(self, level)
 
     @njit(cache=True, fastmath=True)
+    def get_segment_coords_so_far(self, level: int) -> tuple[np.ndarray, np.ndarray]:
+        """Get the ref and scale for the segments so far."""
+        return get_segment_coords_so_far_func(self, level)
+
+    @njit(cache=True, fastmath=True)
     def get_current_coord(self, level: int, moving_grid: bool) -> tuple[float, float]:
         """Get current ref, scale for a pruning scheme."""
         return get_current_coord_func(self, level, moving_grid)
@@ -243,6 +248,23 @@ def get_segment_coord_func(self: MiddleOutScheme, level: int) -> tuple[float, fl
     ref = (self.get_segment_idx(level) + 0.5) * self.tsegment
     scale = 0.5 * self.tsegment
     return ref, scale
+
+
+@njit(cache=True, fastmath=True)
+def get_segment_coords_so_far_func(
+    self: MiddleOutScheme,
+    level: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if level < 0 or level >= self.nsegments:
+        msg = f"level must be in [0, {self.nsegments - 1}], got {level}."
+        raise ValueError(msg)
+    res = np.zeros((level + 1, 2), dtype=np.float64)
+    seg_idx = np.zeros(level + 1, dtype=np.int64)
+    for i in range(level + 1):
+        res[i, 0] = (self.get_segment_idx(i) + 0.5) * self.tsegment
+        res[i, 1] = 0.5 * self.tsegment
+        seg_idx[i] = self.get_segment_idx(i)
+    return seg_idx, res
 
 
 @njit(cache=True, fastmath=True)
@@ -405,6 +427,17 @@ def ol_get_coord_func(self: MiddleOutScheme, level: int) -> types.FunctionType:
 def ol_get_segment_coord_func(self: MiddleOutScheme, level: int) -> types.FunctionType:
     def impl(self: MiddleOutScheme, level: int) -> tuple[float, float]:
         return get_segment_coord_func(self, level)
+
+    return impl
+
+
+@overload_method(MiddleOutSchemeTemplate, "get_segment_coords_so_far")
+def ol_get_segment_coords_so_far_func(
+    self: MiddleOutScheme,
+    level: int,
+) -> types.FunctionType:
+    def impl(self: MiddleOutScheme, level: int) -> tuple[np.ndarray, np.ndarray]:
+        return get_segment_coords_so_far_func(self, level)
 
     return impl
 
