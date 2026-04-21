@@ -194,13 +194,14 @@ class PulseSignalConfig:
         damping_factor = 0.8
         for _ in range(max_iter + 1):
             final_signal = scaled_noise_ts + current_signal_scale * sig_template
-            measured_snr = self._calibrate_snr(final_signal, sig_variance)
+            final_signal_f32 = final_signal.astype(np.float32)
+            measured_snr = self._calibrate_snr(final_signal_f32, sig_variance)
             snr_diff = measured_snr - self.snr
             if abs(snr_diff) < tol:
                 break
             # Additive correction: scale_new = scale_old - diff / sensitivity
             current_signal_scale += damping_factor * (-snr_diff / snr_template)
-        return TimeSeries(final_signal, sig_variance, self.dt)
+        return TimeSeries(final_signal_f32, sig_variance, self.dt)
 
     def _calibrate_snr(
         self,
