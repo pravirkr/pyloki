@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from numba import njit, types
 
@@ -195,7 +197,6 @@ def circ_taylor_branch_batch(
     nbins: int,
     eta: float,
     poly_order: int,
-    param_limits: np.ndarray,
     branch_max: int,
     minimum_snap_cells: float,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -241,7 +242,7 @@ def circ_taylor_branch_batch(
     f0_batch = leaves_batch[:, -1, 0]
     basis_flag_batch = leaves_batch[:, -1, 1]
 
-    dparam_new_batch_actual = psr_utils.poly_taylor_step_d_vec(
+    dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
         n_params,
         t_obs_minus_t_ref,
         nbins,
@@ -251,19 +252,10 @@ def circ_taylor_branch_batch(
     )
     shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
         dparam_cur_batch,
-        dparam_new_batch_actual,
+        dparam_new_batch,
         t_obs_minus_t_ref,
         nbins,
         f0_batch,
-        t_ref=0,
-    )
-    dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
-        n_params,
-        t_obs_minus_t_ref,
-        nbins,
-        eta,
-        f0_batch,
-        param_limits,
         t_ref=0,
     )
 
@@ -895,20 +887,18 @@ def poly_circular_resolve_batch(
 @njit(cache=True, fastmath=True)
 def generate_bp_circ_taylor(
     param_arr: types.ListType,
-    dparams_lim: np.ndarray,
-    param_limits: np.ndarray,
+    dparams_act: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,
     eta: float,
     ref_seg: int,
-    minimum_snap_cells: float,
     use_moving_grid: bool,
     use_conservative_tile: bool,
     use_cheby_coarsening: bool = True,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor circular pruning search."""
-    n_params = len(dparams_lim)
+    n_params = len(dparams_act)
     if n_params != 5:
         msg = "Circular branching pattern requires exactly 5 parameters."
         raise ValueError(msg)
@@ -922,7 +912,7 @@ def generate_bp_circ_taylor(
     dparam_cur_next = np.empty((n_freqs, n_params), dtype=np.float64)
     dparam_d_vec = np.empty((n_freqs, n_params + 1), dtype=np.float64)
     for i in range(n_freqs):
-        dparam_cur_batch[i, :n_params] = dparams_lim
+        dparam_cur_batch[i, :n_params] = dparams_act
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, n_params - 1] *= C_VAL / f0_batch
 
@@ -936,7 +926,7 @@ def generate_bp_circ_taylor(
         )
         _, t_obs_minus_t_ref = coord_cur
 
-        dparam_new_batch_actual = psr_utils.poly_taylor_step_d_vec(
+        dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
             n_params,
             t_obs_minus_t_ref,
             nbins,
@@ -947,20 +937,10 @@ def generate_bp_circ_taylor(
         )
         shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
             dparam_cur_batch,
-            dparam_new_batch_actual,
+            dparam_new_batch,
             t_obs_minus_t_ref,
             nbins,
             f0_batch,
-            t_ref=0,
-            use_cheby=use_cheby_coarsening,
-        )
-        dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
-            n_params,
-            t_obs_minus_t_ref,
-            nbins,
-            eta,
-            f0_batch,
-            param_limits,
             t_ref=0,
             use_cheby=use_cheby_coarsening,
         )
@@ -974,16 +954,14 @@ def generate_bp_circ_taylor(
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
                 ratio = dparam_cur_batch[i, j] / dparam_new_batch[i, j]
-                num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
+                num_points = max(1, math.ceil(ratio - FLOAT_EPSILON))
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
                 if j == 1:
                     n_branch_snap[i] = num_points
 
         # Determine validation fraction
-        snap_val = param_limits[1, 1]  # Take max
-        dsnap = dparam_cur_next[:, 1]
-        snap_active_mask = np.abs(snap_val) > (minimum_snap_cells * dsnap)
+        snap_active_mask = n_branch_snap > 1
         # Apply 0.5x if this is the first time snap becomes active
         just_active = snap_active_mask & (~snap_first_branched)
         # Correction factor array

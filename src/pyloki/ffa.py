@@ -81,7 +81,7 @@ class FFAPlan:
         self.ncoords = np.empty(levels, dtype=np.int32)
         self.ncoords_lb = np.empty(levels, dtype=np.float32)
         self.dparams = np.empty((levels, self.n_params), dtype=np.float32)
-        self.dparams_limited = np.empty((levels, self.n_params), dtype=np.float32)
+        self.dparams_actual = np.empty((levels, self.n_params), dtype=np.float32)
         self.param_counts = np.empty((levels, self.n_params), dtype=np.int32)
         self.params = []
         for i_level in range(levels):
@@ -90,13 +90,13 @@ class FFAPlan:
             nsegments_cur = self.cfg.nsamps // segment_len
             param_counts_cur = self.cfg.get_param_grid_count(i_level)
             dparam_arr = self.cfg.get_dparams(i_level)
-            dparam_arr_lim = self.cfg.get_dparams(i_level)
+            dparam_arr_actual = self.cfg.get_dparams_actual(i_level)
             param_arr = self.cfg.get_param_arr(dparam_arr)
             self.segment_lens[i_level] = segment_len
             self.nsegments[i_level] = nsegments_cur
             self.tsegments[i_level] = tsegment
             self.dparams[i_level, :] = dparam_arr
-            self.dparams_limited[i_level, :] = dparam_arr_lim
+            self.dparams_actual[i_level, :] = dparam_arr_actual
             self.param_counts[i_level, :] = param_counts_cur
             self.ncoords[i_level] = np.prod([len(p) for p in param_arr])
             self.ncoords_lb[i_level] = np.round(np.log2(self.ncoords[i_level]), 2)
@@ -267,9 +267,9 @@ class DynamicProgramming:
         return self._dparams
 
     @property
-    def dparams_limited(self) -> np.ndarray:
-        """:class:`~numpy.ndarray`: Paramater step sizes at the current FFA level."""
-        return self._dparams_limited
+    def dparams_actual(self) -> np.ndarray:
+        """:class:`~numpy.ndarray`: Actual parameter step sizes at the current level."""
+        return self._dparams_actual
 
     @property
     def param_arr(self) -> list[np.ndarray]:
@@ -321,7 +321,7 @@ class DynamicProgramming:
         self._param_arr = param_arr
         self._param_grid_count = self.cfg.get_param_grid_count(self.ffa_level)
         self._dparams = dparams
-        self._dparams_limited = self.cfg.get_dparams_limited(self.ffa_level)
+        self._dparams_actual = self.cfg.get_dparams_actual(self.ffa_level)
         self._tseg = self.cfg.tseg_brute
         logger.info(
             f"ffa level: {self.ffa_level:2d}, leaves: {self.leaves_lb:.2f}, "
@@ -376,7 +376,7 @@ class DynamicProgramming:
         self._param_arr = param_arr_cur
         self._param_grid_count = self.cfg.get_param_grid_count(self.ffa_level)
         self._dparams = dparams
-        self._dparams_limited = self.cfg.get_dparams_limited(self.ffa_level)
+        self._dparams_actual = self.cfg.get_dparams_actual(self.ffa_level)
         self._tseg *= 2
 
     def get_fold_norm(

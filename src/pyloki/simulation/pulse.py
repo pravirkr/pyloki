@@ -2,12 +2,116 @@ from __future__ import annotations
 
 import attrs
 import numpy as np
+from numba import njit, prange
 from scipy import stats
 
 from pyloki.core import brutefold, brutefold_single
 from pyloki.detection.scoring import boxcar_snr_1d
 from pyloki.io.timeseries import TimeSeries
 from pyloki.simulation.modulate import Modulating, type_to_mods
+
+
+def build_cdf_lut(
+    shape: str,
+    width: float,
+    pos: float,
+    ngrid: int = 4096,
+) -> np.ndarray:
+    phase = np.linspace(0.0, 1.0, ngrid, endpoint=False)
+    if shape == "boxcar":
+        rv = stats.uniform(loc=pos, scale=width)
+    elif shape == "gaussian":
+        sigma = width / (2 * np.sqrt(2 * np.log(10)))
+        rv = stats.norm(loc=pos, scale=sigma)
+    elif shape == "von_mises":
+        kappa = np.log(2.0) / (2.0 * np.sin(np.pi * width / 2.0) ** 2)
+        rv = stats.vonmises(loc=pos, kappa=kappa)
+    else:
+        msg = f"Unknown shape: {shape}"
+        raise ValueError(msg)
+    cdf = rv.cdf(phase).astype(np.float64)
+    # periodic wrap for interpolation
+    cdf = np.concatenate([cdf, cdf[:1]])
+    return cdf.astype(np.float32)
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def generate_pulse_template(
+    proper_time: np.ndarray,
+    dt: float,
+    period: float,
+    cdf_lut: np.ndarray,
+) -> np.ndarray:
+    n = proper_time.shape[0]
+    ngrid = cdf_lut.shape[0] - 1  # because of wrap element
+    out = np.empty(n, dtype=np.float32)
+    inv_period = 1.0 / period
+    for i in prange(n):
+        t0 = proper_time[i]
+        t1 = t0 + dt
+        # phases
+        p0 = (t0 % period) * inv_period
+        p1 = (t1 % period) * inv_period
+        if p1 > p0:
+            # LUT coordinates
+            x0 = p0 * ngrid
+            x1 = p1 * ngrid
+            i0 = int(x0)
+            i1 = int(x1)
+            f0 = x0 - i0
+            f1 = x1 - i1
+            # linear interpolation
+            c0 = (1.0 - f0) * cdf_lut[i0] + f0 * cdf_lut[i0 + 1]
+            c1 = (1.0 - f1) * cdf_lut[i1] + f1 * cdf_lut[i1 + 1]
+            out[i] = c1 - c0
+        else:
+            out[i] = 0.0
+    return out
+
+
+@njit(["f8(f4[::1], f4[::1], f4[::1], f8, f8, i8, f8, f8)"], cache=True, fastmath=True)
+def calibrate_scale_on_folds(
+    folded_noise_vals: np.ndarray,
+    folded_noise_var: np.ndarray,
+    folded_tmpl_vals: np.ndarray,
+    snr_target: float,
+    initial_scale: float,
+    max_iter: int = 10,
+    tol: float = 1e-3,
+    damping: float = 0.8,
+) -> float:
+    """Compute iterative SNR calibration entirely on folded profiles.
+
+    Because fold() is linear:
+        fold(noise + scale * template) = fold(noise) + scale * fold(template)
+    """
+    nbins = folded_noise_vals.shape[0]
+    box_widths = np.arange(1, nbins // 2)
+    tmpl_norm = np.empty(nbins, dtype=np.float32)
+    noise_norm = np.empty(nbins, dtype=np.float32)
+    for i in range(nbins):
+        tmpl_norm[i] = folded_tmpl_vals[i] / np.sqrt(folded_noise_var[i])
+        noise_norm[i] = folded_noise_vals[i] / np.sqrt(folded_noise_var[i])
+
+    # Measure SNR of template alone to get sensitivity: d(SNR)/d(scale)
+    # This is the reference slope for the Newton-like correction.
+    snr_template = np.max(boxcar_snr_1d(tmpl_norm, box_widths, 1))
+
+    current_scale = initial_scale
+    combined_norm = np.empty(nbins, dtype=np.float32)
+    for _ in range(max_iter):
+        for i in range(nbins):
+            combined_norm[i] = noise_norm[i] + (current_scale * tmpl_norm[i])
+        measured_snr = np.max(boxcar_snr_1d(combined_norm, box_widths, 1))
+        snr_diff = measured_snr - snr_target
+        if snr_diff * snr_diff < tol * tol:  # abs(snr_diff) < tol, avoid branch
+            break
+        # Newton correction: SNR ≈ linear in scale around current point,
+        # slope = snr_template (sensitivity per unit scale).
+        # Damped to avoid overshooting when noise makes SNR non-monotone.
+        current_scale -= damping * snr_diff / snr_template
+
+    return current_scale
 
 
 @attrs.define(auto_attribs=True, kw_only=True)
@@ -97,7 +201,7 @@ class PulseSignalConfig:
         }
         return PulseSignalConfig(**new_checked)
 
-    def generate_old(
+    def generate_simple(
         self,
         shape: str = "gaussian",
         phi0: float = 0.5,
@@ -126,7 +230,7 @@ class PulseSignalConfig:
         signal_v = np.ones(self.nsamps) * stdnoise**2
         return TimeSeries(signal, signal_v, self.dt)
 
-    def generate(
+    def generate_old(
         self,
         shape: str = "gaussian",
         phi0: float = 0.5,
@@ -202,6 +306,104 @@ class PulseSignalConfig:
             # Additive correction: scale_new = scale_old - diff / sensitivity
             current_signal_scale += damping_factor * (-snr_diff / snr_template)
         return TimeSeries(final_signal_f32, sig_variance, self.dt)
+
+    def generate(
+        self,
+        shape: str = "gaussian",
+        phi0: float = 0.5,
+        max_iter: int = 5,
+        tol: float = 1e-2,
+    ) -> TimeSeries:
+        """Generate a periodic timeseries with a given shape and phase.
+
+        The signal is generated by iteratively adjusting the amplitude of the signal
+        to match the desired SNR.
+
+        Parameters
+        ----------
+        shape : str, optional
+            Shape of the pulse, by default "gaussian"
+        phi0 : float, optional
+            Phase of the pulse, by default 0.5
+        max_iter : int, optional
+            Maximum number of iterations, by default 5
+        tol : float, optional
+             Stop iterating if |measured_snr - snr_target| < tol, by default 1e-2
+
+        Returns
+        -------
+        TimeSeries
+            A simulated timeseries with the desired SNR.
+        """
+        rng = np.random.default_rng()
+        ngrid = max(4096, int(100 / self.ducy))
+        cdf_lut = build_cdf_lut(shape, self.ducy, phi0, ngrid=ngrid)
+        sig_template = generate_pulse_template(
+            self.proper_time,
+            self.dt,
+            self.period,
+            cdf_lut,
+        )
+        noise_ts = rng.standard_normal(size=self.nsamps, dtype=np.float32)
+        sig_variance_unit = np.ones(self.nsamps, dtype=np.float32)
+
+        nbins = self.fold_bins_ideal
+        box_widths = np.arange(1, nbins // 2)
+        folded_noise = brutefold(
+            noise_ts,
+            sig_variance_unit,
+            self.proper_time,
+            1.0 / self.period,
+            1,
+            nbins,
+        ).squeeze()
+
+        folded_tmpl = brutefold(
+            sig_template,
+            sig_variance_unit,
+            self.proper_time,
+            1.0 / self.period,
+            1,
+            nbins,
+        ).squeeze()
+        folded_noise_vals = folded_noise[0]
+        folded_noise_var = folded_noise[1]
+        folded_tmpl_vals = folded_tmpl[0]
+
+        # Integrate off-pulse noise
+        center_bin = round(phi0 * nbins) % nbins
+        width_bins = max(1, round(self.ducy * nbins))
+        on_pulse_indices = center_bin - (width_bins // 2) + np.arange(width_bins)
+        on_pulse_indices = on_pulse_indices % nbins
+        off_pulse_mask = np.ones(nbins, dtype=bool)
+        off_pulse_mask[on_pulse_indices] = False
+
+        noise_scale = 1.0 / np.std(folded_noise_vals[off_pulse_mask])
+
+        folded_noise_vals_scaled = folded_noise_vals * noise_scale
+        folded_noise_var_scaled = folded_noise_var * noise_scale**2
+        folded_tmpl_vals_phys = folded_tmpl_vals  # template scale is separate
+
+        # Get first guess for signal scale
+        tmpl_norm = folded_tmpl_vals_phys / np.sqrt(folded_noise_var_scaled)
+        snr_template = np.max(boxcar_snr_1d(tmpl_norm, box_widths, 1))
+        initial_scale = (self.snr / snr_template) * noise_scale
+
+        calibrated_scale = calibrate_scale_on_folds(
+            folded_noise_vals_scaled.astype(np.float32),
+            folded_noise_var_scaled.astype(np.float32),
+            folded_tmpl_vals_phys.astype(np.float32),
+            self.snr,
+            initial_scale,
+            max_iter,
+            tol,
+            damping=0.8,
+        )
+
+        final_signal = noise_scale * noise_ts + calibrated_scale * sig_template
+        final_signal_f32 = final_signal.astype(np.float32)
+        final_variance = np.full(self.nsamps, noise_scale**2, dtype=np.float32)
+        return TimeSeries(final_signal_f32, final_variance, self.dt)
 
     def _calibrate_snr(
         self,

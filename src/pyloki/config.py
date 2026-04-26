@@ -148,7 +148,7 @@ class ParamLimits:
     @classmethod
     def from_circular(
         cls,
-        freq: float,
+        freq: float | tuple[float, float],
         p_orb_min: float,
         m_c: float,
         m_p: float = 1.4,
@@ -158,8 +158,9 @@ class ParamLimits:
 
         Parameters
         ----------
-        freq : float
-            Expected intrinsic spin frequency of the orbit (in Hz).
+        freq : float | tuple[float, float]
+            Expected intrinsic spin frequency of the orbit (in Hz). If a tuple,
+            it represents the range of frequencies to search.
         p_orb_min : float
             Minimum orbital period to cover (in seconds).
         m_c : float
@@ -181,7 +182,11 @@ class ParamLimits:
         max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
         bounds = [(-d, d) for d in max_derivs[2:][::-1]]
         freq_shift = max_derivs[1] / C_VAL
-        bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
+        if isinstance(freq, (tuple, list, np.ndarray)):
+            freq_min, freq_max = freq
+            bounds.append((freq_min * (1 - freq_shift), freq_max * (1 + freq_shift)))
+        else:
+            bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
         return cls(bounds)
 
     @classmethod
@@ -219,17 +224,22 @@ class ParamLimits:
     @classmethod
     def from_upper(
         cls,
-        true_params: list[float],
-        d_range: tuple[float, float],
+        freq: float | tuple[float, float],
+        true_d_params: list[float],
+        d_upper_limits: tuple[float, float],
         t_obs: float,
     ) -> ParamLimits:
         """Generate search parameter limits from upper bounds.
 
         Parameters
         ----------
-        true_params : list[float]
-            True values of the search parameters.
-        d_range : tuple[float, float]
+        freq : float | tuple[float, float]
+            Expected intrinsic spin frequency of the orbit (in Hz). If a tuple,
+            it represents the range of frequencies to search.
+        true_d_params : list[float]
+            True values of the search parameters in decreasing derivative
+            order (till acceleration).
+        d_upper_limits : tuple[float, float]
             Range of the upper parameter to search (min, max).
         t_obs : float
             Total observation time (in seconds).
@@ -239,13 +249,13 @@ class ParamLimits:
         ParamLimits
             Object with the search parameter limits.
         """
-        nparams = len(true_params)
+        nparams = len(true_d_params) + 1
         dvec = np.zeros(nparams + 1, dtype=np.float64)
-        dvec[1:-2] = true_params[1:-1]  # till acceleration
-        dvec[0] = d_range[0]
+        dvec[1:-2] = true_d_params[1:]  # till acceleration
+        dvec[0] = d_upper_limits[0]
         dvec_min_up = transforms.shift_taylor_params(dvec, t_obs / 2)
         dvec_min_low = transforms.shift_taylor_params(dvec, -t_obs / 2)
-        dvec[0] = d_range[1]
+        dvec[0] = d_upper_limits[1]
         dvec_max_up = transforms.shift_taylor_params(dvec, t_obs / 2)
         dvec_max_low = transforms.shift_taylor_params(dvec, -t_obs / 2)
         dvec_bound_low = np.minimum(dvec_min_low, dvec_max_low)
@@ -255,9 +265,11 @@ class ParamLimits:
         ]
         bounds = bounds_d[:-2]
         freq_shift = dvec_bound_up[-2] / C_VAL
-        bounds.append(
-            (true_params[-1] * (1 - freq_shift), true_params[-1] * (1 + freq_shift)),
-        )
+        if isinstance(freq, (tuple, list, np.ndarray)):
+            freq_min, freq_max = freq
+            bounds.append((freq_min * (1 - freq_shift), freq_max * (1 + freq_shift)))
+        else:
+            bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
         return cls(bounds)
 
     @classmethod
@@ -531,15 +543,16 @@ class PulsarSearchConfig:
             use_cheby=use_cheby_coarsening,
         )
 
-    def get_dparams_limited(
+    def get_dparams_actual(
         self,
         ffa_level: int,
         use_cheby_coarsening: bool = True,
     ) -> np.ndarray:
-        """Return parameter spacings limited by the search domain.
+        """Return the exact, physically tiled parameter spacings.
 
-        The raw spacings returned by ``get_dparams`` are clipped so they do not
-        exceed the allowed parameter range in each dimension.
+        Calculates the actual grid spacings used at a given FFA level to ensure
+        contiguous tiling of the parameter space. These values are mathematically
+        guaranteed to not exceed the domain width.
 
         Parameters
         ----------
@@ -551,30 +564,36 @@ class PulsarSearchConfig:
         Returns
         -------
         np.ndarray
-            Parameter spacings limited by the search domain.
+            Actual parameter spacings used for tiling.
         """
-        dparams = self.get_dparams(ffa_level, use_cheby_coarsening)
-        dparams_lim = np.empty_like(dparams)
+        param_grid_count = self.get_param_grid_count(ffa_level, use_cheby_coarsening)
+        dparams_act = np.zeros(self.nparams, dtype=np.float64)
         for iparam in range(self.nparams):
             vmin, vmax = self.param_limits[iparam]
-            domain_width = vmax - vmin
-            dparams_lim[iparam] = min(domain_width, dparams[iparam])
-        return dparams_lim
+            grid_count = param_grid_count[iparam]
+            dparams_act[iparam] = (vmax - vmin) / grid_count
+        return dparams_act
 
-    def get_param_grid_count(self, ffa_level: int) -> np.ndarray:
+    def get_param_grid_count(
+        self,
+        ffa_level: int,
+        use_cheby_coarsening: bool = True,
+    ) -> np.ndarray:
         """Get the number of points in the parameter grid for the given FFA level.
 
         Parameters
         ----------
         ffa_level : int
             FFA level for which to compute the parameter grid count.
+        use_cheby_coarsening : bool, optional
+            Whether to use Chebyshev coarsening factor, by default True.
 
         Returns
         -------
         np.ndarray
             Array with the number of points in the parameter grid
         """
-        dparams = self.get_dparams(ffa_level)
+        dparams = self.get_dparams(ffa_level, use_cheby_coarsening)
         count = np.empty(self.nparams, dtype=np.int64)
         for iparam in range(self.nparams):
             count[iparam] = psr_utils.range_param_count(
@@ -690,7 +709,7 @@ class PulsarSearchConfig:
 
     def generate_branching_pattern_approx(
         self,
-        kind: str = "taylor",
+        kind: str = "poly_taylor_moving",
         ref_seg: int = 0,
         isuggest: int = 0,
     ) -> np.ndarray:
@@ -707,13 +726,13 @@ class PulsarSearchConfig:
         nsegments_ffa = int(np.ceil(self.nsamps / self.bseg_ffa))
         dparams = self.get_dparams(self.niters_ffa)
         param_arr = self.get_param_arr(dparams)
-        dparams_lim = self.get_dparams_limited(self.niters_ffa)
+        dparams_act = self.get_dparams_actual(self.niters_ffa)
 
         generate_funcs = {
-            "taylor": (generate_bp_poly_taylor_approx, True),
-            "chebyshev": (generate_bp_poly_chebyshev_approx, True),
-            "taylor_fixed": (generate_bp_poly_taylor_approx, False),
-            "chebyshev_fixed": (generate_bp_poly_chebyshev_approx, False),
+            "poly_taylor_moving": (generate_bp_poly_taylor_approx, True),
+            "poly_taylor_fixed": (generate_bp_poly_taylor_approx, False),
+            "poly_chebyshev_moving": (generate_bp_poly_chebyshev_approx, True),
+            "poly_chebyshev_fixed": (generate_bp_poly_chebyshev_approx, False),
         }
 
         try:
@@ -724,8 +743,7 @@ class PulsarSearchConfig:
 
         return generate_func(
             param_arr,
-            dparams_lim,
-            self.param_limits,
+            dparams_act,
             self.tseg_ffa,
             nsegments_ffa,
             self.nbins,
@@ -739,7 +757,7 @@ class PulsarSearchConfig:
 
     def generate_branching_pattern(
         self,
-        kind: str = "taylor",
+        kind: str = "poly_taylor_moving",
         ref_seg: int = 0,
         use_cheby_coarsening: bool = True,
     ) -> np.ndarray:
@@ -751,30 +769,34 @@ class PulsarSearchConfig:
         Parameters
         ----------
         kind : str
-            The kind of branching pattern to generate.
+            The kind of branching pattern to generate. Must be one of:
+            "poly_taylor_moving", "poly_taylor_fixed", "poly_chebyshev_moving",
+            "poly_chebyshev_fixed", "circ_taylor_moving", "circ_taylor_fixed"
         ref_seg : int
             The reference segment to generate the branching pattern for.
         use_cheby_coarsening : bool, optional
             Whether to use Chebyshev coarsening factor, by default True.
-            Only used for kind = "Taylor" or "Taylor_fixed".
+            Only used for kind = "poly_taylor_moving" or "poly_taylor_fixed".
 
         Returns
         -------
         np.ndarray
             The branching pattern for the pruning search.
         """
-        if kind in {"chebyshev", "chebyshev_fixed"}:
+        if kind in {"poly_chebyshev_moving", "poly_chebyshev_fixed"}:
             use_cheby_coarsening = True
         nsegments_ffa = int(np.ceil(self.nsamps / self.bseg_ffa))
         dparams = self.get_dparams(self.niters_ffa, use_cheby_coarsening)
         param_arr = self.get_param_arr(dparams)
-        dparams_lim = self.get_dparams_limited(self.niters_ffa, use_cheby_coarsening)
+        dparams_act = self.get_dparams_actual(self.niters_ffa, use_cheby_coarsening)
 
         generate_funcs = {
-            "taylor": (generate_bp_poly_taylor, True),
-            "chebyshev": (generate_bp_poly_chebyshev, True),
-            "taylor_fixed": (generate_bp_poly_taylor, False),
-            "chebyshev_fixed": (generate_bp_poly_chebyshev, False),
+            "poly_taylor_moving": (generate_bp_poly_taylor, True),
+            "poly_taylor_fixed": (generate_bp_poly_taylor, False),
+            "poly_chebyshev_moving": (generate_bp_poly_chebyshev, True),
+            "poly_chebyshev_fixed": (generate_bp_poly_chebyshev, False),
+            "circ_taylor_moving": (generate_bp_circ_taylor, True),
+            "circ_taylor_fixed": (generate_bp_circ_taylor, False),
         }
 
         try:
@@ -785,66 +807,12 @@ class PulsarSearchConfig:
 
         return generate_func(
             param_arr,
-            dparams_lim,
-            self.param_limits,
+            dparams_act,
             self.tseg_ffa,
             nsegments_ffa,
             self.nbins,
             self.eta,
             ref_seg,
-            use_moving_grid=use_moving_grid,
-            use_conservative_tile=self.use_conservative_tile,
-            use_cheby_coarsening=use_cheby_coarsening,
-        )
-
-    def generate_branching_pattern_circular(
-        self,
-        kind: str = "taylor",
-        ref_seg: int = 0,
-        use_cheby_coarsening: bool = True,
-    ) -> np.ndarray:
-        """Generate the exact branching pattern for the circular pruning search.
-
-        This tracks the exact number of branches per node to compute the average
-        branching factor.
-
-        Parameters
-        ----------
-        kind : str
-            The kind of branching pattern to generate.
-        ref_seg : int
-            The reference segment to generate the branching pattern for.
-
-        Returns
-        -------
-        np.ndarray
-            The branching pattern for the pruning search.
-        """
-        nsegments_ffa = int(np.ceil(self.nsamps / self.bseg_ffa))
-        dparams = self.get_dparams(self.niters_ffa)
-        param_arr = self.get_param_arr(dparams)
-        dparams_lim = self.get_dparams_limited(self.niters_ffa)
-
-        generate_funcs = {
-            "taylor": (generate_bp_circ_taylor, True),
-            "taylor_fixed": (generate_bp_circ_taylor, False),
-        }
-        try:
-            generate_func, use_moving_grid = generate_funcs[kind]
-        except KeyError:
-            msg = f"Invalid kind: {kind}"
-            raise ValueError(msg) from None
-
-        return generate_func(
-            param_arr,
-            dparams_lim,
-            self.param_limits,
-            self.tseg_ffa,
-            nsegments_ffa,
-            self.nbins,
-            self.eta,
-            ref_seg,
-            self.minimum_snap_cells,
             use_moving_grid=use_moving_grid,
             use_conservative_tile=self.use_conservative_tile,
             use_cheby_coarsening=use_cheby_coarsening,

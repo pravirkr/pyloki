@@ -5,7 +5,7 @@ import math
 import numpy as np
 from numba import njit, vectorize
 
-from pyloki.utils import maths, transforms
+from pyloki.utils import maths
 from pyloki.utils.misc import C_VAL, FLOAT_EPSILON, ZERO_EPSILON
 
 
@@ -129,31 +129,6 @@ def poly_taylor_step_d(
 
 
 @njit(cache=True, fastmath=True)
-def poly_taylor_step_d_limited(
-    poly_order: int,
-    tobs: float,
-    nbins: int,
-    eta: float,
-    f0: float,
-    param_limits: np.ndarray,
-    t_ref: float = 0,
-    use_cheby: bool = True,
-) -> np.ndarray:
-    """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (scalar)."""
-    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref, use_cheby)
-    dparams = dparams_f * C_VAL / f0
-    for iparam in range(poly_order - 1):
-        param_min, param_max = param_limits[iparam]
-        domain_width = param_max - param_min
-        dparams[iparam] = min(domain_width, dparams[iparam])
-    v_min = (1 - param_limits[poly_order - 1][1] / f0) * C_VAL
-    v_max = (1 - param_limits[poly_order - 1][0] / f0) * C_VAL
-    domain_width = v_max - v_min
-    dparams[poly_order - 1] = min(domain_width, dparams[poly_order - 1])
-    return dparams
-
-
-@njit(cache=True, fastmath=True)
 def poly_taylor_step_d_vec(
     poly_order: int,
     tobs: float,
@@ -166,35 +141,6 @@ def poly_taylor_step_d_vec(
     """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (vector)."""
     dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref, use_cheby)
     return dparams_f[np.newaxis, :] * C_VAL / f_max[:, np.newaxis]
-
-
-@njit(cache=True, fastmath=True)
-def poly_taylor_step_d_vec_limited(
-    poly_order: int,
-    tobs: float,
-    nbins: int,
-    eta: float,
-    f0_batch: np.ndarray,
-    param_limits: np.ndarray,
-    t_ref: float = 0,
-    use_cheby: bool = True,
-) -> np.ndarray:
-    """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (vector)."""
-    dparams_f = poly_taylor_step_f(poly_order, tobs, nbins, eta, t_ref, use_cheby)
-    dparams = dparams_f[np.newaxis, :] * C_VAL / f0_batch[:, np.newaxis]
-    n_batch = f0_batch.shape[0]
-    for iparam in range(poly_order - 1):
-        param_min, param_max = param_limits[iparam]
-        domain_width = param_max - param_min
-        for i in range(n_batch):
-            dparams[i, iparam] = min(domain_width, dparams[i, iparam])
-    # velocity
-    for i in range(n_batch):
-        v_min = (1 - param_limits[poly_order - 1][1] / f0_batch[i]) * C_VAL
-        v_max = (1 - param_limits[poly_order - 1][0] / f0_batch[i]) * C_VAL
-        domain_width = v_max - v_min
-        dparams[i, poly_order - 1] = min(domain_width, dparams[i, poly_order - 1])
-    return dparams
 
 
 @njit(cache=True, fastmath=True)
@@ -322,36 +268,6 @@ def poly_cheb_step_vec(
 
 
 @njit(cache=True, fastmath=True)
-def poly_cheb_step_vec_limited(
-    n_params: int,
-    scale_cur: float,
-    nbins: int,
-    eta: float,
-    f0_batch: np.ndarray,
-    param_limits: np.ndarray,
-) -> np.ndarray:
-    dphi = eta / nbins
-    dparams_f = np.zeros(n_params, np.float64) + dphi
-    dparams = dparams_f[np.newaxis, :] * C_VAL / f0_batch[:, np.newaxis]
-    n_batch = f0_batch.shape[0]
-    param_limits_d = np.empty((n_batch, n_params, 2), dtype=np.float64)
-    for i in range(n_params):
-        param_limits_d[:, i, 0] = param_limits[i][0]
-        param_limits_d[:, i, 1] = param_limits[i][1]
-    param_limits_d[:, -1, 0] = (1 - param_limits[n_params - 1][1] / f0_batch) * C_VAL
-    param_limits_d[:, -1, 1] = (1 - param_limits[n_params - 1][0] / f0_batch) * C_VAL
-    param_limits_cheby = transforms.taylor_to_chebyshev_limits_full(
-        param_limits_d,
-        scale_cur,
-    )
-    for i in range(n_batch):
-        for j in range(n_params):
-            param_min, param_max = param_limits_cheby[i, j]
-            dparams[i, j] = min(param_max - param_min, dparams[i, j])
-    return dparams
-
-
-@njit(cache=True, fastmath=True)
 def poly_cheb_shift_vec(
     dparam_old: np.ndarray,
     dparam_new: np.ndarray,
@@ -368,14 +284,16 @@ def branch_param(
     dparam_cur: float,
     dparam_new: float,
 ) -> tuple[np.ndarray, float]:
-    """Generate refined parameter centres around a current value.
+    """Perfectly sub-divide a parent parameter cell into contiguous child cells.
 
-    This function subdivides the current parameter spacing into a finer grid
-    centred on ``param_cur``. The refinement is controlled by the ratio between
-    the current grid spacing and the desired new spacing.
+    DESIGN NOTE: Exact Contiguous Splitting
+    This physically partitions the parent cell into `num_points` equal sub-cells.
+    The outermost edges of the extreme child cells sit perfectly flush with the
+    boundaries of the parent cell, ensuring zero overlap and zero gaps between
+    adjacent branches in the hierarchical tree.
 
     The function assumes that parameter values outside the allowed search
-    domain will be handled elsewhere (e.g. by a validation step). Therefore
+    domain will be handled elsewhere (e.g. in the FFA init step). Therefore
     it does not enforce parameter limits internally.
 
     Parameters
@@ -383,9 +301,8 @@ def branch_param(
     param_cur : float
         Current parameter value (centre of the parent cell).
     dparam_cur : float
-        Current grid spacing of the parameter dimension. This represents the
-        characteristic spacing between neighbouring grid points at the
-        current search stage.
+        Current grid spacing of the parameter dimension. Should be trunctaed as per
+        search range.
     dparam_new : float
         Desired grid spacing for the refined search stage. The actual spacing
         used may differ slightly in order to maintain symmetry.
@@ -407,21 +324,24 @@ def branch_param(
     if dparam_cur <= ZERO_EPSILON or dparam_new <= ZERO_EPSILON:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
-    # Determine number of refined points
-    num_points = int(
-        np.ceil(((dparam_cur) / dparam_new) - FLOAT_EPSILON),
-    )
-    if num_points <= 0:
-        msg = "Invalid input: ensure dparam_cur > dparam_new."
-        raise ValueError(msg)
-    # Confidence-based symmetric range shrinkage
-    # 0.5 < confidence_const < 1
-    confidence_const = 0.5 * (1 + 1 / num_points)
-    half_range = confidence_const * dparam_cur
-    n = num_points + 2  # Total number of points including outer ends
-    param_arr_new = np.linspace(param_cur - half_range, param_cur + half_range, n)[1:-1]
+    # How many target spans fit inside the parent span?
+    # If dparam_new >= dparam_cur, then num_points = 1
+    ratio = dparam_cur / dparam_new
+    num_points = max(1, math.ceil(ratio - FLOAT_EPSILON))
+    # Exact physical span of the newly created child cells
     dparam_new_actual = dparam_cur / num_points
-    return param_arr_new, dparam_new_actual
+
+    # Find the absolute minimum boundary of the parent cell
+    parent_min = param_cur - (dparam_cur / 2.0)
+
+    # Place the center of the first child cell exactly half a sub-span inward
+    first_center = parent_min + (dparam_new_actual / 2.0)
+    # Generate all child centers
+    out_values = np.zeros(num_points, dtype=np.float64)
+    for i in range(num_points):
+        out_values[i] = first_center + i * dparam_new_actual
+
+    return out_values, dparam_new_actual
 
 
 @njit(cache=True, fastmath=True)
@@ -435,33 +355,27 @@ def branch_param_padded(
     if dparam_cur <= ZERO_EPSILON or dparam_new <= ZERO_EPSILON:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
-    # Compute number of intervals with conservative ceil logic
-    num_points = int(
-        np.ceil(((dparam_cur) / dparam_new) - FLOAT_EPSILON),
-    )
-    if num_points <= 0:
-        msg = "Invalid input: ensure dparam_cur > dparam_new."
-        raise ValueError(msg)
-    # Confidence-based symmetric range shrinkage
-    # 0.5 < confidence_const < 1
-    confidence_const = 0.5 * (1 + 1 / num_points)
-    half_range = confidence_const * dparam_cur
-    start = param_cur - half_range
-    stop = param_cur + half_range
-    num_intervals = num_points + 1
-    step = (stop - start) / num_intervals
-
+    # How many target spans fit inside the parent span?
+    # If dparam_new >= dparam_cur, then num_points = 1
+    ratio = dparam_cur / dparam_new
+    num_points = max(1, math.ceil(ratio - FLOAT_EPSILON))
     branch_max = len(out_values)
     if num_points > branch_max:
         msg = "Invalid input: increase branch_max."
         raise ValueError(msg)
 
-    # Generate points and fill the start of the padded array
-    for i in range(num_points):
-        out_values[i] = start + (i + 1) * step
-
-    # Calculate actual dparam based on generated points
+    # Exact physical span of the newly created child cells
     dparam_new_actual = dparam_cur / num_points
+
+    # Find the absolute minimum boundary of the parent cell
+    parent_min = param_cur - (dparam_cur / 2.0)
+
+    # Place the center of the first child cell exactly half a sub-span inward
+    first_center = parent_min + (dparam_new_actual / 2.0)
+    # Generate all child centers
+    for i in range(num_points):
+        out_values[i] = first_center + i * dparam_new_actual
+
     return dparam_new_actual, num_points
 
 
@@ -475,12 +389,8 @@ def branch_dparam_crackle(
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
     # Compute number of intervals with conservative ceil logic
-    num_points = int(
-        np.ceil(((dparam_cur) / dparam_new) - FLOAT_EPSILON),
-    )
-    if num_points <= 0:
-        msg = "Invalid input: ensure dparam_cur > dparam_new."
-        raise ValueError(msg)
+    ratio = dparam_cur / dparam_new
+    num_points = max(1, math.ceil(ratio - FLOAT_EPSILON))
     if num_points > branch_max:
         msg = "Invalid input: increase branch_max."
         raise ValueError(msg)
@@ -509,40 +419,48 @@ def range_param_count(vmin: float, vmax: float, dv: float) -> int:
     if not (vmin < vmax and dv > 0.0):
         msg = "Invalid input: ensure vmin < vmax and dv > 0.0."
         raise ValueError(msg)
-    if dv > ((vmax - vmin) / 2.0):
+    if dv >= (vmax - vmin):
         return 1
-    return int((vmax - vmin) / dv)
+    return math.ceil((vmax - vmin) / dv)
 
 
 @njit(cache=True, fastmath=True)
 def range_param(vmin: float, vmax: float, dv: float) -> np.ndarray:
-    """Generate an evenly spaced array of values between vmin and vmax.
+    """Generate an array of cell centres that perfectly tile the parameter space.
 
-    Endpoints are excluded. Spacing is uniform, though not guaranteed to be
-    exactly dv if (vmax - vmin) is not a multiple of dv. It ensures symmetry
-    at the cost of a slightly different spacing than dv.
+    DESIGN NOTE: Exact Outset Gridding
+    Older versions used `np.linspace(..., n+2)[1:-1]`, which created an "inset"
+    grid that left unsearched gaps at `vmin` and `vmax`.
+
+    This updated logic recalculates the actual step size (`dv_actual`) based on
+    the ceiling count. It places the first centre exactly `dv_actual / 2` away
+    from `vmin`, and the last centre `dv_actual / 2` away from `vmax`. When combined
+    with their spans during hierarchical stitching, the physical edges of the
+    outermost cells align flawlessly with `vmin` and `vmax`,
+    ensuring 100% space coverage.
 
     Parameters
     ----------
     vmin : float
-        Minimum value of the parameter range.
+        Minimum boundary of the parameter space.
     vmax : float
-        Maximum value of the parameter range.
+        Maximum boundary of the parameter space.
     dv : float
-        Desired step size. Actual spacing may differ slightly.
+        Desired step size. Actual spacing will be <= dv to ensure perfect tiling.
 
     Returns
     -------
     np.ndarray
-        Array of parameter values uniformly spaced between vmin and vmax.
+        Array of parameter cell centres uniformly spaced.
     """
     if not (vmin < vmax and dv > 0):
         msg = "Invalid input: ensure vmin < vmax and dv > 0."
         raise ValueError(msg)
-    if dv > ((vmax - vmin) / 2.0):
+    if dv >= (vmax - vmin):
         return np.array([(vmax + vmin) / 2.0])
-    npoints = int((vmax - vmin) / dv)
-    return np.linspace(vmin, vmax, npoints + 2)[1:-1]
+    npoints = math.ceil((vmax - vmin) / dv)
+    dv_actual = (vmax - vmin) / npoints
+    return np.linspace(vmin + (dv_actual / 2.0), vmax - (dv_actual / 2.0), npoints)
 
 
 @njit(cache=True, fastmath=True)
@@ -569,20 +487,25 @@ def get_nearest_indices_analytical(
 
     Notes
     -----
-    The first actual grid point is at vmin + step, which corresponds to index 0.
-    Since grid starts at 1*step, we subtract 1.0 to zero-index it.
+    Grid: grid[i] = vmin + (i + 0.5) * step, step = range / n_grid.
+    Bin index via direct truncation: idx = int(n_grid * (val - vmin) / range).
     """
     nparams = len(param_set)
     pindex = np.zeros(nparams, dtype=np.int64)
 
     for ip in range(nparams):
         n_grid = param_grid_count[ip]
+        # Guard against single-point or zero-point grids
+        if n_grid <= 1:
+            pindex[ip] = 0
+            continue
         val = param_set[ip]
         vmin = param_limits[ip][0]
         vmax = param_limits[ip][1]
-        step_inv = (n_grid + 1) / (vmax - vmin)
-        raw_idx = ((val - vmin) * step_inv) - 1.0
-        idx = int(raw_idx + 0.5 + FLOAT_EPSILON)  # explicit half-up
+        # Map value to exact bin index
+        raw_idx = n_grid * (val - vmin) / (vmax - vmin)
+        # Pure truncation to map floating position into integer bin
+        idx = int(raw_idx + FLOAT_EPSILON)
         if idx < 0:
             idx = 0
         elif idx >= n_grid:
@@ -605,21 +528,27 @@ def get_nearest_indices_2d_batch(
     accel_min, accel_max = param_limits[-2]
     freq_min, freq_max = param_limits[-1]
     out = np.zeros((n_batch, n_params), dtype=np.int64)
-    step_inv_accel = (n_accel + 1) / (accel_max - accel_min)
-    step_inv_freq = (n_freq + 1) / (freq_max - freq_min)
+    step_inv_accel = n_accel / (accel_max - accel_min) if accel_max > accel_min else 0.0
+    step_inv_freq = n_freq / (freq_max - freq_min) if freq_max > freq_min else 0.0
     for i in range(n_batch):
-        raw_accel_idx = ((accel_batch[i] - accel_min) * step_inv_accel) - 1.0
-        accel_idx = int(raw_accel_idx + 0.5 + FLOAT_EPSILON)  # explicit half-up
-        if accel_idx < 0:
-            accel_idx = 0
-        elif accel_idx >= n_accel:
-            accel_idx = n_accel - 1
-        out[i, -2] = accel_idx
-        raw_freq_idx = ((freq_batch[i] - freq_min) * step_inv_freq) - 1.0
-        freq_idx = int(raw_freq_idx + 0.5 + FLOAT_EPSILON)  # explicit half-up
-        if freq_idx < 0:
-            freq_idx = 0
-        elif freq_idx >= n_freq:
-            freq_idx = n_freq - 1
-        out[i, -1] = freq_idx
+        if step_inv_accel > 0.0:
+            raw_accel_idx = (accel_batch[i] - accel_min) * step_inv_accel
+            accel_idx = int(raw_accel_idx + FLOAT_EPSILON)
+            if accel_idx < 0:
+                accel_idx = 0
+            elif accel_idx >= n_accel:
+                accel_idx = n_accel - 1
+            out[i, -2] = accel_idx
+        else:
+            out[i, -2] = 0
+        if step_inv_freq > 0.0:
+            raw_freq_idx = (freq_batch[i] - freq_min) * step_inv_freq
+            freq_idx = int(raw_freq_idx + FLOAT_EPSILON)
+            if freq_idx < 0:
+                freq_idx = 0
+            elif freq_idx >= n_freq:
+                freq_idx = n_freq - 1
+            out[i, -1] = freq_idx
+        else:
+            out[i, -1] = 0
     return out

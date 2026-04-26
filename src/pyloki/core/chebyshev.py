@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from numba import njit, types
 
@@ -75,7 +77,6 @@ def poly_chebyshev_branch_batch(
     nbins: int,
     eta: float,
     poly_order: int,
-    param_limits: np.ndarray,
     branch_max: int,
     use_conservative_tile: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -108,7 +109,6 @@ def poly_chebyshev_branch_batch(
         Array of leaf parameter sets. Shape is (n_branch, poly_order + 2, 2).
     """
     n_batch, _, _ = leaves_batch.shape
-    _, scale_cur = coord_cur
     n_params = poly_order
     f0_batch = leaves_batch[:, -1, 0]
     basis_flag_batch = leaves_batch[:, -1, 1]
@@ -124,7 +124,7 @@ def poly_chebyshev_branch_batch(
     dparam_cur_batch = param_set_trans_batch[:, :-1, 1]
     alpha0_cur_batch = param_set_trans_batch[:, -1, 0]
 
-    dparam_new_batch_actual = psr_utils.poly_cheb_step_vec(
+    dparam_new_batch = psr_utils.poly_cheb_step_vec(
         n_params,
         nbins,
         eta,
@@ -132,17 +132,9 @@ def poly_chebyshev_branch_batch(
     )
     shift_bins_batch = psr_utils.poly_cheb_shift_vec(
         dparam_cur_batch,
-        dparam_new_batch_actual,
+        dparam_new_batch,
         nbins,
         f0_batch,
-    )
-    dparam_new_batch = psr_utils.poly_cheb_step_vec_limited(
-        n_params,
-        scale_cur,
-        nbins,
-        eta,
-        f0_batch,
-        param_limits,
     )
 
     # Vectorized Padded Branching
@@ -308,6 +300,7 @@ def poly_chebyshev_fixed_resolve_batch(
     )
     return param_idx_batch, relative_phase_batch
 
+
 @njit(cache=True, fastmath=True)
 def poly_chebyshev_ascend_resolve_batch(
     leaves_batch: np.ndarray,
@@ -408,8 +401,7 @@ def poly_chebyshev_report_batch(
 @njit(cache=True, fastmath=True)
 def generate_bp_poly_chebyshev_approx(
     param_arr: types.ListType,
-    dparams_lim: np.ndarray,
-    param_limits: np.ndarray,
+    dparams_act: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,
@@ -421,10 +413,10 @@ def generate_bp_poly_chebyshev_approx(
     branch_max: int = 256,
 ) -> np.ndarray:
     """Generate the approximate branching pattern for the Chebyshev pruning search."""
-    poly_order = len(dparams_lim)
+    poly_order = len(dparams_act)
     snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
     coord_init = snail_scheme.get_coord(0)
-    leaves_init = poly_chebyshev_seed(param_arr, dparams_lim, poly_order, coord_init)
+    leaves_init = poly_chebyshev_seed(param_arr, dparams_act, poly_order, coord_init)
     leaf = leaves_init[itree : itree + 1]  # shape: (1, total_size)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
     for prune_level in range(1, nsegments):
@@ -444,7 +436,6 @@ def generate_bp_poly_chebyshev_approx(
             nbins,
             eta,
             poly_order,
-            param_limits,
             branch_max,
             use_conservative_tile,
         )
@@ -467,8 +458,7 @@ def generate_bp_poly_chebyshev_approx(
 @njit(cache=True, fastmath=True)
 def generate_bp_poly_chebyshev(
     param_arr: types.ListType,
-    dparams_lim: np.ndarray,
-    param_limits: np.ndarray,
+    dparams_act: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,
@@ -479,7 +469,7 @@ def generate_bp_poly_chebyshev(
     use_cheby_coarsening: bool = True,  # noqa: ARG001
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Chebyshev pruning search."""
-    n_params = len(dparams_lim)
+    n_params = len(dparams_act)
     f0_batch = param_arr[-1]
     n_freqs = len(f0_batch)
     snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
@@ -490,7 +480,7 @@ def generate_bp_poly_chebyshev(
 
     dparams_d_full = np.zeros((n_freqs, n_params + 1), dtype=np.float64)
     for i in range(n_freqs):
-        dparams_d_full[i, :n_params] = dparams_lim
+        dparams_d_full[i, :n_params] = dparams_act
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparams_d_full[:, n_params - 1] *= C_VAL / f0_batch
     dparam_cur_batch = transforms.taylor_to_cheby_errors(dparams_d_full, scale_init)
@@ -506,7 +496,6 @@ def generate_bp_poly_chebyshev(
             prune_level,
             moving_grid=use_moving_grid,
         )
-        _, scale_cur = coord_cur
         # Transform dparams to the current segment
         dparam_cur_batch = transforms.shift_cheby_errors(
             dparam_cur_batch,
@@ -514,7 +503,7 @@ def generate_bp_poly_chebyshev(
             coord_prev,
             use_conservative_tile,
         )
-        dparam_new_batch_actual = psr_utils.poly_cheb_step_vec(
+        dparam_new_batch = psr_utils.poly_cheb_step_vec(
             n_params + 1,
             nbins,
             eta,
@@ -522,17 +511,9 @@ def generate_bp_poly_chebyshev(
         )
         shift_bins_batch = psr_utils.poly_cheb_shift_vec(
             dparam_cur_batch,
-            dparam_new_batch_actual,
+            dparam_new_batch,
             nbins,
             f0_batch,
-        )
-        dparam_new_batch = psr_utils.poly_cheb_step_vec_limited(
-            n_params + 1,
-            scale_cur,
-            nbins,
-            eta,
-            f0_batch,
-            param_limits,
         )
 
         n_branches = np.ones(n_freqs, dtype=np.int64)
@@ -543,7 +524,7 @@ def generate_bp_poly_chebyshev(
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
                 ratio = dparam_cur_batch[i, j] / dparam_new_batch[i, j]
-                num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
+                num_points = max(1, math.ceil(ratio - FLOAT_EPSILON))
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
         # Compute average branching factor

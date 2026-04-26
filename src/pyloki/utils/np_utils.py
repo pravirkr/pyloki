@@ -402,3 +402,42 @@ def determine_ref_segs(nsegments: int, n_runs: int) -> list[int]:
     denom = n_runs - 1
 
     return [(i * max_idx) // denom for i in range(n_runs)]
+
+
+def _round_div(num: int, den: int) -> int:
+    """Deterministic integer rounding: round(num / den)."""
+    return (num + den // 2) // den
+
+
+def determine_ref_segs_pareto(nsegments: int, n_runs: int) -> list[int]:
+    """Pareto-optimal reference segments.
+
+    Place n_runs anchors in [0, nsegments-1] at the Pareto-optimal
+    operating point where bilateral depth == half-separation.
+
+    The closed-form margin is:
+        margin = (M - 1) / (2 * n_runs)
+
+    This ensures:
+      - Every anchor has `margin` clean bilateral steps before
+        hitting a wall (bilateral depth = margin)
+      - Adjacent anchors are separated by 2*margin, so their
+        spirals are disjoint for 2*margin steps (half-sep = margin)
+      - B = H at all times — neither objective sacrificed for the other
+
+    Special cases:
+      n_runs=1  → single center anchor [M//2], most sensitive
+      n_runs=M  → every segment [0, 1, ..., M-1]
+    """
+    if not (1 <= n_runs <= nsegments):
+        msg = f"n_runs must be between 1 and {nsegments}"
+        raise ValueError(msg)
+    # Special case: single anchor → center
+    if n_runs == 1:
+        return [nsegments // 2]
+    margin = _round_div(nsegments - 1, 2 * n_runs)
+    lo = margin
+    hi = nsegments - 1 - margin
+    denom = n_runs - 1
+    # Single rational form
+    return [_round_div((denom - i) * lo + i * hi, denom) for i in range(n_runs)]

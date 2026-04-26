@@ -30,7 +30,7 @@ from pyloki.utils.misc import (
     mkdir_p,
     prune_track,
 )
-from pyloki.utils.np_utils import determine_ref_segs
+from pyloki.utils.np_utils import determine_ref_segs_pareto
 from pyloki.utils.snail import MiddleOutScheme
 from pyloki.utils.timing import Timer, nb_time_now
 
@@ -667,7 +667,7 @@ class Pruning:
         self._prune_funcs = PicklableStructRefWrapper[DP_FUNCS_TYPE](
             prune_class,
             self.dyp.param_arr,
-            self.dyp.dparams_limited,
+            self.dyp.dparams_actual,
             self.dyp.param_grid_count,
             self.dyp.tseg,
             self.dyp.cfg,
@@ -742,7 +742,7 @@ def prune_dyp_tree(
         if not 1 <= n_runs <= dyp.nsegments:
             msg = f"n_runs must be between 1 and {dyp.nsegments}, got {n_runs}"
             raise ValueError(msg)
-        ref_segs = determine_ref_segs(dyp.nsegments, n_runs)
+        ref_segs = determine_ref_segs_pareto(dyp.nsegments, n_runs)
     elif ref_segs is None:
         msg = "Either n_runs or ref_segs must be provided"
         raise ValueError(msg)

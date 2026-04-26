@@ -211,6 +211,17 @@ class ScatteredPeriodogram:
             return 0
         return self.data["run_id"].nunique()
 
+    def _score_filtered(
+        self,
+        data: pd.DataFrame,
+        score_col: str,
+        snr_min: float | None,
+    ) -> pd.DataFrame:
+        """Return rows where score_col >= snr_min; no filtering if snr_min is None."""
+        if snr_min is None:
+            return data
+        return data.loc[data[score_col] >= snr_min]
+
     def add_run(
         self,
         param_sets: np.ndarray,
@@ -247,6 +258,7 @@ class ScatteredPeriodogram:
         n: int = 10,
         score_type: str = "score",
         run_id: str | None = None,
+        snr_min: float | None = None,
     ) -> str:
         """Return top N candidates, optionally for a specific run.
 
@@ -259,6 +271,8 @@ class ScatteredPeriodogram:
             Can be "score_ep" or "score".
         run_id : str | None, optional
             Unique identifier for a specific run, by default None.
+        snr_min : float | None, optional
+            If set, only rows with score_type >= snr_min are considered.
 
         Returns
         -------
@@ -273,6 +287,12 @@ class ScatteredPeriodogram:
         if data.empty:
             scope = " (no candidates in this selection)" if run_id is not None else ""
             return f"Top candidates:{scope}\nNo candidates."
+
+        data = self._score_filtered(data, score_col, snr_min)
+        if data.empty:
+            scope = " (no candidates in this selection)" if run_id is not None else ""
+            thresh = f" (S/N >= {snr_min:g})" if snr_min is not None else ""
+            return f"Top candidates:{scope}{thresh}\nNo candidates."
 
         top_df = data.nlargest(n, score_col)
         summary: list[str] = []
@@ -299,7 +319,11 @@ class ScatteredPeriodogram:
             )
         return "\n".join(summary)
 
-    def get_best_in_each_run(self, score_type: str = "score") -> str:
+    def get_best_in_each_run(
+        self,
+        score_type: str = "score",
+        snr_min: float | None = None,
+    ) -> str:
         """Return the best candidate from each run.
 
         Parameters
@@ -307,6 +331,8 @@ class ScatteredPeriodogram:
         score_type : str, optional
             Type of score to use, by default "score".
             Can be "score_ep" or "score".
+        snr_min : float | None, optional
+            If set, only rows with score_type >= snr_min are considered per run.
 
         Returns
         -------
@@ -320,13 +346,17 @@ class ScatteredPeriodogram:
             msg = f"Invalid score type: {score_type}"
             raise ValueError(msg)
         score_col = score_type
+        data = self._score_filtered(self.data, score_col, snr_min)
+        if data.empty:
+            thresh = f" (S/N >= {snr_min:g})" if snr_min is not None else ""
+            return f"Best candidate in each run:{thresh}\nNo candidates."
         # Group by run_id and find the row with maximum score in each group
-        best_per_run = self.data.loc[self.data.groupby("run_id")[score_col].idxmax()]
+        best_per_run = data.loc[data.groupby("run_id")[score_col].idxmax()]
 
         summary: list[str] = []
         summary.append("Best candidate in each run:")
 
-        first = self.data.iloc[0]
+        first = data.iloc[0]
         param_formatters = {}
         for p in self.param_names:
             d = float(first[f"d{p}"])
@@ -362,13 +392,18 @@ class ScatteredPeriodogram:
         figsize: tuple[float, float] = (8, 6),
         dpi: int = 100,
         cmap: str = "magma_r",
+        snr_min: float | None = None,
     ) -> plt.Figure:
-        """Plot correlation between two parameters with optional true values."""
+        """Plot correlation between two parameters with optional true values.
+
+        If snr_min is set, only points with score_type >= snr_min are plotted.
+        """
         if score_type not in ["score_ep", "score"]:
             msg = f"Invalid score type: {score_type}"
             raise ValueError(msg)
         score_col = score_type
         data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
+        data = self._score_filtered(data, score_col, snr_min)
         set_seaborn()
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
         if data.empty:
@@ -436,14 +471,19 @@ class ScatteredPeriodogram:
         run_id: str | None = None,
         figsize: tuple[float, float] = (7, 3.5),
         dpi: int = 100,
+        snr_min: float | None = None,
     ) -> plt.Figure:
-        """Plot score distribution as scatter or histogram."""
+        """Plot score distribution as scatter or histogram.
+
+        If snr_min is set, only candidates with score_type >= snr_min are shown.
+        """
         if score_type not in ["score_ep", "score"]:
             msg = f"Invalid score type: {score_type}"
             raise ValueError(msg)
         score_col = score_type
         label = "Score (EP)" if score_type == "score_ep" else "Score (Integrated)"
         data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
+        data = self._score_filtered(data, score_col, snr_min)
         set_seaborn()
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
         if data.empty:
@@ -496,13 +536,14 @@ class ScatteredPeriodogram:
                 )
                 ax.set_title(f"{label} Distribution for Run {run_id}")
             else:
+                n_hue = max(data["run_id"].nunique(), 1)
                 sns.histplot(
                     data=data,
                     x=score_col,
                     hue="run_id",
                     bins=50,
                     element="step",
-                    palette=sns.color_palette("colorblind", n_colors=self.n_runs),
+                    palette=sns.color_palette("colorblind", n_colors=n_hue),
                     linewidth=1.2,
                     edgecolor="black",
                     ax=ax,

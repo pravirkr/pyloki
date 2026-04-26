@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from numba import njit, types
 
@@ -70,7 +72,6 @@ def poly_taylor_branch_batch(
     nbins: int,
     eta: float,
     poly_order: int,
-    param_limits: np.ndarray,
     branch_max: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Branch a batch of tree parameter nodes to leaves.
@@ -110,7 +111,7 @@ def poly_taylor_branch_batch(
     f0_batch = leaves_batch[:, -1, 0]
     basis_flag_batch = leaves_batch[:, -1, 1]
 
-    dparam_new_batch_actual = psr_utils.poly_taylor_step_d_vec(
+    dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
         n_params,
         t_obs_minus_t_ref,
         nbins,
@@ -120,19 +121,10 @@ def poly_taylor_branch_batch(
     )
     shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
         dparam_cur_batch,
-        dparam_new_batch_actual,
+        dparam_new_batch,
         t_obs_minus_t_ref,
         nbins,
         f0_batch,
-        t_ref=0,
-    )
-    dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
-        n_params,
-        t_obs_minus_t_ref,
-        nbins,
-        eta,
-        f0_batch,
-        param_limits,
         t_ref=0,
     )
 
@@ -371,8 +363,7 @@ def poly_taylor_report_batch(leaves_batch: np.ndarray) -> np.ndarray:
 @njit(cache=True, fastmath=True)
 def generate_bp_poly_taylor_approx(
     param_arr: types.ListType,
-    dparams_lim: np.ndarray,
-    param_limits: np.ndarray,
+    dparams_act: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,
@@ -384,10 +375,10 @@ def generate_bp_poly_taylor_approx(
     branch_max: int = 256,
 ) -> np.ndarray:
     """Generate the approximate branching pattern for the Taylor pruning search."""
-    poly_order = len(dparams_lim)
+    poly_order = len(dparams_act)
     snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
     coord_init = snail_scheme.get_coord(0)
-    leaves_init = poly_taylor_seed(param_arr, dparams_lim, poly_order, coord_init)
+    leaves_init = poly_taylor_seed(param_arr, dparams_act, poly_order, coord_init)
     leaf = leaves_init[itree : itree + 1]  # shape: (1, total_size)
     branching_pattern = np.empty(nsegments - 1, dtype=np.float64)
     for prune_level in range(1, nsegments):
@@ -402,7 +393,6 @@ def generate_bp_poly_taylor_approx(
             nbins,
             eta,
             poly_order,
-            param_limits,
             branch_max,
         )
         branching_pattern[prune_level - 1] = len(leaves_arr)
@@ -424,8 +414,7 @@ def generate_bp_poly_taylor_approx(
 @njit(cache=True, fastmath=True)
 def generate_bp_poly_taylor(
     param_arr: types.ListType,
-    dparams_lim: np.ndarray,
-    param_limits: np.ndarray,
+    dparams_act: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
     nbins: int,
@@ -436,7 +425,7 @@ def generate_bp_poly_taylor(
     use_cheby_coarsening: bool = True,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor pruning search."""
-    n_params = len(dparams_lim)
+    n_params = len(dparams_act)
     f0_batch = param_arr[-1]
     n_freqs = len(f0_batch)
     snail_scheme = MiddleOutScheme(nsegments, ref_seg, tseg_ffa, stride=1)
@@ -447,7 +436,7 @@ def generate_bp_poly_taylor(
     dparam_cur_next = np.empty((n_freqs, n_params), dtype=np.float64)
     dparam_d_vec = np.empty((n_freqs, n_params + 1), dtype=np.float64)
     for i in range(n_freqs):
-        dparam_cur_batch[i, :n_params] = dparams_lim
+        dparam_cur_batch[i, :n_params] = dparams_act
     # f = f0(1 - v / C) => dv = -(C/f0) * df
     dparam_cur_batch[:, n_params - 1] *= C_VAL / f0_batch
 
@@ -459,7 +448,7 @@ def generate_bp_poly_taylor(
         )
         _, t_obs_minus_t_ref = coord_cur
 
-        dparam_new_batch_actual = psr_utils.poly_taylor_step_d_vec(
+        dparam_new_batch = psr_utils.poly_taylor_step_d_vec(
             n_params,
             t_obs_minus_t_ref,
             nbins,
@@ -470,20 +459,10 @@ def generate_bp_poly_taylor(
         )
         shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
             dparam_cur_batch,
-            dparam_new_batch_actual,
+            dparam_new_batch,
             t_obs_minus_t_ref,
             nbins,
             f0_batch,
-            t_ref=0,
-            use_cheby=use_cheby_coarsening,
-        )
-        dparam_new_batch = psr_utils.poly_taylor_step_d_vec_limited(
-            n_params,
-            t_obs_minus_t_ref,
-            nbins,
-            eta,
-            f0_batch,
-            param_limits,
             t_ref=0,
             use_cheby=use_cheby_coarsening,
         )
@@ -495,7 +474,7 @@ def generate_bp_poly_taylor(
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]
                     continue
                 ratio = dparam_cur_batch[i, j] / dparam_new_batch[i, j]
-                num_points = max(1, int(np.ceil(ratio - FLOAT_EPSILON)))
+                num_points = max(1, math.ceil(ratio - FLOAT_EPSILON))
                 n_branches[i] *= num_points
                 dparam_cur_next[i, j] = dparam_cur_batch[i, j] / num_points
         # Compute average branching factor

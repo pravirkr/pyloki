@@ -457,7 +457,6 @@ def branch_func(
         self.nbins,
         self.eta,
         self.poly_order,
-        self.param_limits,
         self.branch_max,
     )
 

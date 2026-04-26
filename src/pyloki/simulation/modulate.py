@@ -34,14 +34,24 @@ class DerivativeModulating(Modulating):
     snap: float = 0
 
     def generate(self, t_arr: np.ndarray, t_ref: float = 0) -> np.ndarray:
+        """Compute proper time array with no temporaries via Horner's method.
+
+        Taylor delay model:
+            delay(dt) = shift + vel*dt + acc*dt^2/2 + jerk*dt^3/6 + snap*dt^4/24
+        Horner form (fewer multiplications, same result):
+            delay(dt) = shift + dt*(vel + dt*(acc/2 + dt*(jerk/6 + dt*snap/24)))
+        proper_time[i] = t[i] - delay(t[i] - t_ref) / C_VAL
+        """
         dt = t_arr - t_ref
-        delay = (
-            self.snap * (dt**4) / 24.0
-            + self.jerk * (dt**3) / 6.0
-            + self.acc * (dt**2) / 2.0
-            + self.vel * dt
-            + self.shift
+        delay = self.shift + dt * (
+            self.vel
+            + dt
+            * (
+                self.acc * 0.5
+                + dt * (self.jerk * (1.0 / 6.0) + dt * self.snap * (1.0 / 24.0))
+            )
         )
+
         return t_arr - delay / C_VAL
 
     def to_circular(self) -> dict[str, float]:
