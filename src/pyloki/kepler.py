@@ -31,7 +31,7 @@ def semi_major_axis(mass: float, p_orb: float) -> float:
         Semi-major axis of the orbit in light-seconds.
     """
     omega = 2 * np.pi / p_orb
-    a = (mass * constants.M_sun * constants.G / omega**2) ** (1 / 3) / constants.c  # ty: ignore[unresolved-attribute]
+    a = (mass * constants.M_sun * constants.G / omega**2) ** (1 / 3) / constants.c
     return float(a.value)
 
 
@@ -54,9 +54,9 @@ def mass_function(radial_velocity_ratio: float, p_orb: float) -> float:
     float
         Mass function of the system in solar masses.
     """
-    av = radial_velocity_ratio * constants.c / 2  # ty: ignore[unresolved-attribute]
+    av = radial_velocity_ratio * constants.c / 2
     omega = 2 * np.pi / p_orb
-    f = av**3 / (omega * constants.G)  # ty: ignore[unresolved-attribute]
+    f = av**3 / (omega * constants.G)
     return float(f.value)
 
 

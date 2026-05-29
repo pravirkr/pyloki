@@ -128,6 +128,9 @@ index-out-of-bounds = "ignore"
 unresolved-import = "ignore"
 not-iterable = "ignore"        # For Numba prange
 
+[tool.ty.analysis]
+replace-imports-with-any = ["astropy.**"]
+
 [[tool.ty.overrides]]
 include = [
     "src/pyloki/dynamic/*.py",

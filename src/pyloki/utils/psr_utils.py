@@ -6,7 +6,7 @@ import numpy as np
 from numba import njit, vectorize
 
 from pyloki.utils import maths
-from pyloki.utils.misc import C_VAL, FLOAT_EPSILON, ZERO_EPSILON
+from pyloki.utils.misc import C_VAL, FLOAT_EPSILON
 
 
 @vectorize(nopython=True, cache=True)
@@ -321,7 +321,7 @@ def branch_param(
     ValueError
         If the provided spacings are not positive.
     """
-    if dparam_cur <= ZERO_EPSILON or dparam_new <= ZERO_EPSILON:
+    if dparam_cur <= 0.0 or dparam_new <= 0.0:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
     # How many target spans fit inside the parent span?
@@ -352,7 +352,7 @@ def branch_param_padded(
     dparam_new: float,
 ) -> tuple[float, int]:
     """Generate parameters as `branch_param`, but for padded arrays."""
-    if dparam_cur <= ZERO_EPSILON or dparam_new <= ZERO_EPSILON:
+    if dparam_cur <= 0.0 or dparam_new <= 0.0:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
     # How many target spans fit inside the parent span?
@@ -385,7 +385,7 @@ def branch_dparam_crackle(
     dparam_new: float,
     branch_max: int,
 ) -> float:
-    if dparam_cur <= ZERO_EPSILON or dparam_new <= ZERO_EPSILON:
+    if dparam_cur <= 0.0 or dparam_new <= 0.0:
         msg = "Both dparam_cur and dparam_new must be positive."
         raise ValueError(msg)
     # Compute number of intervals with conservative ceil logic

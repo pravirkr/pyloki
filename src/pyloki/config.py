@@ -6,6 +6,7 @@ import itertools
 
 import attrs
 import numpy as np
+from astropy import constants
 
 from pyloki import kepler
 from pyloki.core import (
@@ -178,7 +179,11 @@ class ParamLimits:
         poly_order = max(poly_order, 2)
         omega_orb_max = 2 * np.pi / p_orb_min
         # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
-        x_orb = 0.005 * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
+        x_const = float(
+            (constants.M_sun.value * constants.G.value) ** (1 / 3)
+            / (constants.c.value * (2 * np.pi) ** (2 / 3)),
+        )
+        x_orb = x_const * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
         max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
         bounds = [(-d, d) for d in max_derivs[2:][::-1]]
         freq_shift = max_derivs[1] / C_VAL
@@ -209,7 +214,11 @@ class ParamLimits:
         poly_order = max(poly_order, 2)
         omega_orb_max = 2 * np.pi / p_orb_min
         # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
-        x_orb = 0.005 * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
+        x_const = float(
+            (constants.M_sun.value * constants.G.value) ** (1 / 3)
+            / (constants.c.value * (2 * np.pi) ** (2 / 3)),
+        )
+        x_orb = x_const * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
         max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
         drifted_max_values_d = transforms.shift_taylor_params(
             max_derivs[::-1],
@@ -311,7 +320,11 @@ class ParamLimits:
         out = [(float(freq[0]), float(freq[1]))]
         omega_orb_max = 2 * np.pi / p_orb_min
         # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
-        x_orb = 0.005 * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
+        x_const = float(
+            (constants.M_sun.value * constants.G.value) ** (1 / 3)
+            / (constants.c.value * (2 * np.pi) ** (2 / 3)),
+        )
+        x_orb = x_const * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
         n_rad = tobs * omega_orb_max
         bounds = kepler.find_max_deriv_bounds(
             x_orb,
@@ -408,7 +421,11 @@ class PulsarSearchConfig:
             attrs.validators.gt(10),
         ],
     )
-    minimum_snap_cells: float = attrs.field(
+    propagator_significance: float = attrs.field(
+        default=2.0,
+        validator=attrs.validators.gt(0.0),
+    )
+    validation_significance: float = attrs.field(
         default=5.0,
         validator=attrs.validators.gt(0.0),
     )
@@ -471,13 +488,10 @@ class PulsarSearchConfig:
     @property
     def x_mass_const(self) -> float:
         """:obj:`float`: Mass constant for the search (inflated by 10% for safety)."""
+        safety = 1.1
+        k_const = float((constants.M_sun.value * constants.G.value) ** (1 / 3))
         return (
-            C_VAL
-            * 0.005
-            * 1.1
-            * (2 * np.pi) ** (2 / 3)
-            * self.m_c_max
-            / (self.m_p_min + self.m_c_max) ** (2 / 3)
+            k_const * safety * self.m_c_max / (self.m_p_min + self.m_c_max) ** (2 / 3)
         )
 
     @property

@@ -68,6 +68,11 @@ class WorldTree(structref.StructRefProxy):
 
     @property
     @njit(cache=True, fastmath=True)
+    def scores_ep(self) -> np.ndarray:
+        return self.scores_ep
+
+    @property
+    @njit(cache=True, fastmath=True)
     def backtracks(self) -> np.ndarray:
         return self.backtracks
 
@@ -112,6 +117,9 @@ class WorldTree(structref.StructRefProxy):
 
     def get_best(self) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
+
+    def get_best_k(self, k: int) -> tuple[np.ndarray, np.ndarray]:
+        return get_best_k_func(self, k)
 
     def add(
         self,
@@ -208,6 +216,11 @@ class WorldTreeComplex(structref.StructRefProxy):
 
     @property
     @njit(cache=True, fastmath=True)
+    def scores_ep(self) -> np.ndarray:
+        return self.scores_ep
+
+    @property
+    @njit(cache=True, fastmath=True)
     def backtracks(self) -> np.ndarray:
         return self.backtracks
 
@@ -253,6 +266,9 @@ class WorldTreeComplex(structref.StructRefProxy):
     def get_best(self) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
 
+    def get_best_k(self, k: int) -> tuple[np.ndarray, np.ndarray]:
+        return get_best_k_func(self, k)
+
     def add(
         self,
         leaf: np.ndarray,
@@ -287,7 +303,7 @@ class WorldTreeComplex(structref.StructRefProxy):
         """Prune the candidates on overload."""
         return prune_on_overload_func(self, scores_batch, current_threshold)
 
-    def trim_empty(self) -> WorldTree:
+    def trim_empty(self) -> WorldTreeComplex:
         """Return only the valid portion of the struct, excluding garbage data."""
         return trim_empty_func_complex(self)
 
@@ -308,6 +324,7 @@ fields_world_tree = [
     ("leaves", types.f8[:, :, ::1]),
     ("folds", types.f4[:, :, ::1]),
     ("scores", types.f4[:]),
+    ("scores_ep", types.f4[:]),
     ("backtracks", types.i4[:, ::1]),
     ("valid_size", types.int64),
     ("size", types.int64),
@@ -321,6 +338,7 @@ fields_world_tree_complex = [
     ("leaves", types.f8[:, :, ::1]),
     ("folds", types.c8[:, :, ::1]),
     ("scores", types.f4[:]),
+    ("scores_ep", types.f4[:]),
     ("backtracks", types.i4[:, ::1]),
     ("valid_size", types.int64),
     ("size", types.int64),
@@ -344,6 +362,7 @@ def world_tree_init(
     self.leaves = leaves
     self.folds = folds
     self.scores = scores
+    self.scores_ep = np.copy(scores)
     self.backtracks = backtracks
     self.valid_size = leaves.shape[0]
     self.size = leaves.shape[0]
@@ -362,6 +381,7 @@ def world_tree_complex_init(
     self.leaves = leaves
     self.folds = folds
     self.scores = scores
+    self.scores_ep = np.copy(scores)
     self.backtracks = backtracks
     self.valid_size = leaves.shape[0]
     self.size = leaves.shape[0]
@@ -417,6 +437,25 @@ def get_best_func(self: WorldTree) -> tuple[np.ndarray, np.ndarray, float]:
 
 
 @njit(cache=True, fastmath=True)
+def get_best_k_func(self: WorldTree, k: int) -> tuple[np.ndarray, np.ndarray]:
+    valid_size = self.valid_size
+    k_take = min(k, valid_size)
+    leaves_out = np.zeros((k, *self.leaves.shape[1:]), dtype=self.leaves.dtype)
+    scores_out = np.zeros(k, dtype=self.scores.dtype)
+    if k_take == 0:
+        return leaves_out, scores_out
+    scores_valid = self.scores[:valid_size]
+    if k_take == valid_size:
+        idx = np.argsort(scores_valid)[::-1]
+    else:
+        idx_part = np.argpartition(scores_valid, -k_take)[-k_take:]
+        idx = idx_part[np.argsort(scores_valid[idx_part])[::-1]]
+    leaves_out[:k_take] = self.leaves[idx]
+    scores_out[:k_take] = self.scores[idx]
+    return leaves_out, scores_out
+
+
+@njit(cache=True, fastmath=True)
 def add_func(
     self: WorldTree,
     leaf: np.ndarray,
@@ -430,6 +469,7 @@ def add_func(
     self.leaves[pos] = leaf
     self.folds[pos] = fold
     self.scores[pos] = score
+    self.scores_ep[pos] = score
     self.backtracks[pos] = backtrack
     self.valid_size += 1
     return True
@@ -455,6 +495,7 @@ def add_batch_func(
         self.leaves[pos : pos + num_to_add] = leaves_batch
         self.folds[pos : pos + num_to_add] = folds_batch
         self.scores[pos : pos + num_to_add] = scores_batch
+        self.scores_ep[pos : pos + num_to_add] = scores_batch
         self.backtracks[pos : pos + num_to_add] = backtracks_batch
         self.valid_size += num_to_add
         return current_threshold
@@ -472,6 +513,7 @@ def add_batch_func(
     self.leaves[pos : pos + n_to_add] = leaves_batch[pending_idxs]
     self.folds[pos : pos + n_to_add] = folds_batch[pending_idxs]
     self.scores[pos : pos + n_to_add] = scores_batch[pending_idxs]
+    self.scores_ep[pos : pos + n_to_add] = scores_batch[pending_idxs]
     self.backtracks[pos : pos + n_to_add] = backtracks_batch[pending_idxs]
     self.valid_size += n_to_add
     return effective_threshold
@@ -562,6 +604,7 @@ def keep_func(self: WorldTree, indices: np.ndarray) -> None:
     self.leaves[:count] = self.leaves[idx_valid]
     self.folds[:count] = self.folds[idx_valid]
     self.scores[:count] = self.scores[idx_valid]
+    self.scores_ep[:count] = self.scores_ep[idx_valid]
     self.backtracks[:count] = self.backtracks[idx_valid]
     # update valid size
     self.valid_size = count
@@ -597,6 +640,14 @@ def ol_get_new_func(self: WorldTree, max_sugg: int) -> types.FunctionType:
 def ol_get_best_func(self: WorldTree) -> types.FunctionType:
     def impl(self: WorldTree) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
+
+    return impl
+
+
+@overload_method(WorldTreeTemplate, "get_best_k")
+def ol_get_best_k_func(self: WorldTree, k: int) -> types.FunctionType:
+    def impl(self: WorldTree, k: int) -> tuple[np.ndarray, np.ndarray]:
+        return get_best_k_func(self, k)
 
     return impl
 
@@ -733,6 +784,17 @@ def ol_get_best_func_complex(
 ) -> types.FunctionType:
     def impl(self: WorldTreeComplex) -> tuple[np.ndarray, np.ndarray, float]:
         return get_best_func(self)
+
+    return impl
+
+
+@overload_method(WorldTreeComplexTemplate, "get_best_k")
+def ol_get_best_k_func_complex(
+    self: WorldTreeComplex,
+    k: int,
+) -> types.FunctionType:
+    def impl(self: WorldTreeComplex, k: int) -> tuple[np.ndarray, np.ndarray]:
+        return get_best_k_func(self, k)
 
     return impl
 

@@ -165,6 +165,66 @@ def boxcar_snr_nd(
     return snrs.reshape((*data.shape[:-1], widths.size))
 
 
+@njit(
+    "f4[::1](f4[::1], f4[::1], i8[::1])",
+    cache=True,
+    fastmath=True,
+    locals={"size_w": types.f4},
+)
+def boxcar_snr_beta_1d(
+    ts_e: npt.NDArray[np.float32],
+    ts_v: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Compute the optimal SNR_beta for a 1D profile using boxcar filters.
+
+    Parameters
+    ----------
+    ts_e : np.ndarray
+        Weighted data profile P_w(b).
+    ts_v : np.ndarray
+        Weight/Variance profile P_s(b).
+    widths : np.ndarray
+        Widths of the boxcar filters.
+
+    Returns
+    -------
+    np.ndarray
+        Max SNR scores for the given widths.
+    """
+    size = len(ts_e)
+    n_widths = len(widths)
+    max_width = np.max(widths)
+
+    # Allocate and compute prefix sums for BOTH arrays
+    prefix_w = np.empty(size + max_width, dtype=np.float32)
+    prefix_s = np.empty(size + max_width, dtype=np.float32)
+    circular_prefix_sum(ts_e, prefix_w)
+    circular_prefix_sum(ts_v, prefix_s)
+
+    total_w = prefix_w[size - 1]
+    total_s = prefix_s[size - 1]
+    snr = np.empty(n_widths, dtype=np.float32)
+    for iw, width in enumerate(widths):
+        size_w = size - width
+        # Zero-mean template coefficients
+        height = np.sqrt(size_w / (size * width))
+        b = width * height / size_w
+        max_snr = -np.finfo(np.float32).max
+        for i in range(size):
+            dw = prefix_w[i + width] - prefix_w[i]
+            ds = prefix_s[i + width] - prefix_s[i]
+            num = (height + b) * dw - b * total_w
+            den2 = (height * height) * ds + (b * b) * (total_s - ds)
+            if den2 > 0:
+                current_snr = num / np.float32(np.sqrt(den2))
+                max_snr = max(max_snr, current_snr)
+
+        snr[iw] = max_snr
+
+    return snr
+
+
 @njit("f4(f4[:, ::1], i8[::1])", cache=True, fastmath=True)
 def snr_score_func(
     combined_res: npt.NDArray[np.float32],
@@ -587,3 +647,109 @@ def harmonic_summing_score_func(combined_res: np.ndarray, n_harmonics: int) -> f
         score = maths.chi_sq_minus_logsf_func(raw_score * 2, 2 * i)
         best_score = max(score, best_score)
     return maths.norm_isf_func(best_score)
+
+
+@njit(
+    "Tuple((f8, i8, i8))(f4[::1], f4[::1])",
+    cache=True,
+    fastmath=True,
+)
+def kadane_circular_normalized_1d(
+    norm_data: npt.NDArray[np.float32],
+    biases: npt.NDArray[np.float32],
+) -> tuple[float, int, int]:
+    """Zero-allocation circular Kadane. Returns (SNR score, width, start).
+
+    Uses inverted sub-array subtraction for O(1) space complexity.
+    The maximum circular subarray can only exist in two states:
+
+    Unwrapped: It sits contiguous in the middle of the array - Standard Kadane
+
+    Wrapped: It sits on the edges, crossing the boundary. If the maximum sum
+    wraps around the edges, then the elements it excludes form a contiguous block
+    in the middle. By definition, this excluded block must be the minimum
+    contiguous subarray.
+
+    Therefore: Wrapped Max Sum = Total Array Sum - Minimum Subarray Sum
+    """
+    size = len(norm_data)
+
+    # 1. Compute mean for dynamic DC subtraction
+    total_sum = np.float64(0.0)
+    for i in range(size):
+        total_sum += norm_data[i]
+    mean_val = total_sum / size
+
+    best_global_snr = -np.finfo(np.float64).max
+    best_global_w = 1
+    best_global_start = 0
+
+    for k in range(len(biases)):
+        bias = np.float64(biases[k])
+
+        # State for Standard Max Kadane (Unwrapped)
+        max_sum = -np.finfo(np.float64).max
+        cur_max = np.float64(0.0)
+        start_max, end_max, tmp_start_max = 0, 0, 0
+
+        # State for Min Kadane (Excluded block for Wrapped)
+        min_sum = np.finfo(np.float64).max
+        cur_min = np.float64(0.0)
+        start_min, end_min, tmp_start_min = 0, 0, 0
+
+        for i in range(size):
+            # Subtract mean AND the Kadane geometric bias penalty
+            val = np.float64(norm_data[i]) - mean_val - bias
+
+            # 1. Track the Maximum Contiguous Subarray
+            cur_max += val
+            if cur_max > max_sum:
+                max_sum = cur_max
+                start_max = tmp_start_max
+                end_max = i
+            if cur_max < 0.0:
+                cur_max = np.float64(0.0)
+                tmp_start_max = i + 1
+
+            # 2. Track the Minimum Contiguous Subarray
+            cur_min += val
+            if cur_min < min_sum:
+                min_sum = cur_min
+                start_min = tmp_start_min
+                end_min = i
+            if cur_min > 0.0:
+                cur_min = np.float64(0.0)
+                tmp_start_min = i + 1
+
+        # Candidate 1: Non-wrapped maximum
+        best_biased_sum = max_sum
+        best_start = start_max
+        best_width = end_max - start_max + 1
+
+        # Candidate 2: Wrapped maximum
+        excluded_width = end_min - start_min + 1
+        wrapped_width = size - excluded_width
+
+        if wrapped_width > 0:
+            # Wrapped maximum = Total Array Sum - Minimum Excluded Block
+            wrapped_sum = (-size * bias) - min_sum
+            if wrapped_sum > best_biased_sum:
+                best_biased_sum = wrapped_sum
+                best_start = (end_min + 1) % size
+                best_width = wrapped_width
+
+        # Recover the mean-subtracted sum (remove the bias penalty)
+        unbiased_sum = best_biased_sum + best_width * bias
+
+        # Apply the exact production Boxcar normalization scaling
+        if 0 < best_width < size:
+            snr = unbiased_sum * np.sqrt(size / (best_width * (size - best_width)))
+        else:
+            snr = 0.0
+
+        if snr > best_global_snr:
+            best_global_snr = snr
+            best_global_w = best_width
+            best_global_start = best_start
+
+    return float(best_global_snr), best_global_w, best_global_start

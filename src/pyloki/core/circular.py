@@ -6,19 +6,20 @@ import numpy as np
 from numba import njit, types
 
 from pyloki.utils import np_utils, psr_utils, transforms
-from pyloki.utils.misc import C_VAL, FLOAT_EPSILON, ZERO_EPSILON
+from pyloki.utils.misc import C_VAL, FLOAT_EPSILON
 from pyloki.utils.snail import MiddleOutScheme
 
 
 @njit(cache=True, fastmath=True)
 def get_circ_mask(
     crackle: np.ndarray,
-    dcrackle: np.ndarray,
     snap: np.ndarray,
     dsnap: np.ndarray,
     jerk: np.ndarray,
+    djerk: np.ndarray,
     accel: np.ndarray,
-    minimum_snap_cells: float,
+    daccel: np.ndarray,
+    propagator_significance: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Classify Taylor grid cells as circular orbital motion.
 
@@ -36,9 +37,9 @@ def get_circ_mask(
         Third derivative (d3).
     accel : array
         Second derivative (d2).
-    minimum_snap_cells : float
-        Threshold for significant snap/crackle measurements expressed in units of the
-        derivative uncertainty. Also used to gatekeep the circular classification.
+    propagator_significance : float
+        Minimum significance level for the propagator. Gatekeeping the
+        circular classification. Ideally should be greater than 2.
 
     Returns
     -------
@@ -51,20 +52,21 @@ def get_circ_mask(
     idx_taylor : ndarray
         Indices of cells not consistent with circular motion.
     """
-    # Determine whether snap and crackle are significantly measured
-    is_sig_snap = np.abs(snap) > (minimum_snap_cells * dsnap)
-    is_sig_crackle = np.abs(crackle) > (minimum_snap_cells * dcrackle)
+    # Determine whether snap, jerk, and accel are significantly measured
+    is_sig_snap = np.abs(snap) > (propagator_significance * dsnap)
+    is_sig_accel = np.abs(accel) > (propagator_significance * daccel)
+    is_sig_jerk = np.abs(jerk) > (propagator_significance * djerk)
 
     # Snap-Dominated Region (Standard)
     # We check if implied Omega is physical (-d4/d2 > 0)
-    is_physical_snap = ((-snap * accel) > 0) & (np.abs(accel) > ZERO_EPSILON)
-    mask_circular_snap = is_sig_snap & is_physical_snap
+    is_physical_snap = (-snap * accel) > 0
+    mask_circular_snap = is_sig_snap & is_sig_accel & is_physical_snap
 
     # Crackle-Dominated Region (The Hole)
     # Condition: snap-accel system is degenerate (both near zero) or unphysical,
     # but crackle-jerk is significant and physical.
-    is_physical_crackle = ((-crackle * jerk) > 0) & (np.abs(jerk) > ZERO_EPSILON)
-    mask_circular_crackle = ~mask_circular_snap & is_sig_crackle & is_physical_crackle
+    is_physical_crackle = (-crackle * jerk) > 0
+    mask_circular_crackle = ~mask_circular_snap & is_sig_jerk & is_physical_crackle
 
     # Taylor Region (Noise / Unresolved)
     # Everything that isn't a confident circular candidate
@@ -82,9 +84,10 @@ def circ_validate_batch(
     snap: np.ndarray,
     dsnap: np.ndarray,
     accel: np.ndarray,
+    daccel: np.ndarray,
     p_orb_min: float,
     x_mass_const: float,
-    minimum_snap_cells: float,
+    validation_significance: float = 5.0,
 ) -> np.ndarray:
     """Conservative pruning of cells that can never become circular.
 
@@ -94,29 +97,26 @@ def circ_validate_batch(
     omega_max_sq = (2 * np.pi / p_orb_min) ** 2
 
     # Classification (for gatekeeping)
-    # |val / step| > thresh  <=>  |val| > thresh * |step|
-    # dsnap and dcrackle are step sizes (always positive)
-    is_sig_snap = np.abs(snap) > (minimum_snap_cells * dsnap)
-    snap_possible = np.abs(accel) > ZERO_EPSILON
-    sign_valid = (-snap * accel) > 0.0
-
-    # Region where omega_sq is well-defined and positive
-    snap_region = is_sig_snap & snap_possible & sign_valid
+    is_sig_snap = np.abs(snap) > (validation_significance * dsnap)
+    is_sig_accel = np.abs(accel) > (validation_significance * daccel)
 
     # Region where snap is significant but sign is WRONG — definitely non-circular
-    snap_unphysical = is_sig_snap & snap_possible & ~sign_valid
+    is_physical_snap = (-snap * accel) > 0.0
+    snap_unphysical = is_sig_snap & is_sig_accel & ~is_physical_snap
+    # Region where omega_sq is well-defined and positive
+    snap_region = is_sig_snap & is_sig_accel & is_physical_snap
 
     # Start: keep everything
     mask_keep = np.ones(len(snap), dtype=np.bool_)
     # Kill the unphysical ones outright
     mask_keep[snap_unphysical] = False
-    # Inside snap_region, apply physical validity checks
+    # Inside snap_region, apply physical validity checks, we never validate in hole
     if np.any(snap_region):
         idx = np.flatnonzero(snap_region)
         omega_sq = -snap[idx] / accel[idx]  # guaranteed > 0 here
         limit_accel = x_mass_const * (omega_sq ** (2.0 / 3.0))
 
-        valid_omega = omega_sq < omega_max_sq
+        valid_omega = omega_sq <= omega_max_sq
         # |d2| < x * omega^(4/3)
         valid_accel = np.abs(accel[idx]) <= limit_accel
         # Never check jerk here - we do not want too stringent of a check here
@@ -127,7 +127,7 @@ def circ_validate_batch(
 @njit(cache=True, fastmath=True)
 def get_circ_taylor_mask(
     leaves_batch: np.ndarray,
-    minimum_snap_cells: float = 5,
+    propagator_significance: float = 2.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Generate a robust mask to identify circular orbit candidates.
 
@@ -137,8 +137,9 @@ def get_circ_taylor_mask(
     ----------
     leaves_batch : np.ndarray
         Shape (n_batch, nparams + 2, 2)
-    minimum_snap_cells: float
-        Threshold for significant snap (number of snap grid cells). Defaults to 5.
+    propagator_significance: float
+        Minimum significance level for the propagator. Gatekeeping the
+        circular classification. Ideally should be greater than 2.
 
     Returns
     -------
@@ -147,19 +148,21 @@ def get_circ_taylor_mask(
 
     """
     crackle = leaves_batch[:, 0, 0]
-    dcrackle = leaves_batch[:, 0, 1]
     snap = leaves_batch[:, 1, 0]
     dsnap = leaves_batch[:, 1, 1]
     jerk = leaves_batch[:, 2, 0]
+    djerk = leaves_batch[:, 2, 1]
     accel = leaves_batch[:, 3, 0]
+    daccel = leaves_batch[:, 3, 1]
     return get_circ_mask(
         crackle,
-        dcrackle,
         snap,
         dsnap,
         jerk,
+        djerk,
         accel,
-        minimum_snap_cells=minimum_snap_cells,
+        daccel,
+        propagator_significance=propagator_significance,
     )
 
 
@@ -168,22 +171,30 @@ def get_circ_taylor_mask_branch(
     leaves_params_batch: np.ndarray,
     leaves_dparams_batch: np.ndarray,
     batch_needs_crackle: np.ndarray,
-    minimum_snap_cells: float,
+    propagator_significance: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Get the indices of the leaves that need to be expanded (crackle)."""
     snap = leaves_params_batch[:, 1]
     jerk = leaves_params_batch[:, 2]
     accel = leaves_params_batch[:, 3]
     dsnap = leaves_dparams_batch[:, 1]
+    djerk = leaves_dparams_batch[:, 2]
+    daccel = leaves_dparams_batch[:, 3]
 
-    is_sig_snap = np.abs(snap) > (minimum_snap_cells * dsnap)
     # Numerical Stability - acceleration and snap must be significantly non-zero
-    is_physical_snap = ((-snap * accel) > 0) & (np.abs(accel) > ZERO_EPSILON)
-    is_stable_jerk = np.abs(jerk) > ZERO_EPSILON
-    mask_circular_crackle = is_sig_snap & ~is_physical_snap & is_stable_jerk
+    # snap rounds to zero but accel could produce nonzero snap
+    is_sig_snap = np.abs(snap) > (propagator_significance * dsnap)
+    is_sig_accel = np.abs(accel) > (propagator_significance * daccel)
+    is_physical_snap = (-snap * accel) > 0
+    mask_circular_snap = is_sig_snap & is_sig_accel & is_physical_snap
+
+    # Sanity check: jerk must be significantly measured
+    is_sig_jerk = np.abs(jerk) > (propagator_significance * djerk)
+
+    mask_quantization_hole = ~mask_circular_snap & is_sig_jerk
     # Optimization: Filter out 'crackle' candidates that don't actually need branching
     # True crackle candidates: in the hole AND step size is large enough
-    mask_expand_crackle = mask_circular_crackle & batch_needs_crackle
+    mask_expand_crackle = mask_quantization_hole & batch_needs_crackle
     idx_expand_crackle = np.flatnonzero(mask_expand_crackle)
     # Keep indices: Taylor + Snap + Crackle-that-doesnt-need-branching
     idx_keep = np.flatnonzero(~mask_expand_crackle)
@@ -198,7 +209,7 @@ def circ_taylor_branch_batch(
     eta: float,
     poly_order: int,
     branch_max: int,
-    minimum_snap_cells: float,
+    propagator_significance: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Branch a batch of tree parameter nodes to leaves.
 
@@ -224,8 +235,9 @@ def circ_taylor_branch_batch(
         Limits for each parameter in Taylor basis (reverse order).
     branch_max : int
         Maximum branches per parameter per parent.
-    minimum_snap_cells : float
-        Minimum |snap| / dsnap to trigger crackle expansion.
+    propagator_significance : float
+        Minimum significance level for the propagator. Gatekeeping the
+        circular classification. Ideally should be greater than 2.
 
     Returns
     -------
@@ -313,7 +325,7 @@ def circ_taylor_branch_batch(
         leaf_params_branch_cart,
         leaves_branched_dparams,
         batch_needs_crackle,
-        minimum_snap_cells=minimum_snap_cells,
+        propagator_significance=propagator_significance,
     )
     n_keep = len(idx_keep)
     n_crackle_expand = len(idx_expand_crackle)
@@ -388,7 +400,7 @@ def circ_taylor_validate_batch(
     leaves_origins: np.ndarray,
     p_orb_min: float,
     x_mass_const: float,
-    minimum_snap_cells: float,
+    validation_significance: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Validate a batch of leaf params.
 
@@ -403,8 +415,9 @@ def circ_taylor_validate_batch(
         The origins of the leaves. Shape: (N,)
     p_orb_min : float
         Minimum allowed orbital period.
-    minimum_snap_cells: float
-        Threshold for significant snap (number of snap grid cells). Defaults to 5.
+    validation_significance: float
+        Minimum significance level for the validation. Gatekeeping the
+        circular classification. Ideally should be greater than 5.
 
     Returns
     -------
@@ -414,13 +427,15 @@ def circ_taylor_validate_batch(
     snap = leaves_batch[:, 1, 0]
     dsnap = leaves_batch[:, 1, 1]
     accel = leaves_batch[:, 3, 0]
+    daccel = leaves_batch[:, 3, 1]
     idx = circ_validate_batch(
         snap,
         dsnap,
         accel,
+        daccel,
         p_orb_min,
         x_mass_const,
-        minimum_snap_cells=minimum_snap_cells,
+        validation_significance=validation_significance,
     )
     return leaves_batch[idx], leaves_origins[idx]
 
@@ -434,7 +449,7 @@ def circ_taylor_resolve_batch(
     param_grid_count_init: np.ndarray,
     param_limits: np.ndarray,
     nbins: int,
-    minimum_snap_cells: float,
+    propagator_significance: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
     # only works for circular orbit when nparams = 5
@@ -448,7 +463,7 @@ def circ_taylor_resolve_batch(
 
     idx_circ_snap, idx_circ_crackle, idx_taylor = get_circ_taylor_mask(
         leaves_batch,
-        minimum_snap_cells=minimum_snap_cells,
+        propagator_significance=propagator_significance,
     )
     dvec_t_add = np.empty((n_batch, 6), dtype=np.float64)
     dvec_t_init = np.empty((n_batch, 6), dtype=np.float64)
@@ -464,6 +479,7 @@ def circ_taylor_resolve_batch(
         )
         dvec_t_add[idx_circ_snap] = dvec_t_add_circ_snap
         dvec_t_init[idx_circ_snap] = dvec_t_init_circ_snap
+        leaves_batch[idx_circ_snap, -1, 1] = 1
 
     if idx_circ_crackle.size > 0:
         dvec_t_add_circ_crackle = transforms.shift_taylor_circular_params(
@@ -478,6 +494,7 @@ def circ_taylor_resolve_batch(
         )
         dvec_t_add[idx_circ_crackle] = dvec_t_add_circ_crackle
         dvec_t_init[idx_circ_crackle] = dvec_t_init_circ_crackle
+        leaves_batch[idx_circ_crackle, -1, 1] = 2
 
     if idx_taylor.size > 0:
         dvec_t_add_norm = transforms.shift_taylor_params(
@@ -490,6 +507,7 @@ def circ_taylor_resolve_batch(
         )
         dvec_t_add[idx_taylor] = dvec_t_add_norm
         dvec_t_init[idx_taylor] = dvec_t_init_norm
+        leaves_batch[idx_circ_crackle, -1, 1] = 0
 
     accel_new_batch = dvec_t_add[:, -3]
     vel_new_batch = dvec_t_add[:, -2] - dvec_t_init[:, -2]
@@ -519,7 +537,7 @@ def circ_taylor_fixed_resolve_batch(
     param_grid_count_init: np.ndarray,
     param_limits: np.ndarray,
     nbins: int,
-    minimum_snap_cells: float,
+    propagator_significance: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a batch of leaf params to find the closest grid index and phase shift."""
     n_batch, _, _ = leaves_batch.shape
@@ -532,7 +550,7 @@ def circ_taylor_fixed_resolve_batch(
 
     idx_circ_snap, idx_circ_crackle, idx_taylor = get_circ_taylor_mask(
         leaves_batch,
-        minimum_snap_cells=minimum_snap_cells,
+        propagator_significance=propagator_significance,
     )
     dvec_t_add = np.empty((n_batch, 6), dtype=np.float64)
     if idx_circ_snap.size > 0:
@@ -584,7 +602,7 @@ def circ_taylor_ascend_resolve_batch(
     param_grid_count_init: np.ndarray,
     param_limits: np.ndarray,
     nbins: int,
-    minimum_snap_cells: float,
+    propagator_significance: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     # only works for circular orbit when nparams = 5
     n_batch, _, _ = leaves_batch.shape
@@ -600,7 +618,7 @@ def circ_taylor_ascend_resolve_batch(
 
     idx_circ_snap, idx_circ_crackle, idx_taylor = get_circ_taylor_mask(
         leaves_batch,
-        minimum_snap_cells=minimum_snap_cells,
+        propagator_significance=propagator_significance,
     )
 
     for isegment in range(nsegments):
@@ -654,12 +672,12 @@ def circ_taylor_transform_batch(
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
     use_conservative_tile: bool,
-    minimum_snap_cells: float,
+    propagator_significance: float,
 ) -> np.ndarray:
     """Re-center (in-place) the leaves to the next segment reference time."""
     idx_circ_snap, idx_circ_crackle, idx_taylor = get_circ_taylor_mask(
         leaves_batch,
-        minimum_snap_cells=minimum_snap_cells,
+        propagator_significance=propagator_significance,
     )
     delta_t = coord_next[0] - coord_cur[0]
     leaves_batch_trans = leaves_batch.copy()
@@ -691,7 +709,7 @@ def circ_taylor_transform_batch(
 def get_circ_chebyshev_mask(
     leaves_batch: np.ndarray,
     t_s: float,
-    minimum_snap_cells: float = 5,
+    propagator_significance: float = 2.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Generate a robust mask to identify circular orbit candidates.
 
@@ -701,8 +719,9 @@ def get_circ_chebyshev_mask(
     ----------
     leaves_batch : np.ndarray
         Shape (n_batch, nparams + 2, 2)
-    minimum_snap_cells: float
-        Threshold for significant snap (number of snap grid cells). Defaults to 5.
+    propagator_significance: float
+        Minimum significance level for the propagator. Gatekeeping the
+        circular classification. Ideally should be greater than 2.
 
     Returns
     -------
@@ -711,27 +730,30 @@ def get_circ_chebyshev_mask(
 
     """
     alpha_5 = leaves_batch[:, 0, 0]
-    dalpha_5 = leaves_batch[:, 0, 1]
     alpha_4 = leaves_batch[:, 1, 0]
     dalpha_4 = leaves_batch[:, 1, 1]
     alpha_3 = leaves_batch[:, 2, 0]
+    dalpha_3 = leaves_batch[:, 2, 1]
     alpha_2 = leaves_batch[:, 3, 0]
+    dalpha_2 = leaves_batch[:, 3, 1]
     # Calculate accel and snap
     crackle = (1920 / t_s**5) * alpha_5
-    dcrackle = (1920 / t_s**5) * dalpha_5
     snap = (192 / t_s**4) * alpha_4
     dsnap = (192 / t_s**4) * dalpha_4
     jerk = (24 / t_s**3) * (alpha_3 - 5 * alpha_5)
+    djerk = (24 / t_s**3) * dalpha_3
     accel = (4 / t_s**2) * (alpha_2 - 4 * alpha_4)
+    daccel = (4 / t_s**2) * dalpha_2
 
     return get_circ_mask(
         crackle,
-        dcrackle,
         snap,
         dsnap,
         jerk,
+        djerk,
         accel,
-        minimum_snap_cells=minimum_snap_cells,
+        daccel,
+        propagator_significance=propagator_significance,
     )
 
 

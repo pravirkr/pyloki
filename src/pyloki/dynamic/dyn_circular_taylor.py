@@ -53,7 +53,8 @@ class PruneCircTaylorDPFuncts(structref.StructRefProxy):
             cfg.use_conservative_tile,
             cfg.p_orb_min,
             cfg.x_mass_const,
-            cfg.minimum_snap_cells,
+            cfg.propagator_significance,
+            cfg.validation_significance,
             use_moving_grid,
         )
 
@@ -136,17 +137,17 @@ class PruneCircTaylorDPFuncts(structref.StructRefProxy):
 
     def ascend(
         self,
-        leaves_batch: np.ndarray,
+        world_tree: WorldTree,
         dyp_folds: np.ndarray,
         load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
         idx_segments: np.ndarray,
         coord_segments: np.ndarray,
         coord_cur: tuple[float, float],
         batch_size: int,
-    ) -> np.ndarray:
+    ) -> None:
         return ascend_func(
             self,
-            leaves_batch,
+            world_tree,
             dyp_folds,
             load_func,
             idx_segments,
@@ -190,7 +191,8 @@ class PruneCircTaylorComplexDPFuncts(structref.StructRefProxy):
             cfg.use_conservative_tile,
             cfg.p_orb_min,
             cfg.x_mass_const,
-            cfg.minimum_snap_cells,
+            cfg.propagator_significance,
+            cfg.validation_significance,
             use_moving_grid,
         )
 
@@ -273,17 +275,17 @@ class PruneCircTaylorComplexDPFuncts(structref.StructRefProxy):
 
     def ascend(
         self,
-        leaves_batch: np.ndarray,
+        world_tree: WorldTreeComplex,
         dyp_folds: np.ndarray,
         load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
         idx_segments: np.ndarray,
         coord_segments: np.ndarray,
         coord_cur: tuple[float, float],
         batch_size: int,
-    ) -> np.ndarray:
+    ) -> None:
         return ascend_complex_func(
             self,
-            leaves_batch,
+            world_tree,
             dyp_folds,
             load_func,
             idx_segments,
@@ -316,7 +318,8 @@ fields_prune_circ_taylor_dp_funcs = [
     ("use_conservative_tile", types.bool_),
     ("p_orb_min", types.f8),
     ("x_mass_const", types.f8),
-    ("minimum_snap_cells", types.f8),
+    ("propagator_significance", types.f8),
+    ("validation_significance", types.f8),
     ("use_moving_grid", types.bool_),
 ]
 
@@ -350,7 +353,8 @@ def prune_circ_taylor_dp_functs_init(
     use_conservative_tile: bool,
     p_orb_min: float,
     x_mass_const: float,
-    minimum_snap_cells: float,
+    propagator_significance: float,
+    validation_significance: float,
     use_moving_grid: bool,
 ) -> PruneCircTaylorDPFuncts:
     """Initialize the PruneCircTaylorDPFuncts object."""
@@ -369,7 +373,8 @@ def prune_circ_taylor_dp_functs_init(
     self.use_conservative_tile = use_conservative_tile
     self.p_orb_min = p_orb_min
     self.x_mass_const = x_mass_const
-    self.minimum_snap_cells = minimum_snap_cells
+    self.propagator_significance = propagator_significance
+    self.validation_significance = validation_significance
     self.use_moving_grid = use_moving_grid
     if self.poly_order != 5:
         msg = (
@@ -395,7 +400,8 @@ def prune_circ_taylor_complex_dp_functs_init(
     use_conservative_tile: bool,
     p_orb_min: float,
     x_mass_const: float,
-    minimum_snap_cells: float,
+    propagator_significance: float,
+    validation_significance: float,
     use_moving_grid: bool,
 ) -> PruneCircTaylorComplexDPFuncts:
     """Initialize the PruneCircTaylorComplexDPFuncts object."""
@@ -414,7 +420,8 @@ def prune_circ_taylor_complex_dp_functs_init(
     self.use_conservative_tile = use_conservative_tile
     self.p_orb_min = p_orb_min
     self.x_mass_const = x_mass_const
-    self.minimum_snap_cells = minimum_snap_cells
+    self.propagator_significance = propagator_significance
+    self.validation_significance = validation_significance
     self.use_moving_grid = use_moving_grid
     if self.poly_order != 5:
         msg = (
@@ -488,7 +495,7 @@ def branch_func(
         self.eta,
         self.poly_order,
         self.branch_max,
-        self.minimum_snap_cells,
+        self.propagator_significance,
     )
 
 
@@ -504,7 +511,7 @@ def validate_func(
         leaves_origins,
         self.p_orb_min,
         self.x_mass_const,
-        self.minimum_snap_cells,
+        self.validation_significance,
     )
 
 
@@ -533,7 +540,7 @@ def resolve_func(
             self.param_grid_count_init,
             self.param_limits,
             self.nbins,
-            self.minimum_snap_cells,
+            self.propagator_significance,
         )
     return circular.circ_taylor_fixed_resolve_batch(
         leaves_batch,
@@ -543,7 +550,7 @@ def resolve_func(
         self.param_grid_count_init,
         self.param_limits,
         self.nbins,
-        self.minimum_snap_cells,
+        self.propagator_significance,
     )
 
 
@@ -603,7 +610,7 @@ def transform_func(
             coord_next,
             coord_cur,
             self.use_conservative_tile,
-            self.minimum_snap_cells,
+            self.propagator_significance,
         )
     return leaves_batch
 
@@ -625,21 +632,24 @@ def pack_func(self: PruneCircTaylorDPFuncts, data: np.ndarray) -> np.ndarray:
 @njit(cache=True, fastmath=True)
 def ascend_func(
     self: PruneCircTaylorDPFuncts,
-    leaves: np.ndarray,
+    world_tree: WorldTree,
     dyp_folds: np.ndarray,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     idx_segments: np.ndarray,
     coord_segments: np.ndarray,
     coord_cur: tuple[float, float],
     batch_size: int,
-) -> np.ndarray:
-    n_leaves = len(leaves)
+) -> None:
+    n_leaves = world_tree.valid_size
+    if n_leaves <= 0:
+        return
+    # Copy the scores to the scores_ep
+    world_tree.scores_ep[:n_leaves] = world_tree.scores[:n_leaves]
     batch_size = max(1, min(batch_size, n_leaves))
-    scores_new = np.zeros(n_leaves, dtype=np.float32)
     # Loop over branches in batches
     for i_batch_start in range(0, n_leaves, batch_size):
         i_batch_end = min(i_batch_start + batch_size, n_leaves)
-        batch_leaves = leaves[i_batch_start:i_batch_end]
+        batch_leaves = world_tree.leaves[i_batch_start:i_batch_end]
         param_idx_arr, relative_phase_arr = circular.circ_taylor_ascend_resolve_batch(
             batch_leaves,
             coord_segments,
@@ -647,7 +657,7 @@ def ascend_func(
             self.param_grid_count_init,
             self.param_limits,
             self.nbins,
-            self.minimum_snap_cells,
+            self.propagator_significance,
         )
         batch_combined_res = common.shift_add_ascend_batch(
             dyp_folds,
@@ -660,28 +670,31 @@ def ascend_func(
             batch_combined_res,
             self.score_widths,
         )
-        scores_new[i_batch_start:i_batch_end] = batch_scores
-    return scores_new
+        world_tree.folds[i_batch_start:i_batch_end] = batch_combined_res
+        world_tree.scores[i_batch_start:i_batch_end] = batch_scores
 
 
 @njit(cache=True, fastmath=True)
 def ascend_complex_func(
     self: PruneCircTaylorComplexDPFuncts,
-    leaves: np.ndarray,
+    world_tree: WorldTreeComplex,
     dyp_folds: np.ndarray,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     idx_segments: np.ndarray,
     coord_segments: np.ndarray,
     coord_cur: tuple[float, float],
     batch_size: int,
-) -> np.ndarray:
-    n_leaves = len(leaves)
+) -> None:
+    n_leaves = world_tree.valid_size
+    if n_leaves <= 0:
+        return
+    # Copy the scores to the scores_ep
+    world_tree.scores_ep[:n_leaves] = world_tree.scores[:n_leaves]
     batch_size = max(1, min(batch_size, n_leaves))
-    scores_new = np.zeros(n_leaves, dtype=np.float32)
     # Loop over branches in batches
     for i_batch_start in range(0, n_leaves, batch_size):
         i_batch_end = min(i_batch_start + batch_size, n_leaves)
-        batch_leaves = leaves[i_batch_start:i_batch_end]
+        batch_leaves = world_tree.leaves[i_batch_start:i_batch_end]
         param_idx_arr, relative_phase_arr = circular.circ_taylor_ascend_resolve_batch(
             batch_leaves,
             coord_segments,
@@ -689,7 +702,7 @@ def ascend_complex_func(
             self.param_grid_count_init,
             self.param_limits,
             self.nbins,
-            self.minimum_snap_cells,
+            self.propagator_significance,
         )
         batch_combined_res = common.shift_add_ascend_complex_batch(
             dyp_folds,
@@ -702,8 +715,8 @@ def ascend_complex_func(
             batch_combined_res,
             self.score_widths,
         )
-        scores_new[i_batch_start:i_batch_end] = batch_scores
-    return scores_new
+        world_tree.folds[i_batch_start:i_batch_end] = batch_combined_res
+        world_tree.scores[i_batch_start:i_batch_end] = batch_scores
 
 
 @njit(cache=True, fastmath=True)
@@ -905,7 +918,7 @@ def ol_pack_func(self: PruneCircTaylorDPFuncts, data: np.ndarray) -> types.Funct
 @overload_method(PruneCircTaylorDPFunctsTemplate, "ascend")
 def ol_ascend_func(
     self: PruneCircTaylorDPFuncts,
-    leaves_batch: np.ndarray,
+    world_tree: WorldTree,
     dyp_folds: np.ndarray,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     idx_segments: np.ndarray,
@@ -915,17 +928,17 @@ def ol_ascend_func(
 ) -> types.FunctionType:
     def impl(
         self: PruneCircTaylorDPFuncts,
-        leaves_batch: np.ndarray,
+        world_tree: WorldTree,
         dyp_folds: np.ndarray,
         load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
         idx_segments: np.ndarray,
         coord_segments: np.ndarray,
         coord_cur: tuple[float, float],
         batch_size: int,
-    ) -> np.ndarray:
+    ) -> None:
         return ascend_func(
             self,
-            leaves_batch,
+            world_tree,
             dyp_folds,
             load_func,
             idx_segments,
@@ -1145,7 +1158,7 @@ def ol_pack_complex_func(
 @overload_method(PruneCircTaylorComplexDPFunctsTemplate, "ascend")
 def ol_ascend_complex_func(
     self: PruneCircTaylorComplexDPFuncts,
-    leaves_batch: np.ndarray,
+    world_tree: WorldTreeComplex,
     dyp_folds: np.ndarray,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     idx_segments: np.ndarray,
@@ -1155,17 +1168,17 @@ def ol_ascend_complex_func(
 ) -> types.FunctionType:
     def impl(
         self: PruneCircTaylorComplexDPFuncts,
-        leaves_batch: np.ndarray,
+        world_tree: WorldTreeComplex,
         dyp_folds: np.ndarray,
         load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
         idx_segments: np.ndarray,
         coord_segments: np.ndarray,
         coord_cur: tuple[float, float],
         batch_size: int,
-    ) -> np.ndarray:
+    ) -> None:
         return ascend_complex_func(
             self,
-            leaves_batch,
+            world_tree,
             dyp_folds,
             load_func,
             idx_segments,

@@ -273,17 +273,17 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
 
     def ascend(
         self,
-        leaves_batch: np.ndarray,
+        world_tree: WorldTree,
         dyp_folds: np.ndarray,
         load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
         idx_segments: np.ndarray,
         coord_segments: np.ndarray,
         coord_cur: tuple[float, float],
         batch_size: int,
-    ) -> np.ndarray:
+    ) -> None:
         return ascend_func(
             self,
-            leaves_batch,
+            world_tree,
             dyp_folds,
             load_func,
             idx_segments,
@@ -408,17 +408,17 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
 
     def ascend(
         self,
-        leaves_batch: np.ndarray,
+        world_tree: WorldTreeComplex,
         dyp_folds: np.ndarray,
         load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
         idx_segments: np.ndarray,
         coord_segments: np.ndarray,
         coord_cur: tuple[float, float],
         batch_size: int,
-    ) -> np.ndarray:
+    ) -> None:
         return ascend_complex_func(
             self,
-            leaves_batch,
+            world_tree,
             dyp_folds,
             load_func,
             idx_segments,
@@ -729,21 +729,24 @@ def pack_func(self: PrunePolyChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
 @njit(cache=True, fastmath=True)
 def ascend_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaves: np.ndarray,
+    world_tree: WorldTree,
     dyp_folds: np.ndarray,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     idx_segments: np.ndarray,
     coord_segments: np.ndarray,
     coord_cur: tuple[float, float],
     batch_size: int,
-) -> np.ndarray:
-    n_leaves = len(leaves)
+) -> None:
+    n_leaves = world_tree.valid_size
+    if n_leaves <= 0:
+        return
+    # Copy the scores to the scores_ep
+    world_tree.scores_ep[:n_leaves] = world_tree.scores[:n_leaves]
     batch_size = max(1, min(batch_size, n_leaves))
-    scores_new = np.zeros(n_leaves, dtype=np.float32)
     # Loop over branches in batches
     for i_batch_start in range(0, n_leaves, batch_size):
         i_batch_end = min(i_batch_start + batch_size, n_leaves)
-        batch_leaves = leaves[i_batch_start:i_batch_end]
+        batch_leaves = world_tree.leaves[i_batch_start:i_batch_end]
         param_idx_arr, relative_phase_arr = (
             chebyshev.poly_chebyshev_ascend_resolve_batch(
                 batch_leaves,
@@ -765,28 +768,31 @@ def ascend_func(
             batch_combined_res,
             self.score_widths,
         )
-        scores_new[i_batch_start:i_batch_end] = batch_scores
-    return scores_new
+        world_tree.folds[i_batch_start:i_batch_end] = batch_combined_res
+        world_tree.scores[i_batch_start:i_batch_end] = batch_scores
 
 
 @njit(cache=True, fastmath=True)
 def ascend_complex_func(
     self: PrunePolyChebyshevComplexDPFuncts,
-    leaves: np.ndarray,
+    world_tree: WorldTreeComplex,
     dyp_folds: np.ndarray,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     idx_segments: np.ndarray,
     coord_segments: np.ndarray,
     coord_cur: tuple[float, float],
     batch_size: int,
-) -> np.ndarray:
-    n_leaves = len(leaves)
+) -> None:
+    n_leaves = world_tree.valid_size
+    if n_leaves <= 0:
+        return
+    # Copy the scores to the scores_ep
+    world_tree.scores_ep[:n_leaves] = world_tree.scores[:n_leaves]
     batch_size = max(1, min(batch_size, n_leaves))
-    scores_new = np.zeros(n_leaves, dtype=np.float32)
     # Loop over branches in batches
     for i_batch_start in range(0, n_leaves, batch_size):
         i_batch_end = min(i_batch_start + batch_size, n_leaves)
-        batch_leaves = leaves[i_batch_start:i_batch_end]
+        batch_leaves = world_tree.leaves[i_batch_start:i_batch_end]
         param_idx_arr, relative_phase_arr = (
             chebyshev.poly_chebyshev_ascend_resolve_batch(
                 batch_leaves,
@@ -808,8 +814,8 @@ def ascend_complex_func(
             batch_combined_res,
             self.score_widths,
         )
-        scores_new[i_batch_start:i_batch_end] = batch_scores
-    return scores_new
+        world_tree.folds[i_batch_start:i_batch_end] = batch_combined_res
+        world_tree.scores[i_batch_start:i_batch_end] = batch_scores
 
 
 @njit(cache=True, fastmath=True)
@@ -1011,7 +1017,7 @@ def ol_pack_func(
 @overload_method(PrunePolyChebyshevDPFunctsTemplate, "ascend")
 def ol_ascend_func(
     self: PrunePolyChebyshevDPFuncts,
-    leaves_batch: np.ndarray,
+    world_tree: WorldTree,
     dyp_folds: np.ndarray,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     idx_segments: np.ndarray,
@@ -1021,17 +1027,17 @@ def ol_ascend_func(
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevDPFuncts,
-        leaves_batch: np.ndarray,
+        world_tree: WorldTree,
         dyp_folds: np.ndarray,
         load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
         idx_segments: np.ndarray,
         coord_segments: np.ndarray,
         coord_cur: tuple[float, float],
         batch_size: int,
-    ) -> np.ndarray:
+    ) -> None:
         return ascend_func(
             self,
-            leaves_batch,
+            world_tree,
             dyp_folds,
             load_func,
             idx_segments,
@@ -1251,7 +1257,7 @@ def ol_pack_complex_func(
 @overload_method(PrunePolyChebyshevComplexDPFunctsTemplate, "ascend")
 def ol_ascend_complex_func(
     self: PrunePolyChebyshevComplexDPFuncts,
-    leaves_batch: np.ndarray,
+    world_tree: WorldTreeComplex,
     dyp_folds: np.ndarray,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     idx_segments: np.ndarray,
@@ -1261,17 +1267,17 @@ def ol_ascend_complex_func(
 ) -> types.FunctionType:
     def impl(
         self: PrunePolyChebyshevComplexDPFuncts,
-        leaves_batch: np.ndarray,
+        world_tree: WorldTreeComplex,
         dyp_folds: np.ndarray,
         load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
         idx_segments: np.ndarray,
         coord_segments: np.ndarray,
         coord_cur: tuple[float, float],
         batch_size: int,
-    ) -> np.ndarray:
-        return ascend_func(
+    ) -> None:
+        return ascend_complex_func(
             self,
-            leaves_batch,
+            world_tree,
             dyp_folds,
             load_func,
             idx_segments,

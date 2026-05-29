@@ -7,7 +7,7 @@ import numpy as np
 
 from pyloki import kepler
 from pyloki.utils import maths
-from pyloki.utils.misc import C_VAL, ZERO_EPSILON
+from pyloki.utils.misc import C_VAL
 
 
 @attrs.define(kw_only=True)
@@ -55,7 +55,7 @@ class DerivativeModulating(Modulating):
         return t_arr - delay / C_VAL
 
     def to_circular(self) -> dict[str, float]:
-        if abs(self.acc) < ZERO_EPSILON and abs(self.snap) < ZERO_EPSILON:
+        if self.acc == 0.0 and self.snap == 0.0:
             msg = "Degenerate phase: cannot recover omega from (d2,d3,d4)."
             raise ValueError(msg)
         if self.acc * self.snap >= 0.0:
@@ -98,7 +98,7 @@ class DerivativeSeriesModulating(Modulating):
             msg = "Need at least d2,d3,d4 to recover circular parameters."
             raise ValueError(msg)
         d2, d3, d4 = self.coeffs[2], self.coeffs[3], self.coeffs[4]
-        if abs(d2) < ZERO_EPSILON and abs(d4) < ZERO_EPSILON:
+        if d2 == 0.0 and d4 == 0.0:
             msg = "Degenerate phase: cannot recover omega from (d2,d3,d4)."
             raise ValueError(msg)
         if d2 * d4 >= 0.0:

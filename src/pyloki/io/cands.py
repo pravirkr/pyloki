@@ -327,7 +327,7 @@ class PruneResultWriter:
         scheme: np.ndarray,
         leaves_report: np.ndarray,
         scores: np.ndarray,
-        scores_ascend: np.ndarray,
+        scores_ep: np.ndarray,
         pstats: PruneStatsCollection,
     ) -> None:
         if self.runs_group is None:
@@ -341,8 +341,8 @@ class PruneResultWriter:
         for name, data in [
             ("scheme", scheme),
             ("param_sets", leaves_report),
-            ("scores_ep", scores),
-            ("scores", scores_ascend),
+            ("scores_ep", scores_ep),
+            ("scores", scores),
             ("level_stats", level_stats),
             ("timer_stats", timer_stats),
         ]:

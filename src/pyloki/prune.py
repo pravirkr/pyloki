@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -164,7 +165,7 @@ def pruning_iteration(
 # Cache is disabled because there are random fails becasue of callable args
 @njit(cache=False, fastmath=True)
 def pruning_iteration_batched(
-    tree: WorldTree,
+    tree: WorldTree | WorldTreeComplex,
     fold_segment: np.ndarray,
     coord_prev: tuple[float, float],
     coord_next: tuple[float, float],
@@ -177,7 +178,7 @@ def pruning_iteration_batched(
     sugg_max: int = 2**18,
     batch_size: int = 1024,
 ) -> tuple[
-    WorldTree,
+    WorldTree | WorldTreeComplex,
     types.DictType[str, float],
     np.ndarray,
 ]:
@@ -331,6 +332,18 @@ def pruning_iteration_batched(
     return tree_new, stats, timers
 
 
+@dataclass
+class PruneIntegrationStep:
+    """One hop in a survivor's pruning integration path."""
+
+    level: int
+    survivor_idx: int
+    seg_idx: int
+    parent_idx: int
+    param_idx: np.ndarray
+    phase_shift: int
+
+
 class Pruning:
     """A class to perform the pruning algorithm on the FFA search results.
 
@@ -348,6 +361,9 @@ class Pruning:
     max_sugg : int, optional
         Maximum candidates to store in memory (to avoid tree explosion),
         by default 2**17.
+    intermediate_k : int, optional
+        Number of top candidates to store per pruning level in
+        ``best_intermediate_arr``, by default 1.
     poly_basis : {"taylor", "chebyshev"}, optional
         The polynomial coeffecient basis to use, by default "taylor".
     use_moving_grid : bool, optional
@@ -371,6 +387,7 @@ class Pruning:
         max_sugg: int = 2**17,
         batch_size: int = 1024,
         poly_basis: str = "taylor",
+        intermediate_k: int = 1,
         *,
         use_moving_grid: bool = True,
         logger: logging.Logger | None = None,
@@ -379,6 +396,7 @@ class Pruning:
         self._threshold_scheme = threshold_scheme
         self._max_sugg = max_sugg
         self._batch_size = batch_size
+        self._intermediate_k = intermediate_k
         self._use_moving_grid = use_moving_grid
         self._setup_pruning(poly_basis, use_moving_grid)
         self._logger = logger or get_logger(__name__)
@@ -398,6 +416,10 @@ class Pruning:
     @property
     def batch_size(self) -> int:
         return self._batch_size
+
+    @property
+    def intermediate_k(self) -> int:
+        return self._intermediate_k
 
     @property
     def use_moving_grid(self) -> bool:
@@ -436,8 +458,8 @@ class Pruning:
         return self._pstats
 
     @property
-    def backtrack_arr(self) -> np.ndarray:
-        return self._backtrack_arr
+    def backtrack_hist(self) -> list[np.ndarray]:
+        return self._backtrack_hist
 
     @property
     def best_intermediate_arr(self) -> np.ndarray:
@@ -465,6 +487,7 @@ class Pruning:
         )
         self._complete = False
         self._prune_level = 0
+        self._ascend_levels_set = None
         self.logger.info(
             f"Initializing pruning run with ref segment: {self.scheme.ref_idx}",
         )
@@ -474,17 +497,13 @@ class Pruning:
         # Initialize the world tree with the first segment
         coord_init = self.scheme.get_coord(0)
         self._world_tree = self.prune_funcs.seed(fold_segment, coord_init)
-        # Records to track the numerical stability of the algorithm
-        self._backtrack_arr = np.zeros(
-            (self.max_sugg, self.dyp.cfg.prune_poly_order + 2),
-            dtype=np.int32,
-        )
+        # Per-level backtracks for all survivors (integration path reconstruction)
+        self._backtrack_hist: list[np.ndarray] = []
         self._best_intermediate_arr = np.zeros(
-            self.dyp.nsegments - 1,
+            (self.dyp.nsegments - 1, self.intermediate_k),
             dtype=np.dtype(
                 [
                     ("param_sets", np.float64, (self.dyp.cfg.prune_poly_order + 2, 2)),
-                    ("folds", self.dyp.fold.dtype, fold_segment.shape[-2:]),
                     ("scores", np.float32),
                 ],
             ),
@@ -508,6 +527,7 @@ class Pruning:
     def execute(
         self,
         ref_seg: int,
+        ascend_levels: list[int] | None = None,
         outdir: str | Path = "./",
         log_file: Path | None = None,
         result_file: Path | None = None,
@@ -530,8 +550,15 @@ class Pruning:
             The shared progress dictionary, by default None.
         task_id : int, optional
             The task ID for progress tracking, by default None.
+        ascend_levels : list[int] | None, optional
+            Pruning levels at which to reintegrate (ascend) survivors mid-run.
+            A final ascend always runs after the loop unless the last completed
+            level is already in this list.
         """
         run_name = f"{ref_seg:03d}_{task_id:02d}"
+        self._ascend_levels_set = (
+            frozenset(ascend_levels) if ascend_levels is not None else None
+        )
 
         if log_file is None:
             log_file = Path(outdir) / f"tmp_{run_name}_log.txt"
@@ -553,25 +580,17 @@ class Pruning:
         ):
             self.execute_iter(log_file)
 
-        # Reintegrate the world tree params. Survivors can ascend!
+        # Final ascend if needed
+        if self.world_tree.valid_size > 0 and (
+            self._ascend_levels_set is None
+            or self.prune_level not in self._ascend_levels_set
+        ):
+            self._do_ascend()
+
         coord_end = self.scheme.get_previous_coord(
             self.prune_level + 1,
             self.use_moving_grid,
         )
-        segment_idx, segment_coords = self.scheme.get_segment_coords_so_far(
-            self.prune_level,
-        )
-        scores_ascend = self.prune_funcs.ascend(
-            self.world_tree.leaves,
-            self.dyp.fold,
-            self.load_func,
-            segment_idx,
-            segment_coords,
-            coord_end,
-            self.batch_size,
-        )
-
-        # Transform the world tree params to middle of the data
         coord_report = self.scheme.get_report_coord(self.use_moving_grid)
         leaves_report = self.prune_funcs.report(
             self.world_tree.leaves,
@@ -584,7 +603,7 @@ class Pruning:
                 self.scheme.data,
                 leaves_report,
                 self.world_tree.scores,
-                scores_ascend,
+                self.world_tree.scores_ep,
                 self.pstats,
             )
         with log_file.open("a") as f:
@@ -643,9 +662,100 @@ class Pruning:
             self._world_tree = world_tree
             self.logger.info(f"Pruning run complete at level: {self.prune_level}")
             return
-        self._best_intermediate_arr[self.prune_level - 1] = world_tree.get_best()
-        self._backtrack_arr[: world_tree.size] = world_tree.backtracks.copy()
+        slot = self._best_intermediate_arr[self.prune_level - 1]
+        slot["param_sets"], slot["scores"] = world_tree.get_best_k(self.intermediate_k)
+        self._backtrack_hist.append(
+            world_tree.backtracks[: world_tree.valid_size].copy(),
+        )
         self._world_tree = world_tree
+        # Should we reintegrate survivors at this level?
+        if (
+            self._ascend_levels_set is not None
+            and self.prune_level in self._ascend_levels_set
+            and self.world_tree.valid_size > 0
+        ):
+            self._do_ascend()
+
+    def _do_ascend(self) -> None:
+        """Reintegrate world-tree params so survivors can ascend."""
+        coord_end = self.scheme.get_previous_coord(
+            self.prune_level + 1,
+            self.use_moving_grid,
+        )
+        segment_idx, segment_coords = self.scheme.get_segment_coords_so_far(
+            self.prune_level,
+        )
+        self.prune_funcs.ascend(
+            self.world_tree,  # ty:ignore[invalid-argument-type]
+            self.dyp.fold,
+            self.load_func,
+            segment_idx,
+            segment_coords,
+            coord_end,
+            self.batch_size,
+        )
+
+    def trace_integration_path(
+        self,
+        survivor_idx: int,
+        level: int | None = None,
+    ) -> list[PruneIntegrationStep]:
+        """Reconstruct the pruning integration path for a survivor.
+
+        Walks parent links stored in ``backtrack_hist`` from the given
+        survivor back to the seed tree.
+
+        Parameters
+        ----------
+        survivor_idx : int
+            Index of the survivor in the full survivor list at ``level``.
+        level : int, optional
+            Pruning level to start from (1 = first iteration after seed).
+            Defaults to the last level in ``backtrack_hist``.
+
+        Returns
+        -------
+        list[PruneIntegrationStep]
+            Integration hops in ascending level order (seed outward).
+        """
+        n_levels = len(self._backtrack_hist)
+        if n_levels == 0:
+            msg = "No backtrack history; run pruning before tracing a path."
+            raise ValueError(msg)
+        if level is None:
+            level = n_levels
+        if not 1 <= level <= n_levels:
+            msg = f"level must be in [1, {n_levels}], got {level}"
+            raise ValueError(msg)
+
+        steps_rev: list[PruneIntegrationStep] = []
+        lvl = level
+        idx = survivor_idx
+        while lvl >= 1:
+            level_backtracks = self._backtrack_hist[lvl - 1]
+            if idx < 0 or idx >= len(level_backtracks):
+                msg = (
+                    f"survivor_idx {idx} out of range [0, {len(level_backtracks)}) "
+                    f"at level {lvl}"
+                )
+                raise ValueError(msg)
+            bt = level_backtracks[idx]
+            nparams = len(bt) - 2
+            steps_rev.append(
+                PruneIntegrationStep(
+                    level=lvl,
+                    survivor_idx=idx,
+                    seg_idx=self.scheme.get_segment_idx(lvl),
+                    parent_idx=int(bt[0]),
+                    param_idx=bt[1 : nparams + 1].copy(),
+                    phase_shift=int(bt[-1]),
+                ),
+            )
+            if lvl == 1:
+                break
+            idx = int(bt[0])
+            lvl -= 1
+        return steps_rev[::-1]
 
     def _setup_pruning(self, poly_basis: str, use_moving_grid: bool) -> None:
         if self.dyp.fold.ndim > 8:
@@ -682,6 +792,7 @@ def _prune_dyp_seg(
     shared_progress: DictProxy,
     task_id: int,
     log_queue: Queue,
+    ascend_levels: list[int] | None = None,
     outdir: str | Path = "./",
     max_sugg: int = 2**18,
     batch_size: int = 1024,
@@ -704,6 +815,7 @@ def _prune_dyp_seg(
     )
     prn.execute(
         ref_seg,
+        ascend_levels=ascend_levels,
         outdir=outdir,
         log_file=log_file,
         result_file=result_file,
@@ -717,6 +829,7 @@ def prune_dyp_tree(
     threshold_scheme: np.ndarray,
     n_runs: int | None = None,
     ref_segs: list[int] | None = None,
+    ascend_levels: list[int] | None = None,
     max_sugg: int = 2**18,
     batch_size: int = 1024,
     outdir: str | Path = "./",
@@ -772,6 +885,7 @@ def prune_dyp_tree(
         for ref_seg in ref_segs:
             prn.execute(
                 ref_seg,
+                ascend_levels=ascend_levels,
                 outdir=outdir,
                 log_file=log_file,
                 result_file=result_file,
@@ -801,6 +915,7 @@ def prune_dyp_tree(
                     shared_progress,
                     task_id,
                     log_queue,
+                    ascend_levels,
                     outdir,
                     max_sugg,
                     batch_size,
