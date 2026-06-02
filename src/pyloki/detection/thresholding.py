@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 import h5py
 import numpy as np
@@ -171,6 +171,10 @@ class Folds(structref.StructRefProxy):
         Surviving H0 folded profiles.
     folds_h1 : np.ndarray
         Surviving H1 folded profiles.
+    scores_h0 : np.ndarray, optional
+        Per-trial max boxcar SNR for H0 (improved mode only).
+    scores_h1 : np.ndarray, optional
+        Per-trial max boxcar SNR for H1 (improved mode only).
     variance : float, optional
         Variance of the noise in the folded profiles, by default 1
     """
@@ -179,10 +183,20 @@ class Folds(structref.StructRefProxy):
         cls,
         folds_h0: npt.NDArray[np.float32],
         folds_h1: npt.NDArray[np.float32],
-        variance: float = 1.0,
+        third: npt.NDArray[np.float32] | float,
+        fourth: npt.NDArray[np.float32] | None = None,
+        fifth: float | None = None,
     ) -> Self:
         """Create a new instance of Folds."""
-        return folds_init(folds_h0, folds_h1, variance)
+        if fourth is None:
+            if not isinstance(third, (float, np.floating)):
+                msg = "Legacy Folds expects variance as the third argument"
+                raise TypeError(msg)
+            return folds_init_legacy(folds_h0, folds_h1, float(third))
+        if fifth is None:
+            msg = "Scored Folds requires variance as the fifth argument"
+            raise TypeError(msg)
+        return folds_init(folds_h0, folds_h1, third, fourth, fifth)
 
     @property
     @njit(cache=True, fastmath=True)
@@ -196,6 +210,16 @@ class Folds(structref.StructRefProxy):
 
     @property
     @njit(cache=True, fastmath=True)
+    def scores_h0(self) -> npt.NDArray[np.float32]:
+        return self.scores_h0
+
+    @property
+    @njit(cache=True, fastmath=True)
+    def scores_h1(self) -> npt.NDArray[np.float32]:
+        return self.scores_h1
+
+    @property
+    @njit(cache=True, fastmath=True)
     def variance(self) -> float:
         return self.variance
 
@@ -206,9 +230,11 @@ class Folds(structref.StructRefProxy):
 
 
 fields_folds = [
-    ("folds_h0", types.f4[:, :]),
-    ("folds_h1", types.f4[:, :]),
-    ("variance", types.f4),
+    ("folds_h0", types.f4[:, ::1]),
+    ("folds_h1", types.f4[:, ::1]),
+    ("scores_h0", types.f4[::1]),
+    ("scores_h1", types.f4[::1]),
+    ("variance", types.f8),
     ("is_empty", types.int8),
 ]
 
@@ -217,25 +243,50 @@ FoldsType = FoldsTemplate(fields_folds)
 
 
 @njit(
-    FoldsType(types.f4[:, ::1], types.f4[:, ::1], types.f4),
+    FoldsType(
+        types.f4[:, ::1],
+        types.f4[:, ::1],
+        types.f4[::1],
+        types.f4[::1],
+        types.f8,
+    ),
     cache=True,
     fastmath=True,
 )
 def folds_init(
     folds_h0: npt.NDArray[np.float32],
     folds_h1: npt.NDArray[np.float32],
-    variance: float = 1.0,
+    scores_h0: npt.NDArray[np.float32],
+    scores_h1: npt.NDArray[np.float32],
+    variance: float,
 ) -> Folds:
     self = structref.new(FoldsType)
     self.folds_h0 = folds_h0
     self.folds_h1 = folds_h1
+    self.scores_h0 = scores_h0
+    self.scores_h1 = scores_h1
     self.variance = variance
     self.is_empty = 0 if (folds_h0.shape[0] > 0 and folds_h1.shape[0] > 0) else 1
     return self
 
 
+@njit(
+    FoldsType(types.f4[:, ::1], types.f4[:, ::1], types.f8),
+    cache=True,
+    fastmath=True,
+)
+def folds_init_legacy(
+    folds_h0: npt.NDArray[np.float32],
+    folds_h1: npt.NDArray[np.float32],
+    variance: float,
+) -> Folds:
+    scores_h0 = np.empty(0, dtype=np.float32)
+    scores_h1 = np.empty(0, dtype=np.float32)
+    return folds_init(folds_h0, folds_h1, scores_h0, scores_h1, variance)
+
+
 @overload(Folds)
-def overload_folds(
+def overload_folds_legacy(
     folds_h0: npt.NDArray[np.float32],
     folds_h1: npt.NDArray[np.float32],
     variance: float = 1.0,
@@ -245,7 +296,27 @@ def overload_folds(
         folds_h1: npt.NDArray[np.float32],
         variance: float = 1.0,
     ) -> Folds:
-        return folds_init(folds_h0, folds_h1, variance)
+        return folds_init_legacy(folds_h0, folds_h1, variance)
+
+    return impl
+
+
+@overload(Folds)
+def overload_folds_scored(
+    folds_h0: npt.NDArray[np.float32],
+    folds_h1: npt.NDArray[np.float32],
+    scores_h0: npt.NDArray[np.float32],
+    scores_h1: npt.NDArray[np.float32],
+    variance: float,
+) -> types.FunctionType:
+    def impl(
+        folds_h0: npt.NDArray[np.float32],
+        folds_h1: npt.NDArray[np.float32],
+        scores_h0: npt.NDArray[np.float32],
+        scores_h1: npt.NDArray[np.float32],
+        variance: float,
+    ) -> Folds:
+        return folds_init(folds_h0, folds_h1, scores_h0, scores_h1, variance)
 
     return impl
 
@@ -254,7 +325,9 @@ def overload_folds(
 def create_empty_folds() -> Folds:
     empty_h0 = np.empty((0, 1), dtype=np.float32)  # Shape (0, nbins) indicates empty
     empty_h1 = np.empty((0, 1), dtype=np.float32)
-    return folds_init(empty_h0, empty_h1, 0.0)  # variance=0 for empty
+    scores_h0 = np.empty(0, dtype=np.float32)
+    scores_h1 = np.empty(0, dtype=np.float32)
+    return folds_init(empty_h0, empty_h1, scores_h0, scores_h1, 0.0)
 
 
 state_dtype = np.dtype(
@@ -407,8 +480,113 @@ def gen_next_using_surv_prob(
     return state_next, folds_next
 
 
+@njit("f4[::1](f4[:,::1], f8, f8, f8)", cache=True, fastmath=True)
+def fold_max_scores(
+    folds: npt.NDArray[np.float32],
+    var_cur: float,
+    ducy_max: float = 0.2,
+    wtsp: float = 1.0,
+) -> npt.NDArray[np.float32]:
+    """Per-trial max boxcar SNR (threshold-independent part of pruning)."""
+    folds_var = var_cur * np.ones_like(folds)
+    folds_norm = folds / np.sqrt(folds_var)
+    folds_norm = folds_norm.astype(np.float32)
+    widths = scoring.generate_box_width_trials(
+        folds.shape[1],
+        ducy_max=ducy_max,
+        wtsp=wtsp,
+    )
+    return np_utils.nb_max(scoring.boxcar_snr_2d(folds_norm, widths, 1.0), axis=1)
+
+
+@njit(cache=True, fastmath=True)
+def transition_state(
+    state_cur: npt.NDArray,
+    folds_cur: Folds,
+    threshold: float,
+    nbranches: float,
+) -> tuple[npt.NDArray, Folds]:
+    good_scores_idx_h0 = np.nonzero(folds_cur.scores_h0 > threshold)[0]
+    folds_h0_pruned = np.ascontiguousarray(folds_cur.folds_h0[good_scores_idx_h0])
+    scores_h0_pruned = np.ascontiguousarray(folds_cur.scores_h0[good_scores_idx_h0])
+    success_h0 = len(folds_h0_pruned) / len(folds_cur.folds_h0)
+    good_scores_idx_h1 = np.nonzero(folds_cur.scores_h1 > threshold)[0]
+    folds_h1_pruned = np.ascontiguousarray(folds_cur.folds_h1[good_scores_idx_h1])
+    scores_h1_pruned = np.ascontiguousarray(folds_cur.scores_h1[good_scores_idx_h1])
+    success_h1 = len(folds_h1_pruned) / len(folds_cur.folds_h1)
+    state_next = get_next_state(state_cur, threshold, success_h0, success_h1, nbranches)
+    folds_next = Folds(
+        folds_h0_pruned,
+        folds_h1_pruned,
+        scores_h0_pruned,
+        scores_h1_pruned,
+        folds_cur.variance,
+    )
+    return state_next, folds_next
+
+
 @njit(cache=True, parallel=True, fastmath=True)
-def run_stage(
+def pre_simulate_stage_folds(
+    prev_states: npt.NDArray,
+    folds_in: types.ListType[FoldsTemplate],
+    beam_idx_prev: npt.NDArray,
+    bias_snr: float,
+    profile: npt.NDArray[np.float32],
+    rng: np.random.Generator,
+    ntrials: int,
+    nthresholds: int,
+    nprobs: int,
+    ducy_max: float,
+    wtsp: float,
+) -> types.ListType[FoldsTemplate]:
+    sim_folds = typed.List.empty_list(FoldsType)
+    for _ in range(nthresholds * nprobs):
+        sim_folds.append(create_empty_folds())
+
+    n_beam = len(beam_idx_prev)
+    for ii in prange(n_beam * nprobs):
+        kprob = ii % nprobs
+        ibeam = ii // nprobs
+        jthresh = beam_idx_prev[ibeam]
+
+        prev_state = prev_states[jthresh, kprob]
+        if prev_state["is_empty"]:
+            continue
+        fold_idx = jthresh * nprobs + kprob
+        prev_fold_state = folds_in[fold_idx]
+        if prev_fold_state.is_empty == 0:
+            folds_h0, variance = simulate_folds(
+                prev_fold_state.folds_h0,
+                prev_fold_state.variance,
+                profile,
+                rng,
+                bias_snr=0.0,
+                var_add=1.0,
+                ntrials_min=ntrials,
+            )
+            folds_h1, variance = simulate_folds(
+                prev_fold_state.folds_h1,
+                prev_fold_state.variance,
+                profile,
+                rng,
+                bias_snr=bias_snr,
+                var_add=1.0,
+                ntrials_min=ntrials,
+            )
+            scores_h0 = fold_max_scores(folds_h0, variance, ducy_max, wtsp)
+            scores_h1 = fold_max_scores(folds_h1, variance, ducy_max, wtsp)
+            sim_folds[fold_idx] = Folds(
+                folds_h0,
+                folds_h1,
+                scores_h0,
+                scores_h1,
+                variance,
+            )
+    return sim_folds
+
+
+@njit(cache=True, parallel=True, fastmath=True)
+def run_stage_legacy(
     istage: int,
     beam_idx_cur: npt.NDArray,
     beam_idx_prev: npt.NDArray,
@@ -470,6 +648,57 @@ def run_stage(
                         folds_out[ithres * nprobs + iprob] = cur_fold_state
 
 
+@njit(cache=True, parallel=True, fastmath=True)
+def run_stage_improved(
+    istage: int,
+    beam_idx_cur: npt.NDArray,
+    beam_idx_prev: npt.NDArray,
+    states: npt.NDArray,
+    sim_folds: types.ListType[FoldsTemplate],
+    folds_out: types.ListType[FoldsTemplate],
+    probs: npt.NDArray,
+    nbranches: int,
+    thresholds: npt.NDArray[np.float32],
+    nprobs: int,
+    thres_neigh: int,
+) -> None:
+    for ibeam_cur in prange(len(beam_idx_cur)):
+        ithres = int(beam_idx_cur[ibeam_cur])
+        neighbour_beam_indices = neighbouring_indices(
+            beam_idx_prev,
+            ithres,
+            thres_neigh,
+        )
+        for jthresh in neighbour_beam_indices:
+            for kprob in range(nprobs):
+                fold_idx = int(jthresh * nprobs + kprob)
+                prev_state = states[istage - 1, jthresh, kprob]
+                if prev_state["is_empty"]:
+                    continue
+                prev_sim_fold = sim_folds[fold_idx]
+                if prev_sim_fold.is_empty == 0:
+                    cur_state, cur_fold_state = transition_state(
+                        prev_state,
+                        prev_sim_fold,
+                        thresholds[ithres],
+                        nbranches,
+                    )
+                    cur_state = cur_state[0]  # Get record from array
+                    iprob_val = np.digitize(cur_state["success_h1_cumul"], probs) - 1
+                    iprob = int(iprob_val.item())  # Extract scalar
+                    if iprob < 0 or iprob >= nprobs:  # Clamp to valid range
+                        continue
+
+                    existing_state = states[istage, ithres, iprob]
+                    if (
+                        existing_state["is_empty"]
+                        or cur_state["complexity_cumul"]
+                        < existing_state["complexity_cumul"]
+                    ):
+                        states[istage, ithres, iprob] = cur_state
+                        folds_out[ithres * nprobs + iprob] = cur_fold_state
+
+
 class DynamicThresholdScheme:
     def __init__(
         self,
@@ -484,7 +713,12 @@ class DynamicThresholdScheme:
         ducy_max: float = 0.2,
         wtsp: float = 1.0,
         beam_width: float = 0.7,
+        mode: Literal["legacy", "improved"] = "legacy",
     ) -> None:
+        if mode not in ("legacy", "improved"):
+            msg = f"mode must be 'legacy' or 'improved', got {mode!r}"
+            raise ValueError(msg)
+        self.mode = mode
         self.rng = np.random.default_rng()
         self.branching_pattern = branching_pattern
         self.ref_ducy = ref_ducy
@@ -513,7 +747,10 @@ class DynamicThresholdScheme:
             bound_scheme(self.nstages, self.snr_final),
             trials_scheme(self.branching_pattern, trials_start=1),
         )
-        self.init()
+        if self.mode == "improved":
+            self._init_improved()
+        else:
+            self._init_legacy()
 
     @property
     def nstages(self) -> int:
@@ -545,7 +782,7 @@ class DynamicThresholdScheme:
         )[0]
 
     @Timer(name="DynamicThresholdScheme init", logger=logger.info)
-    def init(self) -> None:
+    def _init_legacy(self) -> None:
         var_init = 1.0
         folds = np.zeros((self.ntrials, self.nbins), dtype=np.float32)
         folds_h0, _ = simulate_folds(
@@ -592,9 +829,80 @@ class DynamicThresholdScheme:
             folds_idx = int(ithres * self.nprobs + iprob)
             self.folds_in[folds_idx] = cur_fold_state
 
+    @Timer(name="DynamicThresholdScheme init", logger=logger.info)
+    def _init_improved(self) -> None:
+        var_init = 1.0
+        folds = np.zeros((self.ntrials, self.nbins), dtype=np.float32)
+        folds_h0, _ = simulate_folds(
+            folds,
+            0,
+            self.profile,
+            self.rng,
+            bias_snr=0,
+            var_add=var_init,
+            ntrials_min=self.ntrials,
+        )
+        folds_h1, _ = simulate_folds(
+            folds,
+            0,
+            self.profile,
+            self.rng,
+            bias_snr=self.bias_snr,
+            var_add=var_init,
+            ntrials_min=self.ntrials,
+        )
+        state = np.ones(1, dtype=state_dtype)[0]
+        state["threshold"] = -1.0
+        state["threshold_prev"] = -1.0
+
+        sim_folds_h0, var_next = simulate_folds(
+            folds_h0,
+            var_init,
+            self.profile,
+            self.rng,
+            bias_snr=0.0,
+            var_add=1.0,
+            ntrials_min=self.ntrials,
+        )
+        sim_folds_h1, var_next = simulate_folds(
+            folds_h1,
+            var_init,
+            self.profile,
+            self.rng,
+            bias_snr=self.bias_snr,
+            var_add=1.0,
+            ntrials_min=self.ntrials,
+        )
+        scores_h0 = fold_max_scores(sim_folds_h0, var_next, self.ducy_max, self.wtsp)
+        scores_h1 = fold_max_scores(sim_folds_h1, var_next, self.ducy_max, self.wtsp)
+        fold_sim_state = Folds(
+            sim_folds_h0,
+            sim_folds_h1,
+            scores_h0,
+            scores_h1,
+            var_next,
+        )
+
+        thresholds_idx = self.get_current_thresholds_idx(0)
+        for ithres in thresholds_idx:
+            cur_state, cur_fold_state = transition_state(
+                state,
+                fold_sim_state,
+                self.thresholds[ithres],
+                self.branching_pattern[0],
+            )
+            cur_state = cur_state[0]
+
+            iprob = np.digitize(cur_state["success_h1_cumul"], self.probs) - 1
+            if iprob < 0:
+                continue
+            self.states[0, ithres, iprob] = cur_state
+            folds_idx = int(ithres * self.nprobs + iprob)
+            self.folds_in[folds_idx] = cur_fold_state
+
     @Timer(name="DynamicThresholdScheme run", logger=logger.info)
     def run(self, thres_neigh: int = 11) -> None:
-        logger.info("Running dynamic threshold scheme")
+        logger.info("Running dynamic threshold scheme (%s mode)", self.mode)
         for istage in track(
             range(1, self.nstages),
             description="Running stages",
@@ -603,24 +911,52 @@ class DynamicThresholdScheme:
         ):
             beam_idx_cur = self.get_current_thresholds_idx(istage)
             beam_idx_prev = self.get_current_thresholds_idx(istage - 1)
-            run_stage(
-                istage,
-                beam_idx_cur,
-                beam_idx_prev,
-                self.states,
-                self.folds_in,
-                self.folds_out,
-                self.probs,
-                self.branching_pattern[istage],
-                self.thresholds,
-                self.bias_snr,
-                self.profile,
-                self.rng,
-                self.ntrials,
-                self.ducy_max,
-                self.wtsp,
-                thres_neigh,
-            )
+            if self.mode == "improved":
+                sim_folds = pre_simulate_stage_folds(
+                    self.states[istage - 1],
+                    self.folds_in,
+                    beam_idx_prev,
+                    self.bias_snr,
+                    self.profile,
+                    self.rng,
+                    self.ntrials,
+                    self.nthresholds,
+                    self.nprobs,
+                    self.ducy_max,
+                    self.wtsp,
+                )
+                run_stage_improved(
+                    istage,
+                    beam_idx_cur,
+                    beam_idx_prev,
+                    self.states,
+                    sim_folds,
+                    self.folds_out,
+                    self.probs,
+                    self.branching_pattern[istage],
+                    self.thresholds,
+                    self.nprobs,
+                    thres_neigh,
+                )
+            else:
+                run_stage_legacy(
+                    istage,
+                    beam_idx_cur,
+                    beam_idx_prev,
+                    self.states,
+                    self.folds_in,
+                    self.folds_out,
+                    self.probs,
+                    self.branching_pattern[istage],
+                    self.thresholds,
+                    self.bias_snr,
+                    self.profile,
+                    self.rng,
+                    self.ntrials,
+                    self.ducy_max,
+                    self.wtsp,
+                    thres_neigh,
+                )
             self.folds_in = self.folds_out
             self.folds_out = typed.List.empty_list(FoldsType)
             for _ in range(self.nthresholds * self.nprobs):
@@ -644,6 +980,7 @@ class DynamicThresholdScheme:
                 "ducy_max",
                 "wtsp",
                 "beam_width",
+                "mode",
             ]:
                 f.attrs[attr] = getattr(self, attr)
             # Save numpy arrays

@@ -95,12 +95,12 @@ def np_apply_along_axis(func1d: Callable, axis: int, arr: np.ndarray) -> np.ndar
         raise ValueError(msg)
     if axis == 0:
         res_len = arr.shape[1]
-        result = np.empty(res_len)
+        result = np.empty(res_len, dtype=arr.dtype)
         for ii in range(res_len):
             result[ii] = func1d(arr[:, ii])
     else:
         res_len = arr.shape[0]
-        result = np.empty(res_len)
+        result = np.empty(res_len, dtype=arr.dtype)
         for jj in range(res_len):
             result[jj] = func1d(arr[jj, :])
     return result

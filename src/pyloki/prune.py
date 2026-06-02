@@ -442,8 +442,8 @@ class Pruning:
         return self._logger
 
     @property
-    def is_complete(self) -> bool:
-        return self._complete
+    def prune_complete(self) -> bool:
+        return self._prune_complete
 
     @property
     def scheme(self) -> MiddleOutScheme:
@@ -485,9 +485,8 @@ class Pruning:
             tsegment=self.dyp.tseg,
             stride=1,
         )
-        self._complete = False
+        self._prune_complete = False
         self._prune_level = 0
-        self._ascend_levels_set = None
         self.logger.info(
             f"Initializing pruning run with ref segment: {self.scheme.ref_idx}",
         )
@@ -556,7 +555,7 @@ class Pruning:
             level is already in this list.
         """
         run_name = f"{ref_seg:03d}_{task_id:02d}"
-        self._ascend_levels_set = (
+        ascend_levels_set = (
             frozenset(ascend_levels) if ascend_levels is not None else None
         )
 
@@ -579,12 +578,12 @@ class Pruning:
             get_leaves=lambda: self.world_tree.size_lb,
         ):
             self.execute_iter(log_file)
+            # Should we reintegrate survivors at this level?
+            if ascend_levels_set is not None and self.prune_level in ascend_levels_set:
+                self._do_ascend()
 
         # Final ascend if needed
-        if self.world_tree.valid_size > 0 and (
-            self._ascend_levels_set is None
-            or self.prune_level not in self._ascend_levels_set
-        ):
+        if ascend_levels_set is None or self.prune_level not in ascend_levels_set:
             self._do_ascend()
 
         coord_end = self.scheme.get_previous_coord(
@@ -614,7 +613,7 @@ class Pruning:
         self.logger.info(f"Pruning time: {self.pstats.get_concise_timer_summary()}")
 
     def execute_iter(self, log_file: Path) -> None:
-        if self.is_complete:
+        if self.prune_complete:
             return
         self._prune_level += 1
         seg_idx_cur = self.scheme.get_segment_idx(self.prune_level)
@@ -658,7 +657,7 @@ class Pruning:
             f.write(pstats_cur.get_summary())
         self._pstats.update_stats(pstats_cur, timers)
         if world_tree.size == 0:
-            self._complete = True
+            self._prune_complete = True
             self._world_tree = world_tree
             self.logger.info(f"Pruning run complete at level: {self.prune_level}")
             return
@@ -668,16 +667,14 @@ class Pruning:
             world_tree.backtracks[: world_tree.valid_size].copy(),
         )
         self._world_tree = world_tree
-        # Should we reintegrate survivors at this level?
-        if (
-            self._ascend_levels_set is not None
-            and self.prune_level in self._ascend_levels_set
-            and self.world_tree.valid_size > 0
-        ):
-            self._do_ascend()
 
     def _do_ascend(self) -> None:
         """Reintegrate world-tree params so survivors can ascend."""
+        if self.prune_complete:
+            return
+        if self.world_tree.valid_size == 0:
+            return
+        self.logger.info(f"Ascending survivors at level: {self.prune_level}")
         coord_end = self.scheme.get_previous_coord(
             self.prune_level + 1,
             self.use_moving_grid,
