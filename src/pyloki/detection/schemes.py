@@ -237,7 +237,10 @@ class DynamicThresholdSchemeAnalyser:
         """
         if min_probs is None:
             min_probs = [self.probs[0]]
-        final_states = self.states[-1][self.states[-1]["is_empty"] == False]
+        final_states = self._final_cloud()
+        if len(final_states) == 0:
+            msg = "No non-empty final states to plot"
+            raise ValueError(msg)
         backtrack_states_info = []
         for min_prob in min_probs:
             filtered_states = final_states[final_states["success_h1_cumul"] >= min_prob]
@@ -286,7 +289,10 @@ class DynamicThresholdSchemeAnalyser:
         list[StatesInfo]
             List of the best paths as StatesInfo objects.
         """
-        final_states = self.states[-1][self.states[-1]["is_empty"] == False]
+        final_states = self._final_cloud()
+        if len(final_states) == 0:
+            msg = "No non-empty final states to plot"
+            raise ValueError(msg)
         filtered_states = final_states[final_states["success_h1_cumul"] >= min_prob]
         if len(filtered_states) == 0:
             return []
@@ -508,6 +514,114 @@ class DynamicThresholdSchemeAnalyser:
 
         ax.invert_yaxis()
         plt.tight_layout()
+        return fig
+
+    def _final_cloud(self) -> npt.NDArray:
+        """Return the non-empty final-stage states (complete schemes).
+
+        Each non-empty cell of the final DP stage is a complete scheme that
+        ends at a given final threshold and reaches some cumulative detection
+        probability. Together they form the cloud of achievable operating
+        points whose lower envelope is the Pareto frontier.
+        """
+        final = self.states[-1]
+        return final[~final["is_empty"]]
+
+    def _frontier_by_bin(self, metric: str) -> npt.NDArray:
+        """Return one winner state per occupied final probability bin.
+
+        The final DP stage is indexed by (threshold, probability bin). For each
+        probability bin we select, across all final thresholds, the single
+        non-empty scheme that minimizes ``metric``. This yields at most
+        ``nprobs`` winners and traces the cost-sensitivity frontier with exactly
+        one operating point per bin, mirroring the structure of the DP table.
+        """
+        names = self.states.dtype.names
+        if names is None or metric not in names:
+            msg = f"metric must be one of {names}, got {metric!r}"
+            raise ValueError(msg)
+        final = self.states[-1]
+        winners = []
+        for r in range(self.nprobs):
+            col = final[:, r]
+            valid = col[~col["is_empty"]]
+            if len(valid) == 0:
+                continue
+            score = valid[metric].astype(float)
+            prob = valid["success_h1_cumul"].astype(float)
+            good = np.isfinite(score) & np.isfinite(prob) & (score > 0) & (prob > 0)
+            valid, score = valid[good], score[good]
+            if len(valid) == 0:
+                continue
+            winners.append(valid[np.argmin(score)])
+        out = np.empty(len(winners), dtype=final.dtype)
+        for i, winner in enumerate(winners):
+            out[i] = winner
+        return out
+
+    def plot_pareto(self, nparam_vol: float = 1) -> plt.Figure:
+        """Plot the cost-efficiency frontier L = C / P(H1) vs detection prob.
+
+        For each final detection-probability bin, the single scheme with the
+        minimum cost-efficiency ratio L = complexity / P(H1) is selected (one
+        winner per bin), tracing the frontier optimized by the dynamic program.
+
+        Returns
+        -------
+        plt.Figure
+            The figure containing the plot.
+        """
+        frontier = self._frontier_by_bin("cost")
+        if len(frontier) == 0:
+            msg = "No non-empty final states to plot"
+            raise ValueError(msg)
+
+        prob = frontier["success_h1_cumul"].astype(float)
+        cost = frontier["cost"].astype(float)
+        order = np.argsort(prob)
+        prob, cost, _ = prob[order], cost[order], frontier[order]
+
+        fig, ax = plt.subplots(figsize=(7, 6), constrained_layout=True)
+
+        cloud = self._final_cloud()
+        cprob = cloud["success_h1_cumul"].astype(float)
+        ccost = cloud["cost"].astype(float) * nparam_vol
+        keep = np.isfinite(cprob) & np.isfinite(ccost) & (cprob > 0) & (ccost > 0)
+        ax.scatter(
+            cprob[keep],
+            ccost[keep],
+            color="0.82",
+            s=14,
+            alpha=0.5,
+            edgecolor="none",
+            zorder=1,
+            rasterized=True,
+            label="All schemes",
+        )
+
+        ax.plot(prob, cost, c="#0072B2", lw=1.5, zorder=2, label="DP frontier")
+        ax.scatter(
+            prob,
+            cost,
+            facecolors="white",
+            edgecolors="#0072B2",
+            s=45,
+            linewidth=0.4,
+            zorder=3,
+        )
+
+        ax.set_xlabel(r"P(H$_{1}$)")
+        ax.set_ylabel(r"Ensemble Cumulative cost $L = C_{\mathrm{total}}\,/\,P_d$")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_title("Cost-efficiency frontier")
+        ax.legend(
+            loc="upper left",
+            ncol=1,
+            frameon=False,
+            handlelength=1.2,
+            borderaxespad=0.3,
+        )
         return fig
 
     def save(self, filename: str) -> None:

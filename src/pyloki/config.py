@@ -147,90 +147,6 @@ class ParamLimits:
         return cls(out)
 
     @classmethod
-    def from_circular(
-        cls,
-        freq: float | tuple[float, float],
-        p_orb_min: float,
-        m_c: float,
-        m_p: float = 1.4,
-        poly_order: int = 5,
-    ) -> ParamLimits:
-        """Generate search parameter limits from circular orbit parameters.
-
-        Parameters
-        ----------
-        freq : float | tuple[float, float]
-            Expected intrinsic spin frequency of the orbit (in Hz). If a tuple,
-            it represents the range of frequencies to search.
-        p_orb_min : float
-            Minimum orbital period to cover (in seconds).
-        m_c : float
-            Companion mass (in solar masses).
-        m_p : float, optional
-            Pulsar mass (in solar masses), by default 1.4.
-        poly_order : int, optional
-            Order of the polynomial to use for the search, by default 5.
-
-        Returns
-        -------
-        ParamLimits
-            Object with the search parameter limits.
-        """
-        poly_order = max(poly_order, 2)
-        omega_orb_max = 2 * np.pi / p_orb_min
-        # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
-        x_const = float(
-            (constants.M_sun.value * constants.G.value) ** (1 / 3)
-            / (constants.c.value * (2 * np.pi) ** (2 / 3)),
-        )
-        x_orb = x_const * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
-        max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
-        bounds = [(-d, d) for d in max_derivs[2:][::-1]]
-        freq_shift = max_derivs[1] / C_VAL
-        if isinstance(freq, (tuple, list, np.ndarray)):
-            freq_min, freq_max = freq
-            bounds.append((freq_min * (1 - freq_shift), freq_max * (1 + freq_shift)))
-        else:
-            bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
-        return cls(bounds)
-
-    @classmethod
-    def from_circular_dynamic(
-        cls,
-        freq: float,
-        p_orb_min: float,
-        m_c: float,
-        t_drift: float,
-        m_p: float = 1.4,
-        poly_order: int = 4,
-    ) -> ParamLimits:
-        """Generate dynamic search parameter limits from circular orbit.
-
-        This method first calculates the maximum physical amplitudes for each
-        parameter (s, j, a, v), then projects these worst-case values to the
-        edge of the observation window (t_obs/2) to find the maximum possible
-        drift. This provides the necessary "headroom" for circular orbit searches.
-        """
-        poly_order = max(poly_order, 2)
-        omega_orb_max = 2 * np.pi / p_orb_min
-        # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
-        x_const = float(
-            (constants.M_sun.value * constants.G.value) ** (1 / 3)
-            / (constants.c.value * (2 * np.pi) ** (2 / 3)),
-        )
-        x_orb = x_const * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
-        max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
-        drifted_max_values_d = transforms.shift_taylor_params(
-            max_derivs[::-1],
-            t_drift / 2.0,
-        )
-        bounds = [(-d, d) for d in drifted_max_values_d[:-1]]
-        freq_shift = drifted_max_values_d[-1] / C_VAL
-        bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
-
-        return cls(bounds)
-
-    @classmethod
     def from_upper(
         cls,
         freq: float | tuple[float, float],
@@ -282,34 +198,29 @@ class ParamLimits:
         return cls(bounds)
 
     @classmethod
-    def from_keplerian(
+    def from_circular(
         cls,
-        freq: tuple[float, float],
+        freq: float | tuple[float, float],
         p_orb_min: float,
-        ecc_max: float,
-        tobs: float,
-        m_c: float,
-        m_p: float = 1.4,
-        poly_order: int = 4,
+        m_c_max: float = 10.0,
+        m_p_min: float = 1.2,
+        poly_order: int = 5,
     ) -> ParamLimits:
-        """Generate search parameter limits from Keplerian orbit parameters.
+        """Generate search parameter limits from circular orbit parameters.
 
         Parameters
         ----------
-        freq : tuple[float, float]
-            Frequency range to search (min, max).
+        freq : float | tuple[float, float]
+            Expected intrinsic spin frequency of the orbit (in Hz). If a tuple,
+            it represents the range of frequencies to search.
         p_orb_min : float
-            Minimum orbital period (in seconds).
-        ecc_max : float
-            Maximum eccentricity of the orbit.
-        tobs : float
-            Total observation time (in seconds).
-        m_c : float
-            Mass of the companion (in solar masses).
-        m_p : float, optional
-            Mass of the pulsar (in solar masses), by default 1.4.
+            Minimum orbital period to cover (in seconds).
+        m_c_max : float
+            Maximum companion mass (in solar masses), by default 10.0.
+        m_p_min : float
+            Minimum pulsar mass (in solar masses), by default 1.2.
         poly_order : int, optional
-            Highest polynomial order to include in the search, by default 4.
+            Order of the polynomial to use for the search, by default 5.
 
         Returns
         -------
@@ -317,25 +228,97 @@ class ParamLimits:
             Object with the search parameter limits.
         """
         poly_order = max(poly_order, 2)
-        out = [(float(freq[0]), float(freq[1]))]
         omega_orb_max = 2 * np.pi / p_orb_min
         # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
         x_const = float(
             (constants.M_sun.value * constants.G.value) ** (1 / 3)
             / (constants.c.value * (2 * np.pi) ** (2 / 3)),
         )
-        x_orb = x_const * ((m_p + m_c) * p_orb_min**2) ** (1 / 3) * m_c / (m_p + m_c)
+        x_orb = (
+            x_const
+            * ((m_p_min + m_c_max) * p_orb_min**2) ** (1 / 3)
+            * m_c_max
+            / (m_p_min + m_c_max)
+        )
+        max_derivs = x_orb * C_VAL * omega_orb_max ** np.arange(poly_order + 1)
+        bounds = [(-d, d) for d in max_derivs[2:][::-1]]
+        freq_shift = max_derivs[1] / C_VAL
+        if isinstance(freq, (tuple, list, np.ndarray)):
+            freq_min, freq_max = freq
+            bounds.append((freq_min * (1 - freq_shift), freq_max * (1 + freq_shift)))
+        else:
+            bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
+        return cls(bounds)
+
+    @classmethod
+    def from_keplerian(
+        cls,
+        freq: float | tuple[float, float],
+        tobs: float,
+        p_orb_min: float,
+        m_c_max: float = 10.0,
+        m_p_min: float = 1.2,
+        ecc_max: float = 0.1,
+        poly_order: int = 5,
+        grid_res: float = 0.1,
+    ) -> ParamLimits:
+        """Generate search parameter limits from Keplerian orbit parameters.
+
+        Parameters
+        ----------
+        freq : float | tuple[float, float]
+            Expected intrinsic spin frequency of the orbit (in Hz). If a tuple,
+            it represents the range of frequencies to search.
+        tobs : float
+            Total observation time (in seconds).
+        p_orb_min : float
+            Minimum orbital period to cover (in seconds).
+        m_c_max : float
+            Maximum companion mass (in solar masses), by default 10.0.
+        m_p_min : float
+            Minimum pulsar mass (in solar masses), by default 1.2.
+        ecc_max : float
+            Maximum eccentricity of the orbit, by default 0.1.
+        poly_order : int, optional
+            Order of the polynomial to use for the search, by default 5.
+        grid_res : float, optional
+            Resolution of the grid search, by default 0.1.
+
+        Returns
+        -------
+        ParamLimits
+            Object with the search parameter limits.
+        """
+        poly_order = max(poly_order, 2)
+        omega_orb_max = 2 * np.pi / p_orb_min
+        # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
+        x_const = float(
+            (constants.M_sun.value * constants.G.value) ** (1 / 3)
+            / (constants.c.value * (2 * np.pi) ** (2 / 3)),
+        )
+        x_orb = (
+            x_const
+            * ((m_p_min + m_c_max) * p_orb_min**2) ** (1 / 3)
+            * m_c_max
+            / (m_p_min + m_c_max)
+        )
         n_rad = tobs * omega_orb_max
-        bounds = kepler.find_max_deriv_bounds(
+        max_derivs = kepler.find_max_deriv_bounds(
             x_orb,
             n_rad,
-            ecc_max,
-            poly_order + 1,
             p_orb_min,
+            ecc_max,
+            poly_order,
+            res=grid_res,
         )
-        for bound in bounds:
-            out.insert(0, (-bound, bound))
-        return cls(out)
+        bounds = [(-d, d) for d in max_derivs[2:][::-1]]
+        freq_shift = max_derivs[1] / C_VAL
+        if isinstance(freq, (tuple, list, np.ndarray)):
+            freq_min, freq_max = freq
+            bounds.append((freq_min * (1 - freq_shift), freq_max * (1 + freq_shift)))
+        else:
+            bounds.append((freq * (1 - freq_shift), freq * (1 + freq_shift)))
+        return cls(bounds)
 
 
 @attrs.frozen(auto_attribs=True, kw_only=True)

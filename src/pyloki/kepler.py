@@ -258,14 +258,78 @@ def keplerian_z_derivatives_exact(
     return z, dz_dt, d2z_dt2
 
 
+@njit(cache=True, fastmath=True)
+def poly_projection_matrix(t_arr: np.ndarray, deg: int) -> np.ndarray:
+    n = t_arr.size
+    m = deg + 1
+    v_mat = np.empty((n, m), dtype=np.float64)
+    v_mat[:, 0] = 1.0
+    for k in range(1, m):
+        v_mat[:, k] = v_mat[:, k - 1] * t_arr
+
+    # Column scaling for numerical stability
+    scale_vec = np.empty(m, dtype=np.float64)
+
+    for k in range(m):
+        s = 0.0
+        for i in range(n):
+            s += v_mat[i, k] * v_mat[i, k]
+
+        s = np.sqrt(s)
+        if s == 0.0:
+            s = 1.0
+
+        scale_vec[k] = s
+
+        for i in range(n):
+            v_mat[i, k] /= s
+
+    p_mat_scaled = np.linalg.inv(v_mat.T @ v_mat) @ v_mat.T
+    p_mat = np.empty_like(p_mat_scaled)
+    for k in range(m):
+        for i in range(n):
+            p_mat[k, i] = p_mat_scaled[k, i] / scale_vec[k]
+
+    return p_mat
+
+
+@njit(cache=True, fastmath=True)
+def mat_vec_product(p_mat: np.ndarray, y_vec: np.ndarray) -> np.ndarray:
+    m, n = p_mat.shape
+    out = np.zeros(m, dtype=np.float64)
+    for i in range(m):
+        s = 0.0
+        for j in range(n):
+            s += p_mat[i, j] * y_vec[j]
+        out[i] = s
+    return out
+
+
+@njit(cache=True, fastmath=True)
+def polyfit_error(t_arr: np.ndarray, z_arr: np.ndarray, coeffs: np.ndarray) -> float:
+    err = 0.0
+
+    for i in range(t_arr.size):
+        pred = 0.0
+
+        for k in range(coeffs.size - 1, -1, -1):
+            pred = pred * t_arr[i] + coeffs[k]
+
+        r = z_arr[i] - pred
+        err += r * r
+
+    return err
+
+
+@njit(cache=True, fastmath=True)
 def find_derivative_connections(
-    a: float,
+    a_sin_i_orb: float,
     n_rad: float,
-    ecc: float,
-    poly_degree: int,
+    ecc_max: float,
+    poly_order: int,
     n_samples: int = 100,
     res: float = 0.05,
-) -> list[np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Generate polynomial coefficients for Keplerian orbits by fitting z(t).
 
     Derivatives here refer to the polynomial coefficients c_k from sum(c_k * t^k).
@@ -291,48 +355,92 @@ def find_derivative_connections(
     t_arr = np.linspace(-n_rad / 2, n_rad / 2, n_samples)
     p_orb = 2 * np.pi  # Assumed period for normalized time axis
     inc = np.pi / 2  # Assumed inclination
-    fits = []
-    errs = []
-    for phi_val in np.arange(0, 2 * np.pi, res):
-        for aop_val in np.arange(0, 2 * np.pi, res):
-            z_arr = keplerian_z(t_arr, p_orb, ecc, phi_val, a, aop_val, inc)
-            fit = np.polyfit(t_arr, z_arr, poly_degree, full=True)
-            errs.append(fit[1])
-            fits.append(fit[0][::-1])  # Reverse to ascending power order
-    return fits
+    p_mat = poly_projection_matrix(t_arr, poly_order)
+
+    # dense near periastron
+    phi_grid_1 = np.linspace(0.0, 0.3, 200)
+    phi_grid_2 = np.linspace(0.3, 2.0 * np.pi, 100)
+    phi_grid = np.empty(phi_grid_1.size + phi_grid_2.size)
+    phi_grid[: phi_grid_1.size] = phi_grid_1
+    phi_grid[phi_grid_1.size :] = phi_grid_2
+
+    n_phi = phi_grid_1.size + phi_grid_2.size
+    n_aop = int(np.ceil((2.0 * np.pi) / res))
+
+    n_total = n_phi * n_aop
+    fits = np.empty((n_total, poly_order + 1), dtype=np.float64)
+    errs = np.empty(n_total, dtype=np.float64)
+
+    row = 0
+    for i in range(n_phi):
+        phi_val = phi_grid[i]
+        for j in range(n_aop):
+            aop_val = j * res
+            if aop_val >= 2.0 * np.pi:
+                continue
+            z_arr = keplerian_z(
+                t_arr,
+                p_orb,
+                ecc_max,
+                phi_val,
+                a_sin_i_orb,
+                aop_val,
+                inc,
+            )
+            coeffs = mat_vec_product(p_mat, z_arr)
+            err = polyfit_error(t_arr, z_arr, coeffs)
+
+            fits[row, :] = coeffs
+            errs[row] = err
+
+            row += 1
+    return fits[:row], errs[:row]
 
 
 def find_max_deriv_bounds(
-    a: float,
+    a_sin_i_orb: float,
     n_rad: float,
-    ecc: float,
-    deg: int,
-    p_orb_min: float = 2 * np.pi,
+    p_orb_min: float,
+    ecc_max: float,
+    poly_order: int,
+    res: float = 0.1,
 ) -> np.ndarray:
     """Find the maximum bounds for the derivatives of a keplerian orbit.
 
     Parameters
     ----------
-    a : float
-        Semi-major axis of the orbit.
+    a_sin_i_orb : float
+        Projected semi-major axis of the orbit (in light-seconds).
     n_rad : float
         Number of radians to sample the orbit over.
-    ecc : float
-        Orbital eccentricity.
-    deg : int
-        Degree of the polynomial fit.
-    p_orb_min : float, optional
-        Minimum orbital period (in seconds), by default 2 * np.pi
+    p_orb_min : float
+        Minimum orbital period (in seconds).
+    ecc_max : float
+        Maximum orbital eccentricity.
+    poly_order : int
+        Degree of the polynomial fit. The function returns poly_order + 1
+        values, one for each derivative order 0 through poly_order.
+    res : float, optional
+        Resolution of the grid search, by default 0.1.
 
     Returns
     -------
     np.ndarray
-        Array of the maximum bounds for the derivatives.
+        Array of length poly_order + 1 with the maximum absolute bounds
+        for each derivative order (0 = position, 1 = velocity, ...).
     """
-    omega = 2 * np.pi / p_orb_min
-    fits = find_derivative_connections(a, n_rad, ecc, deg, res=0.1)
-    factors = np.array([omega**i * maths.fact(i) for i in range(deg + 1)])
-    return np.max(fits, axis=0) * C_VAL * factors
+    omega_orb_max = 2 * np.pi / p_orb_min
+    coeffs, _ = find_derivative_connections(
+        a_sin_i_orb,
+        n_rad,
+        ecc_max,
+        poly_order,
+        res=res,
+    )
+    factors = np.array(
+        [omega_orb_max**i * maths.fact(i) for i in range(poly_order + 1)],
+    )
+    return np.max(np.abs(coeffs), axis=0) * C_VAL * factors
 
 
 def keplerian_derivative_bounds(
