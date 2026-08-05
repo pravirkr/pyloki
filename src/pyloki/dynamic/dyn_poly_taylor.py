@@ -50,7 +50,7 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            cfg.use_conservative_tile,
+            cfg.tiling_strategy,
             use_moving_grid,
         )
 
@@ -184,7 +184,7 @@ class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            cfg.use_conservative_tile,
+            cfg.tiling_strategy,
             use_moving_grid,
         )
 
@@ -307,7 +307,7 @@ fields_prune_poly_taylor_dp_funcs = [
     ("score_widths", types.i8[::1]),
     ("poly_order", types.i8),
     ("branch_max", types.i8),
-    ("use_conservative_tile", types.bool_),
+    ("tiling_strategy", types.unicode_type),
     ("use_moving_grid", types.bool_),
 ]
 
@@ -338,7 +338,7 @@ def prune_poly_taylor_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     use_moving_grid: bool,
 ) -> PrunePolyTaylorDPFuncts:
     """Initialize the PrunePolyTaylorDPFuncts object."""
@@ -354,7 +354,7 @@ def prune_poly_taylor_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.use_conservative_tile = use_conservative_tile
+    self.tiling_strategy = tiling_strategy
     self.use_moving_grid = use_moving_grid
     return self
 
@@ -372,7 +372,7 @@ def prune_poly_taylor_complex_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     use_moving_grid: bool,
 ) -> PrunePolyTaylorComplexDPFuncts:
     """Initialize the PrunePolyTaylorComplexDPFuncts object."""
@@ -388,7 +388,7 @@ def prune_poly_taylor_complex_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.use_conservative_tile = use_conservative_tile
+    self.tiling_strategy = tiling_strategy
     self.use_moving_grid = use_moving_grid
     return self
 
@@ -562,7 +562,7 @@ def transform_func(
             leaves_batch,
             coord_next,
             coord_cur,
-            self.use_conservative_tile,
+            self.tiling_strategy,
         )
     return leaves_batch
 
@@ -682,7 +682,7 @@ def report_func(
             leaves_batch,
             coord_report,
             coord_end,
-            self.use_conservative_tile,
+            self.tiling_strategy,
         )
     return taylor.poly_taylor_report_batch(leaves_batch)
 

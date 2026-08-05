@@ -78,7 +78,7 @@ def poly_chebyshev_branch_batch(
     eta: float,
     poly_order: int,
     branch_max: int,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Branch a parameter set to leaves.
 
@@ -100,8 +100,8 @@ def poly_chebyshev_branch_batch(
         The limits for each parameter in Taylor basis (reverse order).
     branch_max : int
         Maximum number of branches that can be generated.
-    use_conservative_tile : bool
-        Whether to use the conservative tile for the domain expansion.
+    tiling_strategy : str
+        Tiling strategy to use for error propagation.
 
     Returns
     -------
@@ -118,7 +118,7 @@ def poly_chebyshev_branch_batch(
         leaves_batch[:, :-1],
         coord_cur,
         coord_prev,
-        use_conservative_tile,
+        tiling_strategy,
     )
     param_cur_batch = param_set_trans_batch[:, :-1, 0]
     dparam_cur_batch = param_set_trans_batch[:, :-1, 1]
@@ -354,7 +354,7 @@ def poly_chebyshev_transform_batch(
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
-    use_conservative_tile: bool,
+    tiling_strategy: str,
 ) -> np.ndarray:
     """Re-center the leaves to the next segment reference time."""
     leaves_batch_trans = np.zeros_like(leaves_batch)
@@ -362,7 +362,7 @@ def poly_chebyshev_transform_batch(
         leaves_batch[:, :-1],
         coord_next,
         coord_cur,
-        use_conservative_tile,
+        tiling_strategy,
     )
     leaves_batch_trans[:, -1] = leaves_batch[:, -1]
     return leaves_batch_trans
@@ -408,7 +408,7 @@ def generate_bp_poly_chebyshev_approx(
     eta: float,
     ref_seg: int,
     use_moving_grid: bool,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     itree: int = 0,
     branch_max: int = 256,
 ) -> np.ndarray:
@@ -437,7 +437,7 @@ def generate_bp_poly_chebyshev_approx(
             eta,
             poly_order,
             branch_max,
-            use_conservative_tile,
+            tiling_strategy,
         )
         branching_pattern[prune_level - 1] = len(leaves_arr)
         if use_moving_grid:
@@ -445,7 +445,7 @@ def generate_bp_poly_chebyshev_approx(
                 leaves_arr,
                 coord_next,
                 coord_cur,
-                use_conservative_tile,
+                tiling_strategy,
             )
         leaf = leaves_arr[0:1]  # shape: (1, total_size)
     # Check if any branches is truncated due to branch_max
@@ -465,7 +465,7 @@ def generate_bp_poly_chebyshev(
     eta: float,
     ref_seg: int,
     use_moving_grid: bool,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     use_cheby_coarsening: bool = True,  # noqa: ARG001
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Chebyshev pruning search."""
@@ -501,7 +501,7 @@ def generate_bp_poly_chebyshev(
             dparam_cur_batch,
             coord_cur,
             coord_prev,
-            use_conservative_tile,
+            tiling_strategy,
         )
         dparam_new_batch = psr_utils.poly_cheb_step_vec(
             n_params + 1,
@@ -540,7 +540,7 @@ def generate_bp_poly_chebyshev(
                 dparam_cur_next,
                 coord_next,
                 coord_cur,
-                use_conservative_tile,
+                tiling_strategy,
             )
         dparam_cur_batch = dparam_cur_next
     return branching_pattern

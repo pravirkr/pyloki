@@ -325,7 +325,7 @@ def poly_taylor_transform_batch(
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
-    use_conservative_tile: bool,
+    tiling_strategy: str,
 ) -> np.ndarray:
     """Re-center (in-place) the leaves to the next segment reference time."""
     delta_t = coord_next[0] - coord_cur[0]
@@ -333,7 +333,7 @@ def poly_taylor_transform_batch(
     leaves_batch_trans[:, :-1] = transforms.shift_taylor_full(
         leaves_batch[:, :-1],
         delta_t,
-        use_conservative_tile,
+        tiling_strategy,
     )
     leaves_batch_trans[:, -1] = leaves_batch[:, -1]
     return leaves_batch_trans
@@ -370,7 +370,7 @@ def generate_bp_poly_taylor_approx(
     eta: float,
     ref_seg: int,
     use_moving_grid: bool,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     itree: int = 0,
     branch_max: int = 256,
 ) -> np.ndarray:
@@ -401,7 +401,7 @@ def generate_bp_poly_taylor_approx(
                 leaves_arr,
                 coord_next,
                 coord_cur,
-                use_conservative_tile,
+                tiling_strategy,
             )
         leaf = leaves_arr[0:1]  # shape: (1, total_size)
     # Check if any branches is truncated due to branch_max
@@ -421,7 +421,7 @@ def generate_bp_poly_taylor(
     eta: float,
     ref_seg: int,
     use_moving_grid: bool,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     use_cheby_coarsening: bool = True,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor pruning search."""
@@ -491,7 +491,7 @@ def generate_bp_poly_taylor(
             dparam_d_vec_new = transforms.shift_taylor_errors(
                 dparam_d_vec,
                 delta_t,
-                use_conservative_tile,
+                tiling_strategy,
             )
             dparam_cur_batch = dparam_d_vec_new[:, :-1]
         else:

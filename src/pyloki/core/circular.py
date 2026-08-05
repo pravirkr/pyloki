@@ -671,7 +671,7 @@ def circ_taylor_transform_batch(
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     propagator_significance: float,
 ) -> np.ndarray:
     """Re-center (in-place) the leaves to the next segment reference time."""
@@ -685,14 +685,14 @@ def circ_taylor_transform_batch(
         leaves_batch_trans[idx_circ_snap, :-1] = transforms.shift_taylor_circular_full(
             leaves_batch[idx_circ_snap, :-1],
             delta_t,
-            use_conservative_tile,
+            tiling_strategy,
         )
     if idx_circ_crackle.size > 0:
         leaves_batch_trans[idx_circ_crackle, :-1] = (
             transforms.shift_taylor_circular_full(
                 leaves_batch[idx_circ_crackle, :-1],
                 delta_t,
-                use_conservative_tile,
+                tiling_strategy,
                 in_hole=True,
             )
         )
@@ -700,7 +700,7 @@ def circ_taylor_transform_batch(
         leaves_batch_trans[idx_taylor, :-1] = transforms.shift_taylor_full(
             leaves_batch[idx_taylor, :-1],
             delta_t,
-            use_conservative_tile,
+            tiling_strategy,
         )
     return leaves_batch_trans
 
@@ -916,7 +916,7 @@ def generate_bp_circ_taylor(
     eta: float,
     ref_seg: int,
     use_moving_grid: bool,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     use_cheby_coarsening: bool = True,
 ) -> np.ndarray:
     """Generate the exact branching pattern for the Taylor circular pruning search."""
@@ -1006,7 +1006,7 @@ def generate_bp_circ_taylor(
             dparam_d_vec_new = transforms.shift_taylor_errors(
                 dparam_d_vec,
                 delta_t,
-                use_conservative_tile,
+                tiling_strategy,
             )
             dparam_cur_batch = dparam_d_vec_new[:, :-1]
         else:

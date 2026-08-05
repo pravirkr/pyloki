@@ -51,7 +51,7 @@ def shift_taylor_params(
 def shift_taylor_errors(
     taylor_error_vec: np.ndarray,
     delta_t: float,
-    use_conservative_tile: bool,
+    tiling_strategy: str = "aggressive",
 ) -> np.ndarray:
     """Shift the kinematic Taylor errors to a new reference time.
 
@@ -63,8 +63,11 @@ def shift_taylor_errors(
         of (t - t_c)^k/k!.
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
+    tiling_strategy : str
+        Tiling strategy to use for error propagation.
+        - "aggressive": Pure diagonal tracking - leaves large sensitivity gaps
+        - "quadrature": Quadrature sum - leaves sensitivity gaps at edges
+        - "conservative": Full AABB covering the entire sheared parallelepiped
 
     Returns
     -------
@@ -76,16 +79,22 @@ def shift_taylor_errors(
     powers = np.tril(np.arange(n_params)[:, np.newaxis] - np.arange(n_params))
     t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
     # Propagate errors (assuming no covariance)
-    if use_conservative_tile:
-        return np.sqrt((np.ascontiguousarray(taylor_error_vec) ** 2) @ (t_mat**2).T)
-    return np.ascontiguousarray(taylor_error_vec) * np.abs(np.diag(t_mat))
+    taylor_errors = np.ascontiguousarray(taylor_error_vec)
+    if tiling_strategy == "conservative":
+        return taylor_errors @ np.abs(t_mat).T
+    if tiling_strategy == "quadrature":
+        return np.sqrt((taylor_errors**2) @ (t_mat**2).T)
+    if tiling_strategy == "aggressive":
+        return taylor_errors * np.abs(np.diag(t_mat))
+    msg = f"Invalid tiling strategy: {tiling_strategy}"
+    raise ValueError(msg)
 
 
 @njit(cache=True, fastmath=True)
 def shift_taylor_full(
     taylor_full_vec: np.ndarray,
     delta_t: float,
-    use_conservative_tile: bool,
+    tiling_strategy: str = "aggressive",
 ) -> np.ndarray:
     """Shift the kinematic Taylor parameters and errors to a new reference time.
 
@@ -96,8 +105,11 @@ def shift_taylor_full(
         Ordering is [[d_k_max, dd_k_max], ..., [d_1, dd_1], [d_0, dd_0]]
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
+    tiling_strategy : str
+        Tiling strategy to use for error propagation.
+        - "aggressive": Pure diagonal tracking - leaves large sensitivity gaps
+        - "quadrature": Quadrature sum - leaves sensitivity gaps at edges
+        - "conservative": Full AABB covering the entire sheared parallelepiped
 
     Returns
     -------
@@ -113,10 +125,15 @@ def shift_taylor_full(
     param_values = np.ascontiguousarray(taylor_full_vec[..., :, 0])
     param_errors = np.ascontiguousarray(taylor_full_vec[..., :, 1])
     leaves_param_new[..., :, 0] = param_values @ t_mat.T
-    if use_conservative_tile:
+    if tiling_strategy == "conservative":
+        leaves_param_new[..., :, 1] = param_errors @ np.abs(t_mat).T
+    elif tiling_strategy == "quadrature":
         leaves_param_new[..., :, 1] = np.sqrt((param_errors**2) @ (t_mat**2).T)
-    else:
+    elif tiling_strategy == "aggressive":
         leaves_param_new[..., :, 1] = param_errors * np.abs(np.diag(t_mat))
+    else:
+        msg = f"Invalid tiling strategy: {tiling_strategy}"
+        raise ValueError(msg)
     return leaves_param_new
 
 
@@ -301,7 +318,7 @@ def shift_taylor_circular_errors(
     taylor_error_vec: np.ndarray,
     delta_t: float,
     p_orb_min: float,
-    use_conservative_tile: bool,
+    tiling_strategy: str = "aggressive",
 ) -> np.ndarray:
     """Specialized version of shift_taylor_errors for circular-orbit propagation.
 
@@ -315,8 +332,13 @@ def shift_taylor_circular_errors(
         Ordering is [dc, ds, dj, da, dv, dd]
     delta_t : float
         The time difference (t_j - t_i) to shift the parameters by.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
+    p_orb_min : float
+        Minimum orbital period used to bound omega_orb.
+    tiling_strategy : str
+        Tiling strategy to use for error propagation.
+        - "aggressive": Diagonal tracking without cross-parameter coupling
+        - "quadrature": Quadrature sum with cross-parameter coupling
+        - "conservative": Not implemented for circular orbit propagation
 
     Returns
     -------
@@ -327,6 +349,9 @@ def shift_taylor_circular_errors(
     if n_params != 6:
         msg = "6 parameters are needed for circular orbit propagation."
         raise ValueError(msg)
+    if tiling_strategy == "conservative":
+        msg = "Conservative tile not implemented for circular orbit propagation."
+        raise NotImplementedError(msg)
     sig_d3_i = taylor_error_vec[:, 2]
     sig_d2_i = taylor_error_vec[:, 3]
     sig_d1_i = taylor_error_vec[:, 4]
@@ -334,14 +359,19 @@ def shift_taylor_circular_errors(
     omega_orb_max = 2 * np.pi / p_orb_min
     omega_orb_sq_max = omega_orb_max**2
     out = np.empty((n_batch, 6), dtype=taylor_error_vec.dtype)
-    if use_conservative_tile:
-        msg = "Conservative tile not implemented for circular orbit propagation."
-        raise NotImplementedError(msg)
-    sig_d2_j = np.sqrt(sig_d2_i**2 + (delta_t * sig_d3_i) ** 2)
-    sig_d3_j = np.sqrt(sig_d3_i**2 + sig_d2_i**2 * omega_orb_sq_max)
-    sig_d1_j = np.sqrt(
-        sig_d1_i**2 + (delta_t * sig_d3_i / 2) ** 2 + (delta_t * sig_d2_i) ** 2,
-    )
+    if tiling_strategy == "quadrature":
+        sig_d2_j = np.sqrt(sig_d2_i**2 + (delta_t * sig_d3_i) ** 2)
+        sig_d3_j = np.sqrt(sig_d3_i**2 + sig_d2_i**2 * omega_orb_sq_max)
+        sig_d1_j = np.sqrt(
+            sig_d1_i**2 + (delta_t * sig_d3_i / 2) ** 2 + (delta_t * sig_d2_i) ** 2,
+        )
+    elif tiling_strategy == "aggressive":
+        sig_d2_j = sig_d2_i
+        sig_d3_j = sig_d3_i
+        sig_d1_j = sig_d1_i
+    else:
+        msg = f"Invalid tiling strategy: {tiling_strategy}"
+        raise ValueError(msg)
     out[:, 0] = omega_orb_sq_max * sig_d3_j
     out[:, 1] = omega_orb_sq_max * sig_d2_j
     out[:, 2] = sig_d3_j
@@ -355,7 +385,7 @@ def shift_taylor_circular_errors(
 def shift_taylor_circular_full(
     taylor_full_vec: np.ndarray,
     delta_t: float,
-    use_conservative_tile: bool,  # noqa: ARG001
+    tiling_strategy: str = "aggressive",  # noqa: ARG001
     in_hole: bool = False,
 ) -> np.ndarray:
     _, n_poly, _ = taylor_full_vec.shape
@@ -575,7 +605,7 @@ def shift_cheby_errors(
     alpha_error_vec: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
-    use_conservative_tile: bool,
+    tiling_strategy: str = "aggressive",
 ) -> np.ndarray:
     """Shift the kinematic chebyshev errors to a new domain.
 
@@ -588,8 +618,11 @@ def shift_cheby_errors(
         The coordinate of the new domain.
     coord_cur : tuple[float, float]
         The coordinate of the current domain.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
+    tiling_strategy : str
+        Tiling strategy to use for error propagation.
+        - "aggressive": Pure diagonal tracking - leaves large sensitivity gaps
+        - "quadrature": Quadrature sum - leaves sensitivity gaps at edges
+        - "conservative": Full AABB covering the entire sheared parallelepiped
 
     Returns
     -------
@@ -602,10 +635,15 @@ def shift_cheby_errors(
     tc2, ts2 = coord_next
     c_mat = maths.poly_chebyshev_transform_matrix(poly_order, tc1, ts1, tc2, ts2, 1)
     alpha_errors = np.ascontiguousarray(alpha_error_vec)
-    if use_conservative_tile:
+    if tiling_strategy == "conservative":
+        alpha_errors_new = alpha_errors @ np.abs(c_mat)
+    elif tiling_strategy == "quadrature":
         alpha_errors_new = np.sqrt((alpha_errors**2) @ (c_mat**2))
-    else:
+    elif tiling_strategy == "aggressive":
         alpha_errors_new = alpha_errors * np.abs(np.diag(c_mat))
+    else:
+        msg = f"Invalid tiling strategy: {tiling_strategy}"
+        raise ValueError(msg)
     return alpha_errors_new
 
 
@@ -614,7 +652,7 @@ def shift_cheby_full(
     alpha_full_vec: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
-    use_conservative_tile: bool,
+    tiling_strategy: str = "aggressive",
 ) -> np.ndarray:
     """Shift the kinematic chebyshev parameters and errors to a new domain.
 
@@ -628,8 +666,11 @@ def shift_cheby_full(
         The coordinate of the new domain.
     coord_cur : tuple[float, float]
         The coordinate of the current domain.
-    use_conservative_tile : bool
-        If True, the errors are propagated conservatively, otherwise unchanged.
+    tiling_strategy : str
+        Tiling strategy to use for error propagation.
+        - "aggressive": Pure diagonal tracking - leaves large sensitivity gaps
+        - "quadrature": Quadrature sum - leaves sensitivity gaps at edges
+        - "conservative": Full AABB covering the entire sheared parallelepiped
 
     Returns
     -------
@@ -645,10 +686,15 @@ def shift_cheby_full(
     alpha_values = np.ascontiguousarray(alpha_full_vec[..., 0])
     alpha_errors = np.ascontiguousarray(alpha_full_vec[..., 1])
     alpha_values_new = alpha_values @ c_mat
-    if use_conservative_tile:
+    if tiling_strategy == "conservative":
+        alpha_errors_new = alpha_errors @ np.abs(c_mat)
+    elif tiling_strategy == "quadrature":
         alpha_errors_new = np.sqrt((alpha_errors**2) @ (c_mat**2))
-    else:
+    elif tiling_strategy == "aggressive":
         alpha_errors_new = alpha_errors * np.abs(np.diag(c_mat))
+    else:
+        msg = f"Invalid tiling strategy: {tiling_strategy}"
+        raise ValueError(msg)
     alpha_vec_new[..., 0] = alpha_values_new
     alpha_vec_new[..., 1] = alpha_errors_new
     return alpha_vec_new

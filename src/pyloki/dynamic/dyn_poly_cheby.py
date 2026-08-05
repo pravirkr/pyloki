@@ -50,7 +50,7 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            cfg.use_conservative_tile,
+            cfg.tiling_strategy,
             use_moving_grid,
         )
 
@@ -324,7 +324,7 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            cfg.use_conservative_tile,
+            cfg.tiling_strategy,
             use_moving_grid,
         )
 
@@ -448,7 +448,7 @@ fields_prune_chebyshev_dp_funcs = [
     ("score_widths", types.i8[::1]),
     ("poly_order", types.i8),
     ("branch_max", types.i8),
-    ("use_conservative_tile", types.bool_),
+    ("tiling_strategy", types.unicode_type),
     ("use_moving_grid", types.bool_),
 ]
 
@@ -479,7 +479,7 @@ def prune_chebyshev_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     use_moving_grid: bool,
 ) -> PrunePolyChebyshevDPFuncts:
     """Initialize the PrunePolyChebyshevDPFuncts struct."""
@@ -495,7 +495,7 @@ def prune_chebyshev_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.use_conservative_tile = use_conservative_tile
+    self.tiling_strategy = tiling_strategy
     self.use_moving_grid = use_moving_grid
     return self
 
@@ -513,7 +513,7 @@ def prune_chebyshev_complex_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     use_moving_grid: bool,
 ) -> PrunePolyChebyshevComplexDPFuncts:
     """Initialize the PrunePolyChebyshevComplexDPFuncts struct."""
@@ -529,7 +529,7 @@ def prune_chebyshev_complex_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.use_conservative_tile = use_conservative_tile
+    self.tiling_strategy = tiling_strategy
     self.use_moving_grid = use_moving_grid
     return self
 
@@ -600,7 +600,7 @@ def branch_func(
         self.eta,
         self.poly_order,
         self.branch_max,
-        self.use_conservative_tile,
+        self.tiling_strategy,
     )
 
 
@@ -707,7 +707,7 @@ def transform_func(
             leaves_batch,
             coord_next,
             coord_cur,
-            self.use_conservative_tile,
+            self.tiling_strategy,
         )
     return leaves_batch
 
@@ -831,7 +831,7 @@ def report_func(
             leaves_batch,
             coord_report,
             coord_end,
-            self.use_conservative_tile,
+            self.tiling_strategy,
         )
     return chebyshev.poly_chebyshev_report_batch(leaves_batch, coord_report)
 

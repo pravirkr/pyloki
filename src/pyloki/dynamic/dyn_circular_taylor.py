@@ -50,7 +50,7 @@ class PruneCircTaylorDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            cfg.use_conservative_tile,
+            cfg.tiling_strategy,
             cfg.p_orb_min,
             cfg.x_mass_const,
             cfg.propagator_significance,
@@ -188,7 +188,7 @@ class PruneCircTaylorComplexDPFuncts(structref.StructRefProxy):
             cfg.score_widths,
             cfg.prune_poly_order,
             cfg.branch_max,
-            cfg.use_conservative_tile,
+            cfg.tiling_strategy,
             cfg.p_orb_min,
             cfg.x_mass_const,
             cfg.propagator_significance,
@@ -315,7 +315,7 @@ fields_prune_circ_taylor_dp_funcs = [
     ("score_widths", types.i8[::1]),
     ("poly_order", types.i8),
     ("branch_max", types.i8),
-    ("use_conservative_tile", types.bool_),
+    ("tiling_strategy", types.unicode_type),
     ("p_orb_min", types.f8),
     ("x_mass_const", types.f8),
     ("propagator_significance", types.f8),
@@ -350,7 +350,7 @@ def prune_circ_taylor_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     p_orb_min: float,
     x_mass_const: float,
     propagator_significance: float,
@@ -370,7 +370,7 @@ def prune_circ_taylor_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.use_conservative_tile = use_conservative_tile
+    self.tiling_strategy = tiling_strategy
     self.p_orb_min = p_orb_min
     self.x_mass_const = x_mass_const
     self.propagator_significance = propagator_significance
@@ -397,7 +397,7 @@ def prune_circ_taylor_complex_dp_functs_init(
     score_widths: np.ndarray,
     poly_order: int,
     branch_max: int,
-    use_conservative_tile: bool,
+    tiling_strategy: str,
     p_orb_min: float,
     x_mass_const: float,
     propagator_significance: float,
@@ -417,7 +417,7 @@ def prune_circ_taylor_complex_dp_functs_init(
     self.score_widths = score_widths
     self.poly_order = poly_order
     self.branch_max = branch_max
-    self.use_conservative_tile = use_conservative_tile
+    self.tiling_strategy = tiling_strategy
     self.p_orb_min = p_orb_min
     self.x_mass_const = x_mass_const
     self.propagator_significance = propagator_significance
@@ -609,7 +609,7 @@ def transform_func(
             leaves_batch,
             coord_next,
             coord_cur,
-            self.use_conservative_tile,
+            self.tiling_strategy,
             self.propagator_significance,
         )
     return leaves_batch
@@ -732,7 +732,7 @@ def report_func(
             leaves_batch,
             coord_report,
             coord_end,
-            self.use_conservative_tile,
+            self.tiling_strategy,
         )
     return taylor.poly_taylor_report_batch(leaves_batch)
 

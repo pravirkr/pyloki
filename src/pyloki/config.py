@@ -412,7 +412,10 @@ class PulsarSearchConfig:
         default=5.0,
         validator=attrs.validators.gt(0.0),
     )
-    use_conservative_tile: bool = attrs.field(default=False)
+    tiling_strategy: str = attrs.field(
+        default="aggressive",
+        validator=attrs.validators.in_(["aggressive", "quadrature", "conservative"]),
+    )
 
     def __attrs_post_init__(self) -> None:
         if self.bseg_brute == 0:
@@ -747,7 +750,7 @@ class PulsarSearchConfig:
             self.eta,
             ref_seg,
             use_moving_grid=use_moving_grid,
-            use_conservative_tile=self.use_conservative_tile,
+            tiling_strategy=self.tiling_strategy,
             itree=isuggest,
             branch_max=self.branch_max,
         )
@@ -811,7 +814,7 @@ class PulsarSearchConfig:
             self.eta,
             ref_seg,
             use_moving_grid=use_moving_grid,
-            use_conservative_tile=self.use_conservative_tile,
+            tiling_strategy=self.tiling_strategy,
             use_cheby_coarsening=use_cheby_coarsening,
         )
 
