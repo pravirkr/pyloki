@@ -1,5 +1,5 @@
 [build-system]
-requires = ["uv_build>=0.11.3,<0.12"]
+requires = ["uv_build>=0.12.3,<0.13"]
 build-backend = "uv_build"
 
 [project]
@@ -88,6 +88,7 @@ select = ["ALL"]
 ignore = [
     "D1",
     "ANN003",
+    "CPY001",
     "PLR2004",
     "G004",
     "E712",

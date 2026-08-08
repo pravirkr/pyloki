@@ -200,7 +200,7 @@ def middle_out_scheme_init_func(
     tsegment: float,
     stride: int,
 ) -> MiddleOutScheme:
-    self = structref.new(MiddleOutSchemeType)
+    self = structref.new(MiddleOutSchemeType)  # ty: ignore[missing-argument]
     if nsegments <= 0:
         msg = f"nsegments must be greater than 0, got {nsegments}."
         raise ValueError(msg)

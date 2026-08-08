@@ -30,7 +30,7 @@ class PrunePolyChebyshevComplexDPFunctsTemplate(types.StructRef):
 class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
     def __new__(
         cls,
-        param_arr: types.ListType[types.Array],
+        param_arr: list[np.ndarray],
         dparams: np.ndarray,
         param_grid_count_init: np.ndarray,
         tseg_ffa: float,
@@ -304,7 +304,7 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
 class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
     def __new__(
         cls,
-        param_arr: types.ListType[types.Array],
+        param_arr: list[np.ndarray],
         dparams: np.ndarray,
         param_grid_count_init: np.ndarray,
         tseg_ffa: float,
@@ -483,7 +483,7 @@ def prune_chebyshev_dp_functs_init(
     use_moving_grid: bool,
 ) -> PrunePolyChebyshevDPFuncts:
     """Initialize the PrunePolyChebyshevDPFuncts struct."""
-    self = structref.new(PrunePolyChebyshevDPFunctsType)
+    self = structref.new(PrunePolyChebyshevDPFunctsType)  # ty: ignore[missing-argument]
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.param_grid_count_init = param_grid_count_init
@@ -517,7 +517,7 @@ def prune_chebyshev_complex_dp_functs_init(
     use_moving_grid: bool,
 ) -> PrunePolyChebyshevComplexDPFuncts:
     """Initialize the PrunePolyChebyshevComplexDPFuncts struct."""
-    self = structref.new(PrunePolyChebyshevComplexDPFunctsType)
+    self = structref.new(PrunePolyChebyshevComplexDPFunctsType)  # ty: ignore[missing-argument]
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.param_grid_count_init = param_grid_count_init
@@ -536,7 +536,7 @@ def prune_chebyshev_complex_dp_functs_init(
 
 @njit(cache=True, fastmath=True)
 def load_func(
-    self: PrunePolyChebyshevDPFuncts,
+    self: PrunePolyChebyshevDPFuncts | PrunePolyChebyshevComplexDPFuncts,
     fold: np.ndarray,
     seg_idx: int,
 ) -> np.ndarray:
@@ -585,7 +585,7 @@ def seed_complex_func(
 
 @njit(cache=True, fastmath=True)
 def branch_func(
-    self: PrunePolyChebyshevDPFuncts,
+    self: PrunePolyChebyshevDPFuncts | PrunePolyChebyshevComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
@@ -606,7 +606,7 @@ def branch_func(
 
 @njit(cache=True, fastmath=True)
 def validate_func(
-    self: PrunePolyChebyshevDPFuncts,
+    self: PrunePolyChebyshevDPFuncts | PrunePolyChebyshevComplexDPFuncts,
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
@@ -616,7 +616,7 @@ def validate_func(
 
 @njit(cache=True, fastmath=True)
 def get_validation_params_func(
-    self: PrunePolyChebyshevDPFuncts,
+    self: PrunePolyChebyshevDPFuncts | PrunePolyChebyshevComplexDPFuncts,
     coord_add: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray, float]:
     return common.get_validation_params(coord_add)
@@ -624,7 +624,7 @@ def get_validation_params_func(
 
 @njit(cache=True, fastmath=True)
 def resolve_func(
-    self: PrunePolyChebyshevDPFuncts,
+    self: PrunePolyChebyshevDPFuncts | PrunePolyChebyshevComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
@@ -697,7 +697,7 @@ def score_complex_func(
 
 @njit(cache=True, fastmath=True)
 def transform_func(
-    self: PrunePolyChebyshevDPFuncts,
+    self: PrunePolyChebyshevDPFuncts | PrunePolyChebyshevComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
@@ -714,7 +714,7 @@ def transform_func(
 
 @njit(cache=True, fastmath=True)
 def get_transform_matrix_func(
-    self: PrunePolyChebyshevDPFuncts,
+    self: PrunePolyChebyshevDPFuncts | PrunePolyChebyshevComplexDPFuncts,
     coord_next: tuple[float, float],
     coord_prev: tuple[float, float],
 ) -> np.ndarray:
@@ -722,7 +722,10 @@ def get_transform_matrix_func(
 
 
 @njit(cache=True, fastmath=True)
-def pack_func(self: PrunePolyChebyshevDPFuncts, data: np.ndarray) -> np.ndarray:
+def pack_func(
+    self: PrunePolyChebyshevDPFuncts | PrunePolyChebyshevComplexDPFuncts,
+    data: np.ndarray,
+) -> np.ndarray:
     return common.pack(data)
 
 
@@ -820,7 +823,7 @@ def ascend_complex_func(
 
 @njit(cache=True, fastmath=True)
 def report_func(
-    self: PrunePolyChebyshevDPFuncts,
+    self: PrunePolyChebyshevDPFuncts | PrunePolyChebyshevComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_report: tuple[float, float],
     coord_end: tuple[float, float],

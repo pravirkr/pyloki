@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
-from numba import njit, types
+from numba import njit
 
 from pyloki.core import set_prune_load_func
 from pyloki.dynamic import (
@@ -179,7 +179,7 @@ def pruning_iteration_batched(
     batch_size: int = 1024,
 ) -> tuple[
     WorldTree | WorldTreeComplex,
-    types.DictType[str, float],
+    dict[str, int | float],
     np.ndarray,
 ]:
     """Perform a single iteration of the pruning algorithm using batch processing.
@@ -324,8 +324,8 @@ def pruning_iteration_batched(
     # Finalize
     tree_new = tree_new.trim_empty()
     stats = {
-        "n_leaves": float(n_leaves),
-        "n_leaves_phy": float(n_leaves_phy),
+        "n_leaves": n_leaves,
+        "n_leaves_phy": n_leaves_phy,
         "score_min": score_min if np.isfinite(score_min) else 0.0,
         "score_max": score_max if np.isfinite(score_max) else 0.0,
     }
@@ -651,7 +651,7 @@ class Pruning:
             threshold=threshold,
             n_branches=self.world_tree.valid_size,
             n_leaves_surv=world_tree.valid_size,
-            **stats_dict,
+            **stats_dict,  # ty: ignore[invalid-argument-type]
         )
         with log_file.open("a") as f:
             f.write(pstats_cur.get_summary())

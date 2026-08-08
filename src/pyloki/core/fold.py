@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from numba import njit, prange, types
+from numba import njit, prange
 
 from pyloki.utils import psr_utils, transforms
 
@@ -528,7 +528,7 @@ def brutefold_complex_oversampled(
 def ffa_taylor_init(
     ts_e: np.ndarray,
     ts_v: np.ndarray,
-    param_arr: types.ListType[types.Array],
+    param_arr: list[np.ndarray],
     bseg_brute: int,
     nbins: int,
     tsamp: float,
@@ -541,7 +541,7 @@ def ffa_taylor_init(
         Time series intensity (signal weighted by E/V).
     ts_v : np.ndarray
         Time series variance (E**2/V).
-    param_arr : types.ListType[types.Array]
+    param_arr : list[np.ndarray]
         Parameter grid array for each search parameter dimension.
     bseg_brute : int
         Brute force segment size in bins.
@@ -573,7 +573,7 @@ def ffa_taylor_init(
 def ffa_taylor_init_complex(
     ts_e: np.ndarray,
     ts_v: np.ndarray,
-    param_arr: types.ListType[types.Array],
+    param_arr: list[np.ndarray],
     bseg_brute: int,
     nbins: int,
     tsamp: float,
@@ -586,7 +586,7 @@ def ffa_taylor_init_complex(
         Time series intensity (signal weighted by E/V).
     ts_v : np.ndarray
         Time series variance (E**2/V).
-    param_arr : types.ListType[types.Array]
+    param_arr : list[np.ndarray]
         Parameter grid array for each search parameter dimension.
     bseg_brute : int
         Brute force segment size in bins.

@@ -358,7 +358,7 @@ def prune_circ_taylor_dp_functs_init(
     use_moving_grid: bool,
 ) -> PruneCircTaylorDPFuncts:
     """Initialize the PruneCircTaylorDPFuncts object."""
-    self = structref.new(PruneCircTaylorDPFunctsType)
+    self = structref.new(PruneCircTaylorDPFunctsType)  # ty: ignore[missing-argument]
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.param_grid_count_init = param_grid_count_init
@@ -405,7 +405,7 @@ def prune_circ_taylor_complex_dp_functs_init(
     use_moving_grid: bool,
 ) -> PruneCircTaylorComplexDPFuncts:
     """Initialize the PruneCircTaylorComplexDPFuncts object."""
-    self = structref.new(PruneCircTaylorComplexDPFunctsType)
+    self = structref.new(PruneCircTaylorComplexDPFunctsType)  # ty: ignore[missing-argument]
     self.param_arr = typed.List(param_arr)
     self.dparams = dparams
     self.param_grid_count_init = param_grid_count_init
@@ -433,7 +433,7 @@ def prune_circ_taylor_complex_dp_functs_init(
 
 @njit(cache=True, fastmath=True)
 def load_func(
-    self: PruneCircTaylorDPFuncts,
+    self: PruneCircTaylorDPFuncts | PruneCircTaylorComplexDPFuncts,
     fold: np.ndarray,
     seg_idx: int,
 ) -> np.ndarray:
@@ -482,7 +482,7 @@ def seed_complex_func(
 
 @njit(cache=True, fastmath=True)
 def branch_func(
-    self: PruneCircTaylorDPFuncts,
+    self: PruneCircTaylorDPFuncts | PruneCircTaylorComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_cur: tuple[float, float],
     coord_prev: tuple[float, float],
@@ -501,7 +501,7 @@ def branch_func(
 
 @njit(cache=True, fastmath=True)
 def validate_func(
-    self: PruneCircTaylorDPFuncts,
+    self: PruneCircTaylorDPFuncts | PruneCircTaylorComplexDPFuncts,
     leaves_batch: np.ndarray,
     leaves_origins: np.ndarray,
     coord_cur: tuple[float, float],
@@ -517,7 +517,7 @@ def validate_func(
 
 @njit(cache=True, fastmath=True)
 def get_validation_params_func(
-    self: PruneCircTaylorDPFuncts,
+    self: PruneCircTaylorDPFuncts | PruneCircTaylorComplexDPFuncts,
     coord_add: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray, float]:
     return common.get_validation_params(coord_add)
@@ -525,7 +525,7 @@ def get_validation_params_func(
 
 @njit(cache=True, fastmath=True)
 def resolve_func(
-    self: PruneCircTaylorDPFuncts,
+    self: PruneCircTaylorDPFuncts | PruneCircTaylorComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_add: tuple[float, float],
     coord_cur: tuple[float, float],
@@ -599,7 +599,7 @@ def score_complex_func(
 
 @njit(cache=True, fastmath=True)
 def transform_func(
-    self: PruneCircTaylorDPFuncts,
+    self: PruneCircTaylorDPFuncts | PruneCircTaylorComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_next: tuple[float, float],
     coord_cur: tuple[float, float],
@@ -617,7 +617,7 @@ def transform_func(
 
 @njit(cache=True, fastmath=True)
 def get_transform_matrix_func(
-    self: PruneCircTaylorDPFuncts,
+    self: PruneCircTaylorDPFuncts | PruneCircTaylorComplexDPFuncts,
     coord_next: tuple[float, float],
     coord_prev: tuple[float, float],
 ) -> np.ndarray:
@@ -625,7 +625,10 @@ def get_transform_matrix_func(
 
 
 @njit(cache=True, fastmath=True)
-def pack_func(self: PruneCircTaylorDPFuncts, data: np.ndarray) -> np.ndarray:
+def pack_func(
+    self: PruneCircTaylorDPFuncts | PruneCircTaylorComplexDPFuncts,
+    data: np.ndarray,
+) -> np.ndarray:
     return common.pack(data)
 
 
@@ -721,7 +724,7 @@ def ascend_complex_func(
 
 @njit(cache=True, fastmath=True)
 def report_func(
-    self: PruneCircTaylorDPFuncts,
+    self: PruneCircTaylorDPFuncts | PruneCircTaylorComplexDPFuncts,
     leaves_batch: np.ndarray,
     coord_report: tuple[float, float],
     coord_end: tuple[float, float],

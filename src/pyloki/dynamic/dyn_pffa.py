@@ -49,7 +49,7 @@ class FFATaylorDPFuncts(structref.StructRefProxy):
         self,
         ts_e: np.ndarray,
         ts_v: np.ndarray,
-        param_arr: types.ListType[types.Array],
+        param_arr: list[np.ndarray],
     ) -> np.ndarray:
         """Receives the data and parameter array and returns the initial fold."""
         return init_func(self, ts_e, ts_v, param_arr)
@@ -101,7 +101,7 @@ class FFATaylorComplexDPFuncts(structref.StructRefProxy):
         self,
         ts_e: np.ndarray,
         ts_v: np.ndarray,
-        param_arr: types.ListType[types.Array],
+        param_arr: list[np.ndarray],
     ) -> np.ndarray:
         """Receives the data and parameter array and returns the initial fold."""
         return init_complex_func(self, ts_e, ts_v, param_arr)
@@ -164,7 +164,7 @@ def ffa_taylor_dp_functs_init(
     nbins: int,
     bseg_brute: int,
 ) -> FFATaylorDPFuncts:
-    self = structref.new(FFATaylorDPFunctsType)
+    self = structref.new(FFATaylorDPFunctsType)  # ty: ignore[missing-argument]
     self.param_limits = param_limits
     self.tsamp = tsamp
     self.nbins = nbins
@@ -179,7 +179,7 @@ def ffa_taylor_complex_dp_functs_init(
     nbins: int,
     bseg_brute: int,
 ) -> FFATaylorComplexDPFuncts:
-    self = structref.new(FFATaylorComplexDPFunctsType)
+    self = structref.new(FFATaylorComplexDPFunctsType)  # ty: ignore[missing-argument]
     self.param_limits = param_limits
     self.tsamp = tsamp
     self.nbins = nbins
@@ -192,7 +192,7 @@ def init_func(
     self: FFATaylorDPFuncts,
     ts_e: np.ndarray,
     ts_v: np.ndarray,
-    param_arr: types.ListType[types.Array],
+    param_arr: list[np.ndarray],
 ) -> np.ndarray:
     return fold.ffa_taylor_init(
         ts_e,
@@ -209,7 +209,7 @@ def init_complex_func(
     self: FFATaylorComplexDPFuncts,
     ts_e: np.ndarray,
     ts_v: np.ndarray,
-    param_arr: types.ListType[types.Array],
+    param_arr: list[np.ndarray],
 ) -> np.ndarray:
     return fold.ffa_taylor_init_complex(
         ts_e,
@@ -223,7 +223,7 @@ def init_complex_func(
 
 @njit(cache=True, fastmath=True)
 def resolve_func(
-    self: FFATaylorDPFuncts,
+    self: FFATaylorDPFuncts | FFATaylorComplexDPFuncts,
     pset_cur: np.ndarray,
     param_grid_count_prev: np.ndarray,
     ffa_level: int,
@@ -242,7 +242,11 @@ def resolve_func(
 
 
 @njit(cache=True, fastmath=True)
-def pack_func(self: FFATaylorDPFuncts, data: np.ndarray, ffa_level: int) -> np.ndarray:
+def pack_func(
+    self: FFATaylorDPFuncts | FFATaylorComplexDPFuncts,
+    data: np.ndarray,
+    ffa_level: int,
+) -> np.ndarray:
     return common.pack(data)
 
 
@@ -273,13 +277,13 @@ def ol_init_func(
     self: FFATaylorDPFuncts,
     ts_e: np.ndarray,
     ts_v: np.ndarray,
-    param_arr: types.ListType[types.Array],
+    param_arr: list[np.ndarray],
 ) -> types.FunctionType:
     def impl(
         self: FFATaylorDPFuncts,
         ts_e: np.ndarray,
         ts_v: np.ndarray,
-        param_arr: types.ListType[types.Array],
+        param_arr: list[np.ndarray],
     ) -> np.ndarray:
         return init_func(self, ts_e, ts_v, param_arr)
 
@@ -353,13 +357,13 @@ def ol_init_complex_func(
     self: FFATaylorComplexDPFuncts,
     ts_e: np.ndarray,
     ts_v: np.ndarray,
-    param_arr: types.ListType[types.Array],
+    param_arr: list[np.ndarray],
 ) -> types.FunctionType:
     def impl(
         self: FFATaylorComplexDPFuncts,
         ts_e: np.ndarray,
         ts_v: np.ndarray,
-        param_arr: types.ListType[types.Array],
+        param_arr: list[np.ndarray],
     ) -> np.ndarray:
         return init_complex_func(self, ts_e, ts_v, param_arr)
 

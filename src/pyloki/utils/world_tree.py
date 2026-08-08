@@ -358,7 +358,7 @@ def world_tree_init(
     scores: np.ndarray,
     backtracks: np.ndarray,
 ) -> WorldTree:
-    self = structref.new(WorldTreeType)
+    self = structref.new(WorldTreeType)  # ty: ignore[missing-argument]
     self.leaves = leaves
     self.folds = folds
     self.scores = scores
@@ -377,7 +377,7 @@ def world_tree_complex_init(
     scores: np.ndarray,
     backtracks: np.ndarray,
 ) -> WorldTreeComplex:
-    self = structref.new(WorldTreeComplexType)
+    self = structref.new(WorldTreeComplexType)  # ty: ignore[missing-argument]
     self.leaves = leaves
     self.folds = folds
     self.scores = scores
@@ -427,7 +427,9 @@ def get_new_func_complex(
 
 
 @njit(cache=True, fastmath=True)
-def get_best_func(self: WorldTree) -> tuple[np.ndarray, np.ndarray, float]:
+def get_best_func(
+    self: WorldTree | WorldTreeComplex,
+) -> tuple[np.ndarray, np.ndarray, float]:
     idx_max = np.argmax(self.scores[: self.valid_size])
     return (
         self.leaves[idx_max].copy(),
@@ -437,7 +439,9 @@ def get_best_func(self: WorldTree) -> tuple[np.ndarray, np.ndarray, float]:
 
 
 @njit(cache=True, fastmath=True)
-def get_best_k_func(self: WorldTree, k: int) -> tuple[np.ndarray, np.ndarray]:
+def get_best_k_func(
+    self: WorldTree | WorldTreeComplex, k: int,
+) -> tuple[np.ndarray, np.ndarray]:
     valid_size = self.valid_size
     k_take = min(k, valid_size)
     leaves_out = np.zeros((k, *self.leaves.shape[1:]), dtype=self.leaves.dtype)
@@ -457,7 +461,7 @@ def get_best_k_func(self: WorldTree, k: int) -> tuple[np.ndarray, np.ndarray]:
 
 @njit(cache=True, fastmath=True)
 def add_func(
-    self: WorldTree,
+    self: WorldTree | WorldTreeComplex,
     leaf: np.ndarray,
     fold: np.ndarray,
     score: float,
@@ -477,7 +481,7 @@ def add_func(
 
 @njit(cache=True, fastmath=True)
 def add_batch_func(
-    self: WorldTree,
+    self: WorldTree | WorldTreeComplex,
     leaves_batch: np.ndarray,
     folds_batch: np.ndarray,
     scores_batch: np.ndarray,
@@ -521,7 +525,7 @@ def add_batch_func(
 
 @njit(cache=True, fastmath=True)
 def prune_on_overload_func(
-    self: WorldTree,
+    self: WorldTree | WorldTreeComplex,
     scores_batch: np.ndarray,
     current_threshold: float,
 ) -> float:
@@ -568,7 +572,7 @@ def trim_empty_func_complex(self: WorldTreeComplex) -> WorldTreeComplex:
 
 
 @njit(cache=True, fastmath=True)
-def trim_repeats_func(self: WorldTree) -> None:
+def trim_repeats_func(self: WorldTree | WorldTreeComplex) -> None:
     idx = get_unique_indices_scores(
         self.leaves[: self.valid_size, : self.nparams, 0],
         self.scores[: self.valid_size],
@@ -579,7 +583,7 @@ def trim_repeats_func(self: WorldTree) -> None:
 
 
 @njit(cache=True, fastmath=True)
-def trim_repeats_threshold_func(self: WorldTree) -> float:
+def trim_repeats_threshold_func(self: WorldTree | WorldTreeComplex) -> float:
     threshold = np.median(self.scores[: self.valid_size])
     idx = get_unique_indices_scores(
         self.leaves[: self.valid_size, : self.nparams, 0],
@@ -594,7 +598,7 @@ def trim_repeats_threshold_func(self: WorldTree) -> float:
 
 
 @njit(cache=True, fastmath=True)
-def keep_func(self: WorldTree, indices: np.ndarray) -> None:
+def keep_func(self: WorldTree | WorldTreeComplex, indices: np.ndarray) -> None:
     count = int(np.sum(indices))
     if count == 0:
         self.valid_size = 0

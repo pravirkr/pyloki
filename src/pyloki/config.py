@@ -61,7 +61,7 @@ class ParamLimits:
 
     Parameters
     ----------
-    limits : types.ListType[types.Tuple[float, float]]
+    limits : list[tuple[float, float]]
         List of tuples with the min and max values for each search parameter.
         Should be in the order: ..., jerk, accel, freq.
         Paramaters are defined at t=t_c (center of the observation).

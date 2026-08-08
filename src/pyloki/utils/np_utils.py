@@ -151,7 +151,7 @@ def nb_roll(
 
 
 @njit(cache=True, fastmath=True)
-def cartesian_prod(arrays: np.ndarray) -> np.ndarray:
+def cartesian_prod(arrays: list[np.ndarray] | np.ndarray) -> np.ndarray:
     nn = 1
     for array in arrays:
         nn *= array.size

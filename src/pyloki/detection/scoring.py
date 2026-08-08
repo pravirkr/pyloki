@@ -233,7 +233,7 @@ def snr_score_func(
     """Compute the SNR score for a folded suggestion."""
     ts_e, ts_v = combined_res
     fold = ts_e / np.sqrt(ts_v)
-    return np.max(boxcar_snr_1d(fold, widths, 1.0))
+    return float(np.max(boxcar_snr_1d(fold, widths, 1.0)))
 
 
 @njit("f4(c8[:, ::1], i8[::1])", cache=True, fastmath=True)
@@ -242,7 +242,7 @@ def snr_score_func_complex(
     widths: npt.NDArray[np.int64],
 ) -> float:
     """Compute the SNR score for a folded suggestion."""
-    combined_res_t = np.fft.irfft(combined_res)
+    combined_res_t = np.fft.irfft(combined_res).astype(np.float32)
     return snr_score_func(combined_res_t, widths)
 
 
@@ -288,7 +288,7 @@ def snr_score_batch_func_complex(
     widths: npt.NDArray[np.int64],
 ) -> npt.NDArray[np.float32]:
     """Compute the SNR score for a batched folded suggestion stored in FFT format."""
-    combined_res_batch_t = np.fft.irfft(combined_res_batch)
+    combined_res_batch_t = np.fft.irfft(combined_res_batch).astype(np.float32)
     return snr_score_batch_func(combined_res_batch_t, widths)
 
 

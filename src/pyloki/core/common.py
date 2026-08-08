@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from numba import njit, types
+from numba import njit
 
 from pyloki.utils import np_utils
 
@@ -12,12 +12,12 @@ if TYPE_CHECKING:
 
 
 @njit(cache=True, fastmath=True)
-def get_leaves(param_arr: types.ListType, dparams: np.ndarray) -> np.ndarray:
+def get_leaves(param_arr: list[np.ndarray], dparams: np.ndarray) -> np.ndarray:
     """Get the leaf parameter sets for pruning.
 
     Parameters
     ----------
-    param_arr : types.ListType
+    param_arr : list[np.ndarray]
         Parameter array containing the parameter values for each dimension.
     dparams : np.ndarray
         Parameter step sizes for each dimension in a 1D array.
@@ -34,11 +34,8 @@ def get_leaves(param_arr: types.ListType, dparams: np.ndarray) -> np.ndarray:
 
 
 @njit(cache=True, fastmath=True)
-def get_leaves_opt(
-    param_arr: types.ListType,
-    dparams: np.ndarray,
-) -> np.ndarray:
-    nparams = len(param_arr)  # ty: ignore
+def get_leaves_opt(param_arr: list[np.ndarray], dparams: np.ndarray) -> np.ndarray:
+    nparams = len(param_arr)
     shapes = np.empty(nparams, dtype=np.int64)
     for i in range(nparams):
         shapes[i] = len(param_arr[i])

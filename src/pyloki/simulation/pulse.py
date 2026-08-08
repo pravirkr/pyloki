@@ -95,14 +95,14 @@ def calibrate_scale_on_folds(
 
     # Measure SNR of template alone to get sensitivity: d(SNR)/d(scale)
     # This is the reference slope for the Newton-like correction.
-    snr_template = np.max(boxcar_snr_1d(tmpl_norm, box_widths, 1))
+    snr_template = float(np.max(boxcar_snr_1d(tmpl_norm, box_widths, 1)))
 
     current_scale = initial_scale
     combined_norm = np.empty(nbins, dtype=np.float32)
     for _ in range(max_iter):
         for i in range(nbins):
             combined_norm[i] = noise_norm[i] + (current_scale * tmpl_norm[i])
-        measured_snr = np.max(boxcar_snr_1d(combined_norm, box_widths, 1))
+        measured_snr = float(np.max(boxcar_snr_1d(combined_norm, box_widths, 1)))
         snr_diff = measured_snr - snr_target
         if snr_diff * snr_diff < tol * tol:  # abs(snr_diff) < tol, avoid branch
             break
@@ -424,7 +424,7 @@ class PulseSignalConfig:
             np.arange(1, self.fold_bins_ideal // 2),
             1.0,
         )
-        return np.max(match_boxcar)
+        return float(np.max(match_boxcar))
 
     def _check(self) -> None:
         if self.ducy <= 0 or self.ducy >= 1:

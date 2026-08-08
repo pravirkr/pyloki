@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from numba import njit, types
+from numba import njit
 
 from pyloki.utils import np_utils, psr_utils, transforms
 from pyloki.utils.misc import C_VAL, FLOAT_EPSILON
@@ -764,7 +764,6 @@ def cir_physical_branch_batch(
     nbins: int,
     eta: float,
     poly_order: int,
-    param_limits: np.ndarray,
     branch_max: int = 16,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Branch a batch of parameter sets to leaves."""
@@ -816,14 +815,11 @@ def cir_physical_branch_batch(
     branched_counts = np.empty((n_batch, nparams), dtype=np.int64)
     for i in range(n_batch):
         for j in range(nparams):
-            p_min, p_max = param_limits[j]
             dparam_act, count = psr_utils.branch_param_padded(
                 pad_branched_params[i, j],
                 param_cur_batch[i, j],
                 dparam_cur_batch[i, j],
                 dparam_opt_batch[i, j],
-                p_min,
-                p_max,
             )
             pad_branched_dparams[i, j] = dparam_act
             branched_counts[i, j] = count
@@ -908,7 +904,7 @@ def poly_circular_resolve_batch(
 
 @njit(cache=True, fastmath=True)
 def generate_bp_circ_taylor(
-    param_arr: types.ListType,
+    param_arr: list[np.ndarray],
     dparams_act: np.ndarray,
     tseg_ffa: float,
     nsegments: int,

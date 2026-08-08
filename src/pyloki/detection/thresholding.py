@@ -260,7 +260,7 @@ def folds_init(
     scores_h1: npt.NDArray[np.float32],
     variance: float,
 ) -> Folds:
-    self = structref.new(FoldsType)
+    self = structref.new(FoldsType)  # ty: ignore[missing-argument]
     self.folds_h0 = folds_h0
     self.folds_h1 = folds_h1
     self.scores_h0 = scores_h0
@@ -528,7 +528,7 @@ def transition_state(
 @njit(cache=True, parallel=True, fastmath=True)
 def pre_simulate_stage_folds(
     prev_states: npt.NDArray,
-    folds_in: types.ListType[FoldsTemplate],
+    folds_in: list[Folds],
     beam_idx_prev: npt.NDArray,
     bias_snr: float,
     profile: npt.NDArray[np.float32],
@@ -538,7 +538,7 @@ def pre_simulate_stage_folds(
     nprobs: int,
     ducy_max: float,
     wtsp: float,
-) -> types.ListType[FoldsTemplate]:
+) -> list[Folds]:
     sim_folds = typed.List.empty_list(FoldsType)
     for _ in range(nthresholds * nprobs):
         sim_folds.append(create_empty_folds())
@@ -591,11 +591,11 @@ def run_stage_legacy(
     beam_idx_cur: npt.NDArray,
     beam_idx_prev: npt.NDArray,
     states: npt.NDArray,
-    folds_in: types.ListType[FoldsTemplate],
-    folds_out: types.ListType[FoldsTemplate],
+    folds_in: list[Folds],
+    folds_out: list[Folds],
     probs: npt.NDArray,
     nbranches: int,
-    thresholds: npt.NDArray[np.float32],
+    thresholds: npt.NDArray,
     bias_snr: float,
     profile: npt.NDArray[np.float32],
     rng: np.random.Generator,
@@ -654,11 +654,11 @@ def run_stage_improved(
     beam_idx_cur: npt.NDArray,
     beam_idx_prev: npt.NDArray,
     states: npt.NDArray,
-    sim_folds: types.ListType[FoldsTemplate],
-    folds_out: types.ListType[FoldsTemplate],
+    sim_folds: list[Folds],
+    folds_out: list[Folds],
     probs: npt.NDArray,
     nbranches: int,
-    thresholds: npt.NDArray[np.float32],
+    thresholds: npt.NDArray,
     nprobs: int,
     thres_neigh: int,
 ) -> None:

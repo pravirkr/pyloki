@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from numba import njit, types
+from numba import njit
 
 from pyloki.core.common import get_leaves
 from pyloki.utils import np_utils, psr_utils, transforms
@@ -13,7 +13,7 @@ from pyloki.utils.snail import MiddleOutScheme
 
 @njit(cache=True, fastmath=True)
 def poly_chebyshev_seed(
-    param_arr: types.ListType,
+    param_arr: list[np.ndarray],
     dparams: np.ndarray,
     poly_order: int,
     coord_init: tuple[float, float],
@@ -22,7 +22,7 @@ def poly_chebyshev_seed(
 
     Parameters
     ----------
-    param_arr : types.ListType
+    param_arr : list[np.ndarray]
         Parameter array for each dimension; only (acceleration, frequency).
     dparams : np.ndarray
         Parameter step (grid) sizes for each dimension. Shape is (poly_order,).
@@ -400,7 +400,7 @@ def poly_chebyshev_report_batch(
 
 @njit(cache=True, fastmath=True)
 def generate_bp_poly_chebyshev_approx(
-    param_arr: types.ListType,
+    param_arr: list[np.ndarray],
     dparams_act: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
@@ -457,7 +457,7 @@ def generate_bp_poly_chebyshev_approx(
 
 @njit(cache=True, fastmath=True)
 def generate_bp_poly_chebyshev(
-    param_arr: types.ListType,
+    param_arr: list[np.ndarray],
     dparams_act: np.ndarray,
     tseg_ffa: float,
     nsegments: int,
