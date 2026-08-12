@@ -30,14 +30,16 @@ dependencies = [
     "numpy>=2.0",
     "numba>=0.63.0",
     "astropy",
-    "xarray",
     "attrs",
-    "click",
-    "rich",
-    "matplotlib",
-    "seaborn",
-    "rocket-fft",
     "h5py",
+    "matplotlib",
+    "pandas",
+    "rich",
+    "rich_click",
+    "rocket-fft",
+    "scipy",
+    "seaborn",
+    "xarray",
     "sigpyproc @ git+https://github.com/FRBs/sigpyproc3.git",
 ]
 
@@ -52,6 +54,7 @@ tests = [
     "pytest-sugar",
     "pytest-benchmark",
     "pytest-mock",
+    "sympy",
 ]
 dev = ["ruff", "ty"]
 docs = [
