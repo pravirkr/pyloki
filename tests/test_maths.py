@@ -3,7 +3,7 @@ import pytest
 from numpy import polynomial
 from scipy import special, stats
 
-from pyloki.utils import maths
+from pyloki.utils import maths, transforms
 
 
 class TestMaths:
@@ -109,7 +109,7 @@ class TestChebyshevTransform:
             + 3 * d_vec[0] * t_s**4 / (8 * maths.fact(4))
         )
         alpha_expected = np.array([alpha_4, alpha_3, alpha_2, alpha_1, alpha_0])
-        alpha = maths.taylor_to_cheby(d_vec, t_s)
+        alpha = transforms.taylor_to_cheby(d_vec, t_s)
         np.testing.assert_almost_equal(alpha, alpha_expected, decimal=12)
 
     def test_cheby_to_taylor_manual(self) -> None:
@@ -122,22 +122,22 @@ class TestChebyshevTransform:
         d_1 = 1 * (alpha_vec[3] - 3 * alpha_vec[1]) / t_s
         d_0 = alpha_vec[4] - alpha_vec[2] + alpha_vec[0]
         d_expected = np.array([d_4, d_3, d_2, d_1, d_0])
-        d = maths.cheby_to_taylor(alpha_vec, t_s)
+        d = transforms.cheby_to_taylor(alpha_vec, t_s)
         np.testing.assert_almost_equal(d, d_expected, decimal=12)
 
     @pytest.mark.parametrize("k_max", [2, 4, 6])
     def test_roundtrip_identity(self, k_max: int) -> None:
         d_vec = self.rng.random(k_max + 1)
         t_s = 1.5
-        alpha = maths.taylor_to_cheby(d_vec, t_s)
-        d_reconstructed = maths.cheby_to_taylor(alpha, t_s)
+        alpha = transforms.taylor_to_cheby(d_vec, t_s)
+        d_reconstructed = transforms.cheby_to_taylor(alpha, t_s)
         np.testing.assert_almost_equal(d_vec, d_reconstructed, decimal=12)
 
     def test_polynomial_evaluation(self) -> None:
         d_vec = np.array([0.5, 2.3, 1500.0, 1e6, 1e4])
         k_max = len(d_vec) - 1
         t_c, t_s = 4.2, 2.6
-        alpha_vec = maths.taylor_to_cheby(d_vec, t_s)
+        alpha_vec = transforms.taylor_to_cheby(d_vec, t_s)
         t_test = np.linspace(t_c - t_s, t_c + t_s, 11)
         x = (t_test - t_c) / t_s
         k_range = np.arange(k_max + 1)
