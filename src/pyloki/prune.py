@@ -323,9 +323,14 @@ def pruning_iteration_batched(
 
     # Finalize
     tree_new = tree_new.trim_empty()
+    # All values must share one type: numba cannot box a heterogeneous
+    # LiteralStrKey dict back to Python -- it returns NULL with an exception set,
+    # and the caller's tuple unpack then segfaults on the NULL. Mixing the int
+    # counts with the float scores here is what made every prune_dyp_tree call
+    # die with SIGSEGV. The counts are cast back to int by the caller.
     stats = {
-        "n_leaves": n_leaves,
-        "n_leaves_phy": n_leaves_phy,
+        "n_leaves": float(n_leaves),
+        "n_leaves_phy": float(n_leaves_phy),
         "score_min": score_min if np.isfinite(score_min) else 0.0,
         "score_max": score_max if np.isfinite(score_max) else 0.0,
     }
@@ -651,7 +656,12 @@ class Pruning:
             threshold=threshold,
             n_branches=self.world_tree.valid_size,
             n_leaves_surv=world_tree.valid_size,
-            **stats_dict,  # ty: ignore[invalid-argument-type]
+            # stats_dict values are all float (see pruning_iteration_batched);
+            # restore the declared int type of the two counts.
+            n_leaves=int(stats_dict["n_leaves"]),
+            n_leaves_phy=int(stats_dict["n_leaves_phy"]),
+            score_min=stats_dict["score_min"],
+            score_max=stats_dict["score_max"],
         )
         with log_file.open("a") as f:
             f.write(pstats_cur.get_summary())
