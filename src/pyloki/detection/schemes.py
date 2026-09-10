@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import json
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Self
 
 import attrs
@@ -12,7 +10,6 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from matplotlib import pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.ticker import FormatStrFormatter
 from rich.table import Table
 from scipy import stats
@@ -23,7 +20,47 @@ from pyloki.utils.misc import CONSOLE, get_logger
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+
+    from matplotlib.backends.backend_tkagg import (
+        FigureCanvasTkAgg,
+        NavigationToolbar2Tk,
+    )
     from numpy import typing as npt
+
+
+def _import_tk() -> None:
+    """Bind the Tk names on first use, rather than at import time.
+
+    Importing tkinter and matplotlib's Tk backend at module scope makes this whole
+    module unimportable wherever Tk is missing -- headless runners, minimal installs --
+    even though only `ThresholdAnalyzerApp` needs it. `bound_scheme`, `trials_scheme`,
+    `StateInfo`, `StatesInfo` and `DynamicThresholdSchemeAnalyser` have no GUI
+    dependency and are now reachable without one.
+
+    Raises
+    ------
+    ImportError
+        If Tk is unavailable, with a message pointing at the actual cause.
+    """
+    global tk, filedialog, messagebox, ttk  # noqa: PLW0603
+    global FigureCanvasTkAgg, NavigationToolbar2Tk  # noqa: PLW0603
+    try:
+        import tkinter as tk
+        from tkinter import filedialog, messagebox, ttk
+
+        from matplotlib.backends.backend_tkagg import (
+            FigureCanvasTkAgg,
+            NavigationToolbar2Tk,
+        )
+    except ImportError as exc:  # pragma: no cover - depends on the Tk install
+        msg = (
+            "ThresholdAnalyzerApp needs Tk, which is not available in this "
+            "environment. Install a tkinter-capable Python to use the GUI; the rest "
+            "of pyloki.detection.schemes works without it."
+        )
+        raise ImportError(msg) from exc
 
 
 def bound_scheme(nstages: int, snr_bound: float) -> npt.NDArray[np.float32]:
@@ -656,6 +693,7 @@ class DynamicThresholdSchemeAnalyser:
 
 class ThresholdAnalyzerApp:
     def __init__(self, root: tk.Tk) -> None:
+        _import_tk()
         self.root = root
         self.root.title("Dynamic Threshold Scheme Analyzer")
         # Set minimum window size before calculating initial geometry
