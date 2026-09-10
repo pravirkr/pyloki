@@ -153,6 +153,27 @@ def boxcar_snr_2d(
     return snrs
 
 
+@njit("f4[:, ::1](f4[:, ::1], i8[::1], f8)", cache=True, fastmath=True)
+def boxcar_snr_2d_serial(
+    folds: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+    stdnoise: float = 1.0,
+) -> npt.NDArray[np.float32]:
+    """Serial twin of `boxcar_snr_2d`, for use inside a parallel region.
+
+    Identical results; only the `prange` is a plain `range`. Calling the parallel
+    version from inside another parallel region is a nested parallel launch, which
+    numba's default `workqueue` threading layer cannot do -- it aborts the process
+    with "Concurrent access has been detected". Nesting would not buy anything here
+    anyway, since the enclosing loop already saturates the workers.
+    """
+    nfolds, _ = folds.shape
+    snrs = np.empty(shape=(nfolds, widths.size), dtype=np.float32)
+    for ifold in range(nfolds):
+        snrs[ifold] = boxcar_snr_1d(folds[ifold], widths, stdnoise)
+    return snrs
+
+
 @njit(cache=True, fastmath=True)
 def boxcar_snr_nd(
     data: npt.NDArray[np.float32],

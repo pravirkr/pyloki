@@ -129,7 +129,10 @@ def prune_folds(
         ducy_max=ducy_max,
         wtsp=wtsp,
     )
-    scores_arr = np_utils.nb_max(scoring.boxcar_snr_2d(folds_norm, widths, 1.0), axis=1)
+    scores_arr = np_utils.nb_max(
+        scoring.boxcar_snr_2d_serial(folds_norm, widths, 1.0),
+        axis=1,
+    )
     good_scores_idx = np.nonzero(scores_arr > snr_thresh)[0]
     return np.ascontiguousarray(folds[good_scores_idx])
 
@@ -150,7 +153,10 @@ def prune_folds_survival(
         ducy_max=ducy_max,
         wtsp=wtsp,
     )
-    scores_arr = np_utils.nb_max(scoring.boxcar_snr_2d(folds_norm, widths, 1.0), axis=1)
+    scores_arr = np_utils.nb_max(
+        scoring.boxcar_snr_2d_serial(folds_norm, widths, 1.0),
+        axis=1,
+    )
     n_surviving = int(survive_prob * len(scores_arr))
     good_scores_idx = np.flip(np.argsort(scores_arr))[: int(n_surviving)]
     threshold = scores_arr[good_scores_idx[-1]]
@@ -496,7 +502,10 @@ def fold_max_scores(
         ducy_max=ducy_max,
         wtsp=wtsp,
     )
-    return np_utils.nb_max(scoring.boxcar_snr_2d(folds_norm, widths, 1.0), axis=1)
+    return np_utils.nb_max(
+        scoring.boxcar_snr_2d_serial(folds_norm, widths, 1.0),
+        axis=1,
+    )
 
 
 @njit(cache=True, fastmath=True)
