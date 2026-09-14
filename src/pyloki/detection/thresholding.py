@@ -642,18 +642,25 @@ def run_stage_legacy(
                         ducy_max,
                         wtsp,
                     )
-                    cur_state = cur_state[0]  # Get record from array
-                    iprob_val = np.digitize(cur_state["success_h1_cumul"], probs) - 1
+                    # Keep `cur_state` as the one-element ARRAY. Pulling the record
+                    # out (`cur_state[0]`) and storing it whole writes zeros under
+                    # numba, and a zeroed record reads as `is_empty == False`, so the
+                    # scheme fills up with states that look real and hold nothing.
+                    # Slice assignment is the form that round-trips; see
+                    # tests/test_thresholding.py::TestRecordAssignment.
+                    iprob_val = (
+                        np.digitize(cur_state[0]["success_h1_cumul"], probs) - 1
+                    )
                     iprob = int(iprob_val.item())  # Extract scalar
                     if iprob < 0 or iprob >= nprobs:  # Clamp to valid range
                         continue
                     existing_state = states[istage, ithres, iprob]
                     if (
                         existing_state["is_empty"]
-                        or cur_state["complexity_cumul"]
+                        or cur_state[0]["complexity_cumul"]
                         < existing_state["complexity_cumul"]
                     ):
-                        states[istage, ithres, iprob] = cur_state
+                        states[istage, ithres, iprob : iprob + 1] = cur_state
                         folds_out[ithres * nprobs + iprob] = cur_fold_state
 
 
@@ -692,8 +699,10 @@ def run_stage_improved(
                         thresholds[ithres],
                         nbranches,
                     )
-                    cur_state = cur_state[0]  # Get record from array
-                    iprob_val = np.digitize(cur_state["success_h1_cumul"], probs) - 1
+                    # See run_stage_legacy: keep the array, assign to a slice.
+                    iprob_val = (
+                        np.digitize(cur_state[0]["success_h1_cumul"], probs) - 1
+                    )
                     iprob = int(iprob_val.item())  # Extract scalar
                     if iprob < 0 or iprob >= nprobs:  # Clamp to valid range
                         continue
@@ -701,10 +710,10 @@ def run_stage_improved(
                     existing_state = states[istage, ithres, iprob]
                     if (
                         existing_state["is_empty"]
-                        or cur_state["complexity_cumul"]
+                        or cur_state[0]["complexity_cumul"]
                         < existing_state["complexity_cumul"]
                     ):
-                        states[istage, ithres, iprob] = cur_state
+                        states[istage, ithres, iprob : iprob + 1] = cur_state
                         folds_out[ithres * nprobs + iprob] = cur_fold_state
 
 
