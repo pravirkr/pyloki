@@ -17,7 +17,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from numba import njit
+from scipy import stats
 
+from pyloki.detection import schemes
 from pyloki.detection.thresholding import DynamicThresholdScheme
 
 RECORD_DTYPE = np.dtype([("a", np.float32), ("b", np.float32), ("flag", np.bool_)])
@@ -118,3 +120,50 @@ class TestDynamicThresholdScheme:
             best.append(float(stage[~stage["is_empty"]]["success_h1_cumul"].max()))
         assert all(b <= 1.0 + 1e-6 for b in best)
         assert best == sorted(best, reverse=True), f"survival is not monotone: {best}"
+
+
+class TestTrialsScheme:
+    """`trials_scheme` used to return -inf before the search had branched.
+
+    `norm.isf(1 / trials)` is `-inf` when the cumulative trial count is 1, which happens
+    whenever a branching pattern starts with `B(s) = 1` -- a perfectly ordinary pattern
+    for a strategy that cannot resolve anything at the earliest stages.
+    `DynamicThresholdScheme` centres its threshold beam on this path, so an infinite
+    guess empties the beam and the optimiser returns nothing at all.
+    """
+
+    def test_is_finite_when_the_search_has_not_branched(self) -> None:
+        pattern = np.array([1.0, 1.0, 1.0, 8.0, 2.0])
+        path = schemes.trials_scheme(pattern, trials_start=1)
+        assert np.all(np.isfinite(path)), f"non-finite guess path: {path}"
+        assert np.all(path >= 0.0)
+
+    def test_unbranched_stages_need_no_threshold(self) -> None:
+        path = schemes.trials_scheme(np.array([1.0, 1.0, 4.0]), trials_start=1)
+        assert path[0] == pytest.approx(0.0)
+        assert path[1] == pytest.approx(0.0)
+        assert path[2] > 0.0
+
+    def test_branching_patterns_are_unchanged(self) -> None:
+        """The floor must not perturb a pattern that already branches."""
+        pattern = np.array([4.0, 2.0, 3.0])
+        expected = stats.norm.isf(1.0 / np.cumprod(pattern))
+        assert np.all(expected > 0.0), "test is vacuous unless all entries are positive"
+        np.testing.assert_allclose(
+            schemes.trials_scheme(pattern, trials_start=1), expected,
+        )
+
+    def test_scheme_runs_on_a_pattern_that_starts_unbranched(self) -> None:
+        """End to end: the configuration that used to produce an empty beam."""
+        scheme = DynamicThresholdScheme(
+            np.array([1.0, 1.0, 4.0, 2.0, 2.0]),
+            ref_ducy=0.1, nbins=32, ntrials=256, nprobs=8, prob_min=0.05,
+            snr_final=8.0, nthresholds=30, ducy_max=0.3, wtsp=1.5,
+            beam_width=2.5, mode="improved",
+        )
+        assert np.all(np.isfinite(scheme.guess_path))
+        scheme.run(thres_neigh=5)
+        populated = [
+            int((~scheme.states[i]["is_empty"]).sum()) for i in range(scheme.nstages)
+        ]
+        assert all(n > 0 for n in populated), f"non-empty per stage = {populated}"

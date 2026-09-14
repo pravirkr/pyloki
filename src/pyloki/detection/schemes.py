@@ -72,7 +72,13 @@ def trials_scheme(
         Thresholds for each stage.
     """
     trials = np.cumprod(branching_pattern) * trials_start
-    return stats.norm.isf(1 / trials)
+    # A stage that has not branched yet has one trial, and `norm.isf(1)` is `-inf`.
+    # That is the right answer to "what threshold gives a false alarm of 1 in 1?" and
+    # the wrong thing to hand a caller: `DynamicThresholdScheme` centres its beam on
+    # this path, and an infinite guess leaves the beam empty, so every state is
+    # discarded and the optimiser silently returns nothing. Floor it at zero -- no
+    # branching means no trials pressure, so no threshold is required.
+    return np.maximum(stats.norm.isf(1 / trials), 0.0)
 
 
 @attrs.frozen(auto_attribs=True, kw_only=True)
