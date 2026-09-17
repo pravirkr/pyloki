@@ -333,6 +333,12 @@ def pruning_iteration_batched(
         "n_leaves_phy": float(n_leaves_phy),
         "score_min": score_min if np.isfinite(score_min) else 0.0,
         "score_max": score_max if np.isfinite(score_max) else 0.0,
+        # The cut actually applied. Differs from the caller's nominal threshold
+        # whenever the buffer overflowed (utils/world_tree.py: prune_on_overload_func
+        # ratchets it to max(threshold, top-K, median)). Without this the tightening
+        # is invisible: PruneStats logs the scheme value, and `score_min` is taken
+        # over every scored leaf before thresholding, not over the survivors.
+        "threshold_eff": float(current_threshold),
     }
     return tree_new, stats, timers
 
@@ -517,6 +523,7 @@ class Pruning:
             level=self.prune_level,
             seg_idx=self.scheme.get_segment_idx(self.prune_level),
             threshold=0,
+            threshold_eff=0,   # initial record: nothing has been pruned yet
             score_min=self.world_tree.score_min,
             score_max=self.world_tree.score_max,
             n_branches=self.world_tree.size,
@@ -654,6 +661,7 @@ class Pruning:
             level=self.prune_level,
             seg_idx=seg_idx_cur,
             threshold=threshold,
+            threshold_eff=stats_dict["threshold_eff"],
             n_branches=self.world_tree.valid_size,
             n_leaves_surv=world_tree.valid_size,
             # stats_dict values are all float (see pruning_iteration_batched);

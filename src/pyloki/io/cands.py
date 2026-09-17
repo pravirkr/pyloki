@@ -24,7 +24,11 @@ class PruneStats:
     seg_idx : int
         The segment index being added.
     threshold : float
-        The threshold value.
+        The nominal threshold from the threshold scheme.
+    threshold_eff : float
+        The threshold actually applied. Equal to `threshold` unless the candidate
+        buffer overflowed, in which case pruning ratchets the cut up to
+        `max(threshold, top-K, median)` and never lowers it again for that level.
     score_min : float
         The minimum leaf score.
     score_max : float
@@ -50,6 +54,7 @@ class PruneStats:
     level: int
     seg_idx: int
     threshold: float
+    threshold_eff: float = float("nan")
     score_min: float = 0.0
     score_max: float = 0.0
     n_branches: int = 1
@@ -95,7 +100,8 @@ class PruneStats:
             f"branch_frac: {self.branch_frac:5.2f},",
         )
         summary.append(
-            f"score thresh: {self.threshold:5.2f}, max: {self.score_max:5.2f}, "
+            f"score thresh: {self.threshold:5.2f}, eff: {self.threshold_eff:5.2f}, "
+            f"max: {self.score_max:5.2f}, "
             f"min: {self.score_min:5.2f}, P(surv): {self.surv_frac:4.2f}",
         )
         return "".join(summary) + "\n"
