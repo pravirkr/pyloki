@@ -17,22 +17,76 @@ def build_cdf_lut(
     pos: float,
     ngrid: int = 4096,
 ) -> np.ndarray:
-    phase = np.linspace(0.0, 1.0, ngrid, endpoint=False)
+    """Tabulate the cumulative distribution of a periodic pulse profile.
+
+    The pulse is a probability distribution on the circle: all of its mass has
+    to be wrapped into the ``[0, 1)`` phase window, so that one period of the
+    template integrates to exactly 1 no matter where the peak sits.
+
+    Parameters
+    ----------
+    shape : str
+        Pulse shape, one of {"boxcar", "gaussian", "von_mises"}.
+    width : float
+        Pulse width (FWTM) in fractional phase, in (0, 1).
+    pos : float
+        Phase of the pulse peak (centre), in [0, 1).
+    ngrid : int, optional
+        Number of phase cells in the lookup table, by default 4096.
+
+    Returns
+    -------
+    np.ndarray
+        ``ngrid + 1`` float32 samples of the wrapped CDF on the closed grid
+        ``j / ngrid``, ``j = 0 .. ngrid``. The table is non-decreasing with
+        ``lut[0] == 0`` and ``lut[ngrid] == lut[0] + 1``, i.e. the last element
+        is the periodic continuation of the first (a CDF gains 1 per period),
+        which is what makes interpolation across the phase wrap correct.
+
+    Notes
+    -----
+    The wrapped CDF is built by summing the aliased copies of the underlying
+    distribution, ``G(x) = sum_k cdf(x + k)``, and re-origining at phase 0.
+    ``G`` is monotonic and satisfies ``G(x + 1) = G(x) + 1`` once enough copies
+    are included, so ``G(x) - G(0)`` is exactly the wrapped CDF measured from
+    phase 0. The number of copies is shape-dependent: ``von_mises`` is already
+    periodic (SciPy defines its CDF so that ``cdf(x + 2 pi) == cdf(x) + 1``),
+    whereas the boxcar and the gaussian need their tails folded back in.
+    """
     if shape == "boxcar":
-        rv = stats.uniform(loc=pos, scale=width)
+        # ``pos`` is the peak (centre) of the pulse, not its leading edge.
+        rv = stats.uniform(loc=pos - width / 2, scale=width)
+        cdf = rv.cdf
+        nalias = 1
     elif shape == "gaussian":
         sigma = width / (2 * np.sqrt(2 * np.log(10)))
         rv = stats.norm(loc=pos, scale=sigma)
+        cdf = rv.cdf
+        nalias = 4
     elif shape == "von_mises":
-        kappa = np.log(2.0) / (2.0 * np.sin(np.pi * width / 2.0) ** 2)
-        rv = stats.vonmises(loc=pos, kappa=kappa)
+        # FWTM: exp(kappa * (cos(theta) - 1)) = 1/10 at theta = pi * width,
+        # and 1 - cos(theta) = 2 sin(theta / 2)**2.
+        kappa = np.log(10.0) / (2.0 * np.sin(np.pi * width / 2.0) ** 2)
+        rv = stats.vonmises(loc=0.0, kappa=kappa)
+
+        def cdf(x: np.ndarray) -> np.ndarray:
+            # scipy parametrises von Mises on angles, the phase is in cycles
+            return rv.cdf(2 * np.pi * (x - pos))
+
+        nalias = 0  # already periodic, no aliased copies to fold back in
     else:
         msg = f"Unknown shape: {shape}"
         raise ValueError(msg)
-    cdf = rv.cdf(phase).astype(np.float64)
-    # periodic wrap for interpolation
-    cdf = np.concatenate([cdf, cdf[:1]])
-    return cdf.astype(np.float32)
+    phase = np.arange(ngrid + 1, dtype=np.float64) / ngrid
+    shifts = np.arange(-nalias, nalias + 1, dtype=np.float64)
+    gcdf = cdf(phase[:, None] + shifts[None, :]).sum(axis=1)
+    # SciPy's CDFs are monotonic only up to rounding in the far tails; enforce
+    # it so that no sample of the template can come out negative.
+    lut = np.maximum.accumulate(gcdf - gcdf[0])
+    # Guard against the residual truncation of the aliased tails, so that one
+    # period always integrates to exactly 1.
+    lut /= lut[-1]
+    return lut.astype(np.float32)
 
 
 @njit(cache=True, fastmath=True, parallel=True)
@@ -52,20 +106,22 @@ def generate_pulse_template(
         # phases
         p0 = (t0 % period) * inv_period
         p1 = (t1 % period) * inv_period
+        # LUT coordinates
+        x0 = p0 * ngrid
+        x1 = p1 * ngrid
+        i0 = min(int(x0), ngrid - 1)
+        i1 = min(int(x1), ngrid - 1)
+        f0 = x0 - i0
+        f1 = x1 - i1
+        # linear interpolation
+        c0 = (1.0 - f0) * cdf_lut[i0] + f0 * cdf_lut[i0 + 1]
+        c1 = (1.0 - f1) * cdf_lut[i1] + f1 * cdf_lut[i1 + 1]
         if p1 > p0:
-            # LUT coordinates
-            x0 = p0 * ngrid
-            x1 = p1 * ngrid
-            i0 = int(x0)
-            i1 = int(x1)
-            f0 = x0 - i0
-            f1 = x1 - i1
-            # linear interpolation
-            c0 = (1.0 - f0) * cdf_lut[i0] + f0 * cdf_lut[i0 + 1]
-            c1 = (1.0 - f1) * cdf_lut[i1] + f1 * cdf_lut[i1 + 1]
             out[i] = c1 - c0
         else:
-            out[i] = 0.0
+            # sample straddles the period boundary: integrate up to the end of
+            # the period and add the part that has already wrapped around.
+            out[i] = (cdf_lut[ngrid] - c0) + (c1 - cdf_lut[0])
     return out
 
 
