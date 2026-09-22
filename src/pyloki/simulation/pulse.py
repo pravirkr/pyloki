@@ -137,6 +137,11 @@ class PulseSignalConfig:
         Type of modulation, by default "derivative"
     mod_kwargs : dict, optional
         Modulation function parameters, by default None
+    seed : int | np.random.Generator | None, optional
+        Seed for the noise generator, by default None (fresh entropy each time).
+        Pass an int to make every ``generate*`` call on this config reproducible.
+        The generator is stored on the config, so successive calls draw successive
+        realisations -- it is the *sequence* that repeats across runs, not each call.
     """
 
     period: float
@@ -148,10 +153,15 @@ class PulseSignalConfig:
     mod_type: str = "derivative"
     mod_kwargs: dict[str, float] = attrs.Factory(dict)
     mod_tref: float | None = None
+    seed: int | np.random.Generator | None = None
     _mod_func: Modulating = attrs.field(init=False, repr=False)
+    # eq=False: two configs built from the same seed hold distinct Generator
+    # objects, which compare by identity, and that must not make them unequal.
+    _rng: np.random.Generator = attrs.field(init=False, repr=False, eq=False)
 
     def __attrs_post_init__(self) -> None:
         self._mod_func = type_to_mods[self.mod_type](**self.mod_kwargs)
+        self._rng = np.random.default_rng(self.seed)
         self._check()
         if self.mod_tref is None:
             self.mod_tref = self.tobs / 2
@@ -193,7 +203,7 @@ class PulseSignalConfig:
         return self.mod_func.generate(np.arange(0, self.tobs, self.dt), mod_tref)
 
     def get_updated(self, update_dict: dict) -> PulseSignalConfig:
-        new = attrs.asdict(self, filter=attrs.filters.exclude("_mod_func"))
+        new = attrs.asdict(self, filter=attrs.filters.exclude("_mod_func", "_rng"))
         if update_dict is not None:
             new.update(update_dict)
         new_checked = {
@@ -217,7 +227,7 @@ class PulseSignalConfig:
         signal = pulse.generate()
         pulse_width = self.ducy * self.period / self.dt
         stdnoise = np.sqrt(self.nsamps * self.ducy) / self.snr / pulse_width
-        rng = np.random.default_rng()
+        rng = self._rng
         signal += rng.normal(0, stdnoise, self.nsamps)
         signal_v = np.ones(self.nsamps) * stdnoise**2
         return TimeSeries(signal, signal_v, self.dt)
@@ -225,7 +235,7 @@ class PulseSignalConfig:
     def generate_noise(self) -> TimeSeries:
         """Generate a noise signal based on the configuration parameters."""
         stdnoise = np.sqrt(self.nsamps * self.ducy) / self.snr / self.tol_bins
-        rng = np.random.default_rng()
+        rng = self._rng
         signal = rng.normal(0, stdnoise, self.nsamps)
         signal_v = np.ones(self.nsamps) * stdnoise**2
         return TimeSeries(signal, signal_v, self.dt)
@@ -258,7 +268,7 @@ class PulseSignalConfig:
         TimeSeries
             A simulated timeseries with the desired SNR.
         """
-        rng = np.random.default_rng()
+        rng = self._rng
         pulse = PulseShape(
             self.proper_time,
             self.dt,
@@ -335,7 +345,7 @@ class PulseSignalConfig:
         TimeSeries
             A simulated timeseries with the desired SNR.
         """
-        rng = np.random.default_rng()
+        rng = self._rng
         ngrid = max(4096, int(100 / self.ducy))
         cdf_lut = build_cdf_lut(shape, self.ducy, phi0, ngrid=ngrid)
         sig_template = generate_pulse_template(
