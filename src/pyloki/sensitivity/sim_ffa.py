@@ -178,6 +178,7 @@ class TestFFASensitivity:
         ds_arr: np.ndarray | None = None,
         ducy_max: float = 0.5,
         wtsp: float = 1,
+        seed: int | np.random.Generator | None = None,
         *,
         quiet: bool = False,
     ) -> None:
@@ -195,7 +196,7 @@ class TestFFASensitivity:
         self.ducy_max = ducy_max
         self.wtsp = wtsp
         self.quiet = quiet
-        self.rng = np.random.default_rng()
+        self.rng = np.random.default_rng(seed)
         self.losses_real = np.zeros((3, self.ntols, self.nducy), dtype=float)
         self.losses_complex = np.zeros((3, self.ntols, self.nducy), dtype=float)
         self.losses_ds = np.zeros((self.nds, self.nducy), dtype=float)
