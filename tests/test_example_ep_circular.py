@@ -50,6 +50,8 @@ a big search.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pytest
 
@@ -59,6 +61,22 @@ from pyloki.ffa import DynamicProgramming
 from pyloki.periodogram import ScatteredPeriodogram
 from pyloki.prune import prune_dyp_tree
 from pyloki.simulation.pulse import PulseSignalConfig
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+# Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
+# threshold ladder were drawn from unseeded generators inside pyloki and this file
+# had no way to reach them; see tests/test_rng_seeding.py.
+SEED = 42
+
+# Measured over 20 seeded realisations. Every parameter passed at every seed, with
+# error/tolerance peaking at 0.386 (freq). These three seeds are the worst observed
+# case for different parameters, so between them they exercise all five:
+#   1  -> worst crackle (0.234), jerk (0.329) and freq (0.386)
+#   14 -> worst snap (0.330)
+#   7  -> worst accel (0.319)
+SEED_SWEEP = (1, 14, 7)
 
 # --- The notebook's physical setup ------------------------------------------------
 PULSAR_PERIOD = 0.007
@@ -92,9 +110,8 @@ TOLERANCES = {
 }
 
 
-@pytest.fixture(scope="module")
-def ep_circular_search(tmp_path_factory) -> dict:
-    """Run the notebook's pipeline once and return the recovered candidates."""
+def _run_search(seed: int, outdir: Path) -> dict:
+    """Run the notebook's pipeline at one noise realisation."""
     tobs = NSAMPS * DT
     p_orb = tobs / TOBS_OVER_PORB
     cfg = PulseSignalConfig(
@@ -105,6 +122,7 @@ def ep_circular_search(tmp_path_factory) -> dict:
         ducy=DUCY,
         mod_kwargs={"p_orb": p_orb, "psi": PSI, "m_c": M_C},
         mod_type="circular",
+        seed=seed,
     )
     tim_data = cfg.generate(shape="gaussian")
     # The truth is the Taylor gauge of the circular orbit, as the notebook computes it.
@@ -151,10 +169,10 @@ def ep_circular_search(tmp_path_factory) -> dict:
         snr_final=SNR,
         ducy_max=0.5,
         wtsp=1.2,
+        seed=seed,
     )
     thresholds = np.asarray(scheme.thresholds, dtype=np.float64)
 
-    outdir = tmp_path_factory.mktemp("ep_circular")
     result_file = prune_dyp_tree(
         dyp,
         thresholds,
@@ -183,6 +201,50 @@ def ep_circular_search(tmp_path_factory) -> dict:
     }
 
 
+@pytest.fixture(scope="module")
+def ep_circular_search(tmp_path_factory) -> dict:
+    """Run the pinned realisation once; the fast tests share it."""
+    return _run_search(SEED, tmp_path_factory.mktemp("ep_circular"))
+
+
+def _check_param(result: dict, param: str, seed: object = SEED) -> None:
+    """Check one derivative. One source for the predicate, shared by the sweep."""
+    data = result["data"]
+    true = result["truth"][param]
+    tol, max_unc_fraction = TOLERANCES[param]
+    best = data.loc[data["score"].idxmax()]
+
+    uncertainty = float(best[f"d{param}"])
+    assert uncertainty < max_unc_fraction * abs(true), (
+        f"{param} is not actually constrained (seed={seed}): d{param}="
+        f"{uncertainty:.5g} against |{param}|={abs(true):.5g} -- the recovery "
+        f"check below would be vacuous"
+    )
+    error = abs(float(best[param]) - true)
+    assert error < tol, (
+        f"{param} not recovered (seed={seed}): got {float(best[param]):.6g}, "
+        f"want {true:.6g} (error {error:.5g} > {tol:.5g}, d{param}="
+        f"{uncertainty:.5g})"
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("seed", SEED_SWEEP)
+def test_recovery_does_not_depend_on_the_noise_realisation(
+    seed: int,
+    tmp_path: Path,
+) -> None:
+    """All five derivatives must come back at every realisation, not just `SEED`.
+
+    Fixed seeds, never random: a random seed makes a failure unreproducible, which
+    is the defect this suite was fixed to not have. The seeds are the measured
+    worst case for each parameter; see `SEED_SWEEP`.
+    """
+    result = _run_search(seed, tmp_path)
+    for param in TOLERANCES:
+        _check_param(result, param, seed)
+
+
 def test_pipeline_produces_candidates(ep_circular_search) -> None:
     data = ep_circular_search["data"]
     assert len(data) > 0, "no candidates survived; the search found nothing at all"
@@ -201,21 +263,7 @@ def test_stage_count_matches_configuration(ep_circular_search) -> None:
 @pytest.mark.parametrize("param", list(TOLERANCES))
 def test_recovers_injected_parameter(ep_circular_search, param: str) -> None:
     """All five kinematic derivatives must come back, each with a non-vacuity guard."""
-    data = ep_circular_search["data"]
-    true = ep_circular_search["truth"][param]
-    tol, max_unc_fraction = TOLERANCES[param]
-    best = data.loc[data["score"].idxmax()]
-
-    uncertainty = float(best[f"d{param}"])
-    assert uncertainty < max_unc_fraction * abs(true), (
-        f"{param} is not actually constrained: d{param}={uncertainty:.5g} against "
-        f"|{param}|={abs(true):.5g} -- the recovery check below would be vacuous"
-    )
-    error = abs(float(best[param]) - true)
-    assert error < tol, (
-        f"{param} not recovered: got {float(best[param]):.6g}, want {true:.6g} "
-        f"(error {error:.5g} > {tol:.5g})"
-    )
+    _check_param(ep_circular_search, param)
 
 
 def test_best_candidate_clears_the_final_threshold(ep_circular_search) -> None:

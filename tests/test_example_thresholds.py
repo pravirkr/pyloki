@@ -65,6 +65,11 @@ import pytest
 
 from pyloki.detection import thresholding
 
+# Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
+# threshold ladder were drawn from unseeded generators inside pyloki and this file
+# had no way to reach them; see tests/test_rng_seeding.py.
+SEED = 42
+
 # --- The notebook's setup, unchanged except the stage count ------------------------
 TARGET_SNR = 10.0
 REF_DUCY = 0.1
@@ -101,6 +106,7 @@ def detection_probability(ladder: np.ndarray, pattern: np.ndarray, snr: float) -
         snr_final=snr,
         ducy_max=DUCY_MAX,
         wtsp=WTSP,
+        seed=SEED,
     )
     return float(np.asarray(state.get_info("success_h1_cumul"))[-1])
 
@@ -118,6 +124,7 @@ def constant_scheme() -> dict:
         snr_final=TARGET_SNR,
         ducy_max=DUCY_MAX,
         wtsp=WTSP,
+        seed=SEED,
     )
     return {
         "pattern": pattern,
@@ -143,6 +150,7 @@ def test_evaluate_scheme_reports_per_stage_state(constant_scheme) -> None:
         snr_final=TARGET_SNR,
         ducy_max=DUCY_MAX,
         wtsp=WTSP,
+        seed=SEED,
     )
     assert len(state.entries) == NSTAGES
     complexity = np.asarray(state.get_info("complexity"))

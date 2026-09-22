@@ -153,6 +153,9 @@ unresolved-attribute = "ignore"
 minversion = "9.0"
 addopts = ["-ra", "-q"]
 testpaths = ["tests"]
+markers = [
+    "slow: repeats a full search pipeline per noise realisation; needs --runslow",
+]
 
 [tool.coverage.paths]
 source = ["../src/"]
