@@ -1074,17 +1074,15 @@ def determine_scheme(
     bias_snr = snr_final / np.sqrt(nstages + 1)
     rng = np.random.default_rng(seed)
     states: list[np.recarray] = []
-    fold_states: list[Folds] = []
     folds = np.zeros((ntrials, len(profile)), dtype=np.float32)
     folds_h0, _ = simulate_folds(folds, 0, profile, rng, 0, var_init, ntrials)
     folds_h1, _ = simulate_folds(folds, 0, profile, rng, bias_snr, var_init, ntrials)
     initial_state = np.ones(1, dtype=state_dtype)[0]
     initial_state["threshold"] = -1
     initial_state["threshold_prev"] = -1
-    initial_fold_state = Folds(folds_h0, folds_h1, var_init)
+    prev_fold_state = Folds(folds_h0, folds_h1, var_init)
     for istage in range(nstages):
         prev_state = initial_state if istage == 0 else states[istage - 1]
-        prev_fold_state = initial_fold_state if istage == 0 else fold_states[istage - 1]
         if istage > 0 and prev_fold_state.is_empty:
             logger.info("Path not viable, No trials survived, stopping")
             break
@@ -1102,7 +1100,7 @@ def determine_scheme(
         )
         cur_state = cur_state[0]  # Get record from array
         states.append(cur_state)
-        fold_states.append(cur_fold_state)
+        prev_fold_state = cur_fold_state
     return StatesInfo([StateInfo.from_record(state) for state in states])
 
 
@@ -1126,17 +1124,15 @@ def evaluate_scheme(
         msg = "Number of thresholds must match the number of stages"
         raise ValueError(msg)
     states: list[np.recarray] = []
-    fold_states: list[Folds] = []
     folds = np.zeros((ntrials, len(profile)), dtype=np.float32)
     folds_h0, _ = simulate_folds(folds, 0, profile, rng, 0, var_init, ntrials)
     folds_h1, _ = simulate_folds(folds, 0, profile, rng, bias_snr, var_init, ntrials)
     initial_state = np.ones(1, dtype=state_dtype)[0]
     initial_state["threshold"] = -1
     initial_state["threshold_prev"] = -1
-    initial_fold_state = Folds(folds_h0, folds_h1, var_init)
+    prev_fold_state = Folds(folds_h0, folds_h1, var_init)
     for istage in range(nstages):
         prev_state = initial_state if istage == 0 else states[istage - 1]
-        prev_fold_state = initial_fold_state if istage == 0 else fold_states[istage - 1]
         if istage > 0 and prev_fold_state.is_empty:
             logger.info("Path not viable, No trials survived, stopping")
             break
@@ -1154,5 +1150,5 @@ def evaluate_scheme(
         )
         cur_state = cur_state[0]  # Get record from array
         states.append(cur_state)
-        fold_states.append(cur_fold_state)
+        prev_fold_state = cur_fold_state
     return StatesInfo([StateInfo.from_record(state) for state in states])
