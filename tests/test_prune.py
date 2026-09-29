@@ -21,6 +21,11 @@ from pyloki.ffa import DynamicProgramming
 from pyloki.prune import prune_dyp_tree
 from pyloki.simulation.pulse import PulseSignalConfig
 
+# Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
+# threshold ladder were drawn from unseeded generators inside pyloki and this file
+# had no way to reach them; see tests/test_rng_seeding.py.
+SEED = 42
+
 
 @pytest.fixture(scope="module")
 def small_search():
@@ -28,7 +33,7 @@ def small_search():
     freq = 1.0 / period
     cfg = PulseSignalConfig(
         period=period, dt=dt, nsamps=nsamps, snr=15.0, ducy=0.1,
-        mod_kwargs={"acc": 500.0, "jerk": 6.0},
+        mod_kwargs={"acc": 500.0, "jerk": 6.0}, seed=SEED,
     )
     tim_data = cfg.generate(shape="gaussian")
     tobs = nsamps * dt
@@ -55,7 +60,7 @@ def test_prune_dyp_tree_completes(small_search) -> None:
     thresholds = np.linspace(1.5, 6.0, len(branching_pattern))
     thresholding.evaluate_scheme(
         thresholds, branching_pattern, ref_ducy=0.1, nbins=nbins,
-        ntrials=256, snr_final=9.0, ducy_max=0.5, wtsp=1.2,
+        ntrials=256, snr_final=9.0, ducy_max=0.5, wtsp=1.2, seed=SEED,
     )
     with tempfile.TemporaryDirectory() as tmpdir:
         result_file = prune_dyp_tree(
