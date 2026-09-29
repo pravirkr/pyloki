@@ -213,6 +213,7 @@ class PruneStatsCollection:
                 ("level", np.int32),
                 ("seg_idx", np.int32),
                 ("threshold", np.float32),
+                ("threshold_eff", np.float32),
                 ("score_min", np.float32),
                 ("score_max", np.float32),
                 ("n_branches", np.int32),
@@ -227,6 +228,7 @@ class PruneStatsCollection:
                 stats.level,
                 stats.seg_idx,
                 stats.threshold,
+                stats.threshold_eff,
                 stats.score_min,
                 stats.score_max,
                 stats.n_branches,
@@ -257,13 +259,19 @@ class PruneStatsCollection:
         level_stats: np.ndarray,
         timer_stats: np.ndarray,
     ) -> PruneStatsCollection:
-        """Create PruneStatsCollection from numpy arrays."""
+        """Create PruneStatsCollection from numpy arrays.
+
+        Files written before `threshold_eff` was saved have no such field; it is
+        restored as NaN for them.
+        """
         collection = cls()
+        has_eff = "threshold_eff" in (level_stats.dtype.names or ())
         for row in level_stats:
             stats = PruneStats(
                 level=int(row["level"]),
                 seg_idx=int(row["seg_idx"]),
                 threshold=float(row["threshold"]),
+                threshold_eff=float(row["threshold_eff"]) if has_eff else float("nan"),
                 score_min=float(row["score_min"]),
                 score_max=float(row["score_max"]),
                 n_branches=int(row["n_branches"]),
