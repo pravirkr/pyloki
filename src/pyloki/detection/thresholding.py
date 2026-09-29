@@ -541,7 +541,7 @@ def pre_simulate_stage_folds(
     beam_idx_prev: npt.NDArray,
     bias_snr: float,
     profile: npt.NDArray[np.float32],
-    rng: np.random.Generator,
+    rngs: list[np.random.Generator],
     ntrials: int,
     nthresholds: int,
     nprobs: int,
@@ -554,6 +554,9 @@ def pre_simulate_stage_folds(
 
     n_beam = len(beam_idx_prev)
     for ii in prange(n_beam * nprobs):
+        # One generator per iteration, so the result does not depend on which
+        # thread runs which iteration. See DynamicThresholdScheme._stage_rngs.
+        rng = rngs[ii]
         kprob = ii % nprobs
         ibeam = ii // nprobs
         jthresh = beam_idx_prev[ibeam]
@@ -607,7 +610,7 @@ def run_stage_legacy(
     thresholds: npt.NDArray,
     bias_snr: float,
     profile: npt.NDArray[np.float32],
-    rng: np.random.Generator,
+    rngs: list[np.random.Generator],
     ntrials: int,
     ducy_max: float,
     wtsp: float,
@@ -615,6 +618,9 @@ def run_stage_legacy(
 ) -> None:
     nprobs = len(probs)
     for ibeam_cur in prange(len(beam_idx_cur)):
+        # One generator per iteration, so the result does not depend on which
+        # thread runs which iteration. See DynamicThresholdScheme._stage_rngs.
+        rng = rngs[ibeam_cur]
         ithres = int(beam_idx_cur[ibeam_cur])
         # Find nearest neighbors in the previous beam
         neighbour_beam_indices = neighbouring_indices(
@@ -732,12 +738,24 @@ class DynamicThresholdScheme:
         wtsp: float = 1.0,
         beam_width: float = 0.7,
         mode: Literal["legacy", "improved"] = "legacy",
+        seed: int | np.random.Generator | None = None,
     ) -> None:
         if mode not in ("legacy", "improved"):
             msg = f"mode must be 'legacy' or 'improved', got {mode!r}"
             raise ValueError(msg)
         self.mode = mode
-        self.rng = np.random.default_rng()
+        self.rng = np.random.default_rng(seed)
+        # `self.rng` serves the serial init paths. The parallel kernels cannot use it:
+        # they consume it inside a `prange`, so which thread takes which draw depends
+        # on scheduling and the result is not reproducible even from a fixed seed.
+        # They get one generator per loop iteration instead, derived from this entropy
+        # and the stage index, which makes them independent of thread order and of
+        # NUMBA_NUM_THREADS. A `seed` of None still yields fresh entropy per instance.
+        self._entropy = (
+            int(seed.integers(np.iinfo(np.int64).max))
+            if isinstance(seed, np.random.Generator)
+            else np.random.SeedSequence(seed).entropy
+        )
         self.branching_pattern = branching_pattern
         self.ref_ducy = ref_ducy
         self.profile = generate_folded_profile(nbins=nbins, ducy=ref_ducy)
@@ -918,6 +936,16 @@ class DynamicThresholdScheme:
             folds_idx = int(ithres * self.nprobs + iprob)
             self.folds_in[folds_idx] = cur_fold_state
 
+    def _stage_rngs(self, istage: int, n: int) -> typed.List:
+        """One generator per parallel-loop iteration of `istage`.
+
+        Derived from `(self._entropy, istage)` rather than spawned off a running
+        stream, so the result depends only on the seed, the stage and the iteration
+        index -- never on call order or on how many threads numba happens to use.
+        """
+        seq = np.random.SeedSequence(self._entropy, spawn_key=(istage,))
+        return typed.List([np.random.default_rng(child) for child in seq.spawn(n)])
+
     @Timer(name="DynamicThresholdScheme run", logger=logger.info)
     def run(self, thres_neigh: int = 11) -> None:
         logger.info("Running dynamic threshold scheme (%s mode)", self.mode)
@@ -936,7 +964,7 @@ class DynamicThresholdScheme:
                     beam_idx_prev,
                     self.bias_snr,
                     self.profile,
-                    self.rng,
+                    self._stage_rngs(istage, len(beam_idx_prev) * self.nprobs),
                     self.ntrials,
                     self.nthresholds,
                     self.nprobs,
@@ -969,7 +997,7 @@ class DynamicThresholdScheme:
                     self.thresholds,
                     self.bias_snr,
                     self.profile,
-                    self.rng,
+                    self._stage_rngs(istage, len(beam_idx_cur)),
                     self.ntrials,
                     self.ducy_max,
                     self.wtsp,
@@ -1034,6 +1062,7 @@ def determine_scheme(
     snr_final: float = 8,
     ducy_max: float = 0.2,
     wtsp: float = 1.0,
+    seed: int | np.random.Generator | None = None,
 ) -> StatesInfo:
     if len(survive_probs) != len(branching_pattern):
         msg = "Number of survive_probs must match the number of stages"
@@ -1043,7 +1072,7 @@ def determine_scheme(
     nstages = len(branching_pattern)
     profile = generate_folded_profile(nbins=nbins, ducy=ref_ducy)
     bias_snr = snr_final / np.sqrt(nstages + 1)
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     states: list[np.recarray] = []
     fold_states: list[Folds] = []
     folds = np.zeros((ntrials, len(profile)), dtype=np.float32)
@@ -1086,12 +1115,13 @@ def evaluate_scheme(
     snr_final: float = 8,
     ducy_max: float = 0.2,
     wtsp: float = 1.0,
+    seed: int | np.random.Generator | None = None,
 ) -> StatesInfo:
     var_init = 1.0
     nstages = len(branching_pattern)
     profile = generate_folded_profile(nbins=nbins, ducy=ref_ducy)
     bias_snr = snr_final / np.sqrt(nstages + 1)
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     if len(thresholds) != nstages:
         msg = "Number of thresholds must match the number of stages"
         raise ValueError(msg)
