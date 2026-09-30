@@ -830,7 +830,7 @@ def report_func(
 ) -> np.ndarray:
     if not self.use_moving_grid:
         # Shift to the middle of the segment
-        chebyshev.poly_chebyshev_transform_batch(
+        leaves_batch = chebyshev.poly_chebyshev_transform_batch(
             leaves_batch,
             coord_report,
             coord_end,
