@@ -507,7 +507,7 @@ def circ_taylor_resolve_batch(
         )
         dvec_t_add[idx_taylor] = dvec_t_add_norm
         dvec_t_init[idx_taylor] = dvec_t_init_norm
-        leaves_batch[idx_circ_crackle, -1, 1] = 0
+        leaves_batch[idx_taylor, -1, 1] = 0
 
     accel_new_batch = dvec_t_add[:, -3]
     vel_new_batch = dvec_t_add[:, -2] - dvec_t_init[:, -2]
