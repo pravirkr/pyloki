@@ -916,12 +916,19 @@ def prune_dyp_tree(
             # processes to avoid pickling issues
             shared_progress = tracker.shared_progress
             log_queue = tracker.log_queue
+            # Each worker's temporaries are named after this call's result file, and only
+            # these are merged: another search sharing `outdir` has its own.
+            temp_files = []
 
             for ref_seg in ref_segs:
                 task_id = tracker.add_task(
                     f"Pruning segment {ref_seg:03d}",
                     total=dyp.nsegments - 1,
                 )
+                run_name = f"{ref_seg:03d}_{task_id:02d}"
+                tmp_log = Path(outdir) / f"tmp_{filebase}_{run_name}_log.txt"
+                tmp_h5 = Path(outdir) / f"tmp_{filebase}_{run_name}_results.h5"
+                temp_files.append((tmp_log, tmp_h5))
                 future = executor.submit(
                     _prune_dyp_seg,
                     dyp,
@@ -936,6 +943,8 @@ def prune_dyp_tree(
                     batch_size,
                     poly_basis,
                     use_moving_grid=use_moving_grid,
+                    log_file=tmp_log,
+                    result_file=tmp_h5,
                 )
                 futures_to_seg[future] = ref_seg
 
@@ -945,6 +954,6 @@ def prune_dyp_tree(
                 for ref_seg, error_msg in errors:
                     f.write(f"Error processing ref_seg {ref_seg}: {error_msg}\n")
                     logger.error(f"Error processing ref_seg {ref_seg}: {error_msg}")
-        merge_prune_result_files(outdir, log_file, result_file)
+        merge_prune_result_files(outdir, log_file, result_file, temp_files=temp_files)
     logger.info(f"Pruning complete. Results saved to {result_file}")
     return result_file.as_posix()

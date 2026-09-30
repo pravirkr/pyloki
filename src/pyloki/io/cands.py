@@ -372,6 +372,7 @@ def merge_prune_result_files(
     results_dir: str | Path,
     log_file: Path,
     result_file: Path,
+    temp_files: list[tuple[Path, Path]] | None = None,
 ) -> None:
     """Merge temporary HDF5 and log files into result files.
 
@@ -388,14 +389,23 @@ def merge_prune_result_files(
         Path to the log file to be merged.
     result_file : Path
         Path to the final result file.
+    temp_files : list[tuple[Path, Path]] | None, optional
+        The (log, result) temporaries to merge, in order. Pass the files this call
+        wrote: without it, every ``tmp_*`` file in `results_dir` is merged, including
+        another search's that shares the directory. A missing file is skipped (a
+        worker that failed may have written none).
 
     """
-    temp_log_files = list(Path(results_dir).glob("tmp_*_log.txt"))
-    temp_h5_files = list(Path(results_dir).glob("tmp_*_results.h5"))
+    if temp_files is not None:
+        temp_log_files = [log for log, _ in temp_files if log.exists()]
+        temp_h5_files = [h5 for _, h5 in temp_files if h5.exists()]
+    else:
+        temp_log_files = list(Path(results_dir).glob("tmp_*_log.txt"))
+        temp_h5_files = list(Path(results_dir).glob("tmp_*_results.h5"))
 
-    # Sort files by ref_seg
-    temp_log_files.sort(key=extract_ref_seg)
-    temp_h5_files.sort(key=extract_ref_seg)
+        # Sort files by ref_seg
+        temp_log_files.sort(key=extract_ref_seg)
+        temp_h5_files.sort(key=extract_ref_seg)
 
     with log_file.open("a") as main_log:
         for temp_log in temp_log_files:
