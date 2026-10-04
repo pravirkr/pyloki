@@ -18,7 +18,7 @@ import pytest
 from pyloki.config import ParamLimits, PulsarSearchConfig
 from pyloki.detection import thresholding
 from pyloki.ffa import DynamicProgramming
-from pyloki.prune import prune_dyp_tree
+from pyloki.prune import Pruning, prune_dyp_tree
 from pyloki.simulation.pulse import PulseSignalConfig
 
 # Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
@@ -69,3 +69,16 @@ def test_prune_dyp_tree_completes(small_search) -> None:
             use_moving_grid=True,
         )
         assert result_file is not None
+
+
+def test_pruning_execute_without_task_id(small_search, tmp_path) -> None:
+    # Pruning.execute declares task_id: int | None = None, but formatted it with
+    # :02d when naming the run, so calling it directly without one raised TypeError.
+    dyp, search_cfg, _ = small_search
+    ref_seg = dyp.nsegments // 2
+    branching_pattern = search_cfg.generate_branching_pattern(
+        kind="poly_taylor_moving", ref_seg=ref_seg
+    )
+    thresholds = np.linspace(1.5, 6.0, len(branching_pattern))
+    Pruning(dyp, thresholds, max_sugg=2**12).execute(ref_seg, outdir=tmp_path)
+    assert (tmp_path / f"tmp_{ref_seg:03d}_00_results.h5").exists()

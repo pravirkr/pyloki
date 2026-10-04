@@ -566,7 +566,7 @@ class Pruning:
             A final ascend always runs after the loop unless the last completed
             level is already in this list.
         """
-        run_name = f"{ref_seg:03d}_{task_id:02d}"
+        run_name = f"{ref_seg:03d}_{0 if task_id is None else task_id:02d}"
         ascend_levels_set = (
             frozenset(ascend_levels) if ascend_levels is not None else None
         )
