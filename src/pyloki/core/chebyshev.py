@@ -519,6 +519,8 @@ def generate_bp_poly_chebyshev(
         n_branches = np.ones(n_freqs, dtype=np.int64)
 
         for i in range(n_freqs):
+            # The alpha_0 error is not branched; carry it with the others.
+            dparam_cur_next[i, n_params] = dparam_cur_batch[i, n_params]
             for j in range(n_params):
                 if shift_bins_batch[i, j] < (eta - FLOAT_EPSILON):
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]

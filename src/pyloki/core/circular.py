@@ -928,7 +928,7 @@ def generate_bp_circ_taylor(
 
     dparam_cur_batch = np.empty((n_freqs, n_params), dtype=np.float64)
     dparam_cur_next = np.empty((n_freqs, n_params), dtype=np.float64)
-    dparam_d_vec = np.empty((n_freqs, n_params + 1), dtype=np.float64)
+    dparam_d_vec = np.zeros((n_freqs, n_params + 1), dtype=np.float64)
     for i in range(n_freqs):
         dparam_cur_batch[i, :n_params] = dparams_act
     # f = f0(1 - v / C) => dv = -(C/f0) * df
@@ -967,6 +967,8 @@ def generate_bp_circ_taylor(
         n_branches = np.ones(n_freqs, dtype=np.float64)
 
         for i in range(n_freqs):
+            # The crackle is not branched here; carry its error like any unbranched parameter.
+            dparam_cur_next[i, 0] = dparam_cur_batch[i, 0]
             for j in range(1, n_params):
                 if shift_bins_batch[i, j] < (eta - FLOAT_EPSILON):
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]

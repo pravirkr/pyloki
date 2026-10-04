@@ -434,7 +434,7 @@ def generate_bp_poly_taylor(
 
     dparam_cur_batch = np.empty((n_freqs, n_params), dtype=np.float64)
     dparam_cur_next = np.empty((n_freqs, n_params), dtype=np.float64)
-    dparam_d_vec = np.empty((n_freqs, n_params + 1), dtype=np.float64)
+    dparam_d_vec = np.zeros((n_freqs, n_params + 1), dtype=np.float64)
     for i in range(n_freqs):
         dparam_cur_batch[i, :n_params] = dparams_act
     # f = f0(1 - v / C) => dv = -(C/f0) * df
