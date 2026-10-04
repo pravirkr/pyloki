@@ -688,15 +688,17 @@ class PruningStatsPlotter:
         Parameters
         ----------
         level_stats : np.ndarray
-            Level statistics (n_levels, 9).
+            Level statistics, one record per level: 10 fields, or 9 for files
+            written before `threshold_eff` was saved.
         run_id : str
             Unique Identifier for the specific run being added.
         """
         if not isinstance(level_stats, np.ndarray):
             msg = "level_stats should be a numpy array"
             raise TypeError(msg)
-        if level_stats.dtype.names is None or len(level_stats.dtype.names) != 9:
-            msg = "level_stats should have 9 fields"
+        names = level_stats.dtype.names
+        if names is None or len(names) not in {9, 10}:
+            msg = "level_stats should have 10 fields (9 before threshold_eff was saved)"
             raise ValueError(msg)
         run_df = pd.DataFrame.from_records(level_stats)
         run_df["run_id"] = run_id
