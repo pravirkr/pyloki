@@ -1,9 +1,12 @@
+import math
+
 import numpy as np
 import pytest
 from numpy import polynomial
 from scipy import special, stats
 
 from pyloki.utils import maths, transforms
+from tests.jit_utils import jit_variants, python_impl
 
 # ``maths.norm_isf_func`` linearly interpolates a table of ``norm.isf(exp(-x))``
 # sampled every ``maths.minus_logsf_res`` (= 0.1). The tabulated function is
@@ -343,3 +346,422 @@ class TestChebyshevTransform:
         cheby_poly = polynomial.Chebyshev(alpha_vec[::-1], domain=[-1, 1])
         val_cheby = cheby_poly(x)
         np.testing.assert_almost_equal(val_taylor, val_cheby, decimal=8)
+
+
+# --------------------------------------------------------------------------------------
+# Kernel tests toward #12. Each contract runs on both the compiled kernel and its Python
+# source via ``jit_variants`` (see tests/jit_utils.py). `norm_isf_func` and
+# `chi_sq_minus_logsf_func` are deliberately not covered here: their table edges are
+# fixed and tested in #21.
+#
+# Library defects found while writing these are pinned with a strict xfail, so that the
+# fix, when it lands, turns the pin into a failure and forces its removal.
+
+
+class TestFactKernel:
+    @pytest.mark.parametrize("impl", jit_variants(maths.fact))
+    @pytest.mark.parametrize("n", range(21))
+    def test_exact_through_20(self, impl, n: int) -> None:
+        assert impl(n) == math.factorial(n)
+
+    def test_broadcasts(self) -> None:
+        n = np.arange(21).reshape(3, 7)
+        expected = np.array([math.factorial(k) for k in range(21)], dtype=float)
+        np.testing.assert_array_equal(maths.fact(n), expected.reshape(3, 7))
+
+    @pytest.mark.xfail(strict=True, reason="#22", raises=AssertionError)
+    @pytest.mark.parametrize("n", [21, 30, 66, 119])
+    def test_above_20(self, n: int) -> None:
+        """Pin the int64 overflow in the factorial table.
+
+        `fact_factory` fills its table with ``_fact(ii, 0)``, an int64 product in
+        compiled code, which overflows from 21! on: ``fact(21)`` is -4.2e18 and
+        ``fact(n)`` is 0 for every n >= 66. The table is built at import, so both paths
+        see it.
+        """
+        np.testing.assert_allclose(maths.fact(n), float(math.factorial(n)), rtol=1e-12)
+
+
+class TestNbinomKernel:
+    @pytest.mark.parametrize("impl", jit_variants(maths.nbinom))
+    def test_exact_through_20(self, impl) -> None:
+        for n in range(21):
+            for k in range(n + 1):
+                assert impl(n, k) == math.comb(n, k), (n, k)
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.nbinom))
+    @pytest.mark.parametrize(("n", "k"), [(5, -1), (5, 6), (0, 1), (130, 131)])
+    def test_outside_triangle_is_zero(self, impl, n: int, k: int) -> None:
+        assert impl(n, k) == 0
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.nbinom))
+    @pytest.mark.parametrize(("n", "k"), [(121, 1), (130, 5), (200, 3), (1000, 2)])
+    def test_multiplicative_branch(self, impl, n: int, k: int) -> None:
+        """Above n = 120 the product formula is used; exact while it fits in int64."""
+        assert impl(n, k) == math.comb(n, k)
+        assert impl(n, n - k) == math.comb(n, k)
+
+    # Wrong below n = 67, ZeroDivisionError from there (compiled): both are the defect.
+    @pytest.mark.xfail(
+        strict=True,
+        reason="#22",
+        raises=(AssertionError, ZeroDivisionError),
+    )
+    @pytest.mark.parametrize(("n", "k"), [(21, 1), (30, 15), (100, 50)])
+    def test_factorial_branch_above_20(self, n: int, k: int) -> None:
+        """Pin the factorial branch inheriting the broken `fact`.
+
+        For 21 <= n <= 120 the result divides values of the broken `fact`
+        (`TestFactKernel.test_above_20`): wrong, or ZeroDivisionError from n = 67.
+        """
+        assert maths.nbinom(n, k) == math.comb(n, k)
+
+    @pytest.mark.xfail(strict=True, reason="#22", raises=AssertionError)
+    def test_multiplicative_branch_compiled_overflows(self) -> None:
+        """Pin the compiled and Python paths diverging above int64.
+
+        Compiled, the product formula wraps in int64; ``.py_func`` uses Python ints
+        and is exact, so the two paths diverge: C(200, 100) is 9.2e16 vs 9.1e58.
+        """
+        assert maths.nbinom(200, 100) == maths.nbinom.py_func(200, 100)
+
+
+class TestIsPowerOfTwo:
+    @pytest.mark.parametrize("impl", jit_variants(maths.is_power_of_two))
+    def test_matches_brute_force(self, impl) -> None:
+        powers = {2**i for i in range(12)}
+        for n in range(-8, 3000):
+            assert impl(n) == (n in powers), n
+
+
+class TestChebyshevPolysTable:
+    @pytest.mark.parametrize("impl", jit_variants(maths.gen_chebyshev_polys_table))
+    @pytest.mark.parametrize(("order_max", "n_derivs"), [(1, 0), (3, 1), (8, 3)])
+    def test_matches_numpy(self, impl, order_max: int, n_derivs: int) -> None:
+        np.testing.assert_allclose(
+            impl(order_max, n_derivs),
+            maths.gen_chebyshev_polys_table_np(order_max, n_derivs),
+            rtol=1e-6,
+        )
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.generalized_cheb_pols))
+    @pytest.mark.parametrize(("t0", "scale"), [(0.0, 1.0), (0.0, 1.7), (0.3, 1.0)])
+    def test_generalized_where_correct(self, impl, t0: float, scale: float) -> None:
+        """Correct whenever ``t0 == 0`` or ``scale == 1``; see the xfail below."""
+        self._check_generalized(impl, t0, scale)
+
+    @pytest.mark.xfail(strict=True, reason="#24", raises=AssertionError)
+    def test_generalized_shifted_and_scaled(self) -> None:
+        """Pin the shift being divided by ``scale`` twice.
+
+        The docstring defines row n as ``T_n((x - t0) / scale)``. The kernel returns
+        ``T_n((x - t0 / scale) / scale)``: the shift is applied after scaling. The
+        two agree only at ``t0 = 0`` or ``scale = 1``.
+        """
+        self._check_generalized(maths.generalized_cheb_pols, 0.3, 1.7)
+
+    @staticmethod
+    def _check_generalized(impl, t0: float, scale: float) -> None:
+        order = 4
+        table = impl(order, t0, scale)
+        x = np.linspace(t0 - scale, t0 + scale, 17)
+        for n in range(order + 1):
+            expected = polynomial.Chebyshev.basis(n)((x - t0) / scale)
+            got = polynomial.polynomial.polyval(x, table[n])
+            np.testing.assert_allclose(got, expected, atol=1e-5)
+
+
+class TestDesignMatrixTaylor:
+    @pytest.mark.parametrize("impl", jit_variants(maths.gen_design_matrix_taylor))
+    def test_entries(self, impl) -> None:
+        t_vals = np.array([-1.3, 0.0, 0.4, 2.2])
+        mat = impl(t_vals, 5)
+        assert mat.shape == (4, 6)
+        expected = t_vals[:, None] ** np.arange(6) / special.factorial(np.arange(6))
+        np.testing.assert_allclose(mat, expected, rtol=1e-6)
+
+    def test_is_float32(self) -> None:
+        assert maths.gen_design_matrix_taylor(np.array([0.5]), 3).dtype == np.float32
+
+
+class TestPolyTaylorTransformMatrix:
+    """`alpha_new = alpha_old @ T` moves a Taylor state by ``delta_t`` (docstring)."""
+
+    POLY = polynomial.Polynomial([0.3, -1.1, 0.7, 2.0, -0.4])
+
+    def _state(self, t: float) -> np.ndarray:
+        """Return the polynomial and its first four derivatives at `t`, ascending."""
+        return np.array([self.POLY.deriv(k)(t) for k in range(5)])
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.poly_taylor_transform_matrix))
+    @pytest.mark.parametrize("delta_t", [-0.7, 0.0, 0.9, 3.0])
+    def test_transports_polynomial_state(self, impl, delta_t: float) -> None:
+        t0 = 0.2
+        np.testing.assert_allclose(
+            self._state(t0) @ impl(4, delta_t, 0),
+            self._state(t0 + delta_t),
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.poly_taylor_transform_matrix))
+    def test_descending_is_reversed_ascending(self, impl) -> None:
+        np.testing.assert_array_equal(impl(4, 0.7, 1), impl(4, 0.7, 0)[::-1, ::-1])
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.poly_taylor_transform_matrix))
+    def test_group_law(self, impl) -> None:
+        np.testing.assert_allclose(
+            impl(5, 0.3, 0) @ impl(5, 0.5, 0),
+            impl(5, 0.8, 0),
+            atol=1e-14,
+        )
+        np.testing.assert_array_equal(impl(5, 0.0, 0), np.eye(6))
+
+
+class TestCircTaylorTransformMatrix:
+    """Transport of ``(d1, ..., d5)`` along a circular orbit.
+
+    The convention is ``state_new = L @ state``, column vectors, unlike the row vectors
+    of `poly_taylor_transform_matrix`. A circular orbit obeys ``d4 = -omega**2 d2`` and
+    ``d5 = -omega**2 d3``, and the matrix imposes that: at ``delta_t = 0`` it is a
+    projection onto that manifold, not the identity.
+    """
+
+    P_ORB, AMP, PHASE, VEL = 2.0, 1.3, 0.4, 0.7
+
+    def _state(self, t: float) -> np.ndarray:
+        """Return derivatives 1..5 of ``AMP sin(omega t + PHASE) + VEL t``."""
+        w = 2 * np.pi / self.P_ORB
+        arg = w * t + self.PHASE
+        return np.array(
+            [
+                self.AMP * w * np.cos(arg) + self.VEL,
+                -self.AMP * w**2 * np.sin(arg),
+                -self.AMP * w**3 * np.cos(arg),
+                self.AMP * w**4 * np.sin(arg),
+                self.AMP * w**5 * np.cos(arg),
+            ]
+        )
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.circ_taylor_transform_matrix))
+    @pytest.mark.parametrize("delta_t", [-0.6, 0.0, 0.37, 5.1])
+    def test_transports_orbit_state(self, impl, delta_t: float) -> None:
+        t0 = 0.2
+        np.testing.assert_allclose(
+            impl(delta_t, self.P_ORB, 0) @ self._state(t0),
+            self._state(t0 + delta_t),
+            rtol=1e-10,
+            atol=1e-10,
+        )
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.circ_taylor_transform_matrix))
+    def test_group_law_and_projection(self, impl) -> None:
+        a, b = 0.37, 1.21
+        np.testing.assert_allclose(
+            impl(b, self.P_ORB, 0) @ impl(a, self.P_ORB, 0),
+            impl(a + b, self.P_ORB, 0),
+            atol=1e-12,
+        )
+        l0 = impl(0.0, self.P_ORB, 0)
+        np.testing.assert_allclose(l0 @ l0, l0, atol=1e-12)
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.circ_taylor_transform_matrix))
+    def test_descending_is_reversed_ascending(self, impl) -> None:
+        np.testing.assert_array_equal(
+            impl(0.37, self.P_ORB, 1),
+            impl(0.37, self.P_ORB, 0)[::-1, ::-1],
+        )
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.circ_taylor_transform_matrix_n))
+    def test_omega_variant_matches(self, impl) -> None:
+        omega = 2 * np.pi / self.P_ORB
+        np.testing.assert_allclose(
+            impl(0.37, omega),
+            maths.circ_taylor_transform_matrix(0.37, self.P_ORB, 1),
+            rtol=1e-14,
+        )
+
+
+class TestConnectionCoefficients:
+    """``x^k = sum_m S[k, m] T_m(x)`` and ``T_k(x) = sum_m R[k, m] x^m``."""
+
+    K_MAX = 7
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.compute_connection_matrix_s))
+    def test_s_matches_numpy(self, impl) -> None:
+        s_mat = impl(self.K_MAX)
+        for k in range(self.K_MAX + 1):
+            expected = polynomial.chebyshev.poly2cheb(
+                np.eye(self.K_MAX + 1)[k][: k + 1]
+            )
+            np.testing.assert_allclose(s_mat[k, : k + 1], expected, atol=1e-14)
+            np.testing.assert_array_equal(s_mat[k, k + 1 :], 0.0)
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.compute_connection_matrix_r))
+    def test_r_matches_numpy(self, impl) -> None:
+        r_mat = impl(self.K_MAX)
+        for k in range(self.K_MAX + 1):
+            expected = polynomial.chebyshev.cheb2poly(
+                np.eye(self.K_MAX + 1)[k][: k + 1]
+            )
+            np.testing.assert_allclose(r_mat[k, : k + 1], expected, atol=1e-12)
+
+    @pytest.mark.parametrize(
+        ("impl", "matrix"),
+        [
+            (impl.values[0], maths.compute_connection_matrix_s)
+            for impl in jit_variants(maths.compute_connection_coefficient_s)
+        ]
+        + [
+            (impl.values[0], maths.compute_connection_matrix_r)
+            for impl in jit_variants(maths.compute_connection_coefficient_r)
+        ],
+        ids=["s-compiled", "s-py_func", "r-compiled", "r-py_func"],
+    )
+    def test_scalar_matches_matrix(self, impl, matrix) -> None:
+        mat = matrix(self.K_MAX)
+        for k in range(self.K_MAX + 1):
+            for m in range(k + 1):
+                assert impl(k, m) == mat[k, m], (k, m)
+
+    def test_s_and_r_are_inverse(self) -> None:
+        s_mat = maths.compute_connection_matrix_s(self.K_MAX)
+        r_mat = maths.compute_connection_matrix_r(self.K_MAX)
+        np.testing.assert_allclose(s_mat @ r_mat, np.eye(self.K_MAX + 1), atol=1e-12)
+
+    @pytest.mark.parametrize(
+        "impl",
+        jit_variants(maths.compute_connection_coefficient_s)
+        + jit_variants(maths.compute_connection_coefficient_r),
+    )
+    @pytest.mark.parametrize(("k", "m"), [(-1, 0), (2, -1), (2, 3), (4, 1)])
+    def test_zero_off_support(self, impl, k: int, m: int) -> None:
+        assert impl(k, m) == 0.0
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.compute_connection_matrix_s))
+    def test_s_rejects_negative_order(self, impl) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            impl(-1)
+
+
+class TestPolyChebyshevTransformMatrix:
+    """``b = a @ C`` re-expands a Chebyshev series from domain 1 onto domain 2."""
+
+    DOM1, DOM2, DOM3 = (0.0, 2.0), (0.5, 1.0), (0.7, 0.4)
+
+    @pytest.mark.parametrize(
+        "impl", jit_variants(maths.poly_chebyshev_transform_matrix)
+    )
+    def test_same_function_on_new_domain(self, impl) -> None:
+        (tc1, ts1), (tc2, ts2) = self.DOM1, self.DOM2
+        a = np.array([0.2, -0.5, 1.1, 0.3, -0.8])
+        b = a @ impl(4, tc1, ts1, tc2, ts2, 0)
+        t = np.linspace(tc2 - ts2, tc2 + ts2, 13)
+        np.testing.assert_allclose(
+            polynomial.Chebyshev(b)((t - tc2) / ts2),
+            polynomial.Chebyshev(a)((t - tc1) / ts1),
+            atol=1e-12,
+        )
+
+    @pytest.mark.parametrize(
+        "impl", jit_variants(maths.poly_chebyshev_transform_matrix)
+    )
+    def test_group_law_and_identity(self, impl) -> None:
+        c12 = impl(4, *self.DOM1, *self.DOM2, 0)
+        c23 = impl(4, *self.DOM2, *self.DOM3, 0)
+        c13 = impl(4, *self.DOM1, *self.DOM3, 0)
+        np.testing.assert_allclose(c12 @ c23, c13, atol=1e-12)
+        np.testing.assert_allclose(
+            impl(4, *self.DOM2, *self.DOM2, 0),
+            np.eye(5),
+            atol=1e-14,
+        )
+
+    @pytest.mark.parametrize(
+        "impl", jit_variants(maths.poly_chebyshev_transform_matrix)
+    )
+    def test_descending_is_reversed_ascending(self, impl) -> None:
+        np.testing.assert_array_equal(
+            impl(4, *self.DOM1, *self.DOM2, 1),
+            impl(4, *self.DOM1, *self.DOM2, 0)[::-1, ::-1],
+        )
+
+    @pytest.mark.parametrize(
+        "impl", jit_variants(maths.poly_chebyshev_transform_matrix)
+    )
+    @pytest.mark.parametrize(
+        ("args", "match"),
+        [
+            ((-1, 0, 1, 0, 1), "non-negative"),
+            ((2, 0, 0, 0, 1), "positive"),
+            ((2, 0, 1, 0, -1), "positive"),
+        ],
+    )
+    def test_rejects_bad_input(self, impl, args, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            impl(*args)
+
+    @pytest.mark.parametrize(
+        "impl",
+        jit_variants(maths.compute_transformation_coefficient_c),
+    )
+    def test_coefficient_zero_above_diagonal(self, impl) -> None:
+        assert impl(2, 3, 0.5, 0.1) == 0.0
+
+    @pytest.mark.parametrize(
+        "impl",
+        jit_variants(maths.compute_transformation_coefficient_c),
+    )
+    def test_coefficient_matches_matrix(self, impl) -> None:
+        (tc1, ts1), (tc2, ts2) = self.DOM1, self.DOM2
+        mat = maths.poly_chebyshev_transform_matrix(4, tc1, ts1, tc2, ts2, 0)
+        p, q = ts2 / ts1, (tc2 - tc1) / ts1
+        for n in range(5):
+            for k in range(5):
+                np.testing.assert_allclose(impl(n, k, p, q), mat[n, k], atol=1e-14)
+
+
+class TestPowerSeriesTable:
+    @pytest.mark.parametrize(("order_max", "n_derivs"), [(0, 0), (3, 1), (6, 4)])
+    def test_derivatives_of_scaled_monomials(
+        self,
+        order_max: int,
+        n_derivs: int,
+    ) -> None:
+        """Row ``[d, n]`` holds the d-th derivative of ``x**n / n!``.
+
+        That is ``x**(n - d) / (n - d)!`` for ``d <= n``, and zero otherwise.
+        """
+        tab = maths.gen_power_series_table_np(order_max, n_derivs)
+        assert tab.shape == (n_derivs + 1, order_max + 1, order_max + 1)
+        for d in range(n_derivs + 1):
+            for n in range(order_max + 1):
+                expected = np.zeros(order_max + 1)
+                if d <= n:
+                    expected[n - d] = 1 / math.factorial(n - d)
+                np.testing.assert_allclose(tab[d, n], expected, rtol=1e-14)
+
+
+class TestFindSmallPolys:
+    @pytest.mark.parametrize("impl", jit_variants(maths.find_small_polys))
+    @pytest.mark.parametrize(("degree", "error_bound"), [(2, 1), (3, 1), (3, 2)])
+    def test_returned_polys_meet_the_bound(
+        self,
+        impl,
+        degree: int,
+        error_bound: int,
+    ) -> None:
+        good, point_volume, volume_factor = impl(degree, error_bound)
+        x = np.linspace(-1, 1, 128)
+        values = polynomial.polynomial.polyval(x, good.T, tensor=True)
+        violations = (np.abs(values) > error_bound).sum(axis=-1)
+        assert len(good) > 0
+        assert (violations < 12).all()
+        n_grid = (2 * (degree - 1) * 4) ** degree
+        np.testing.assert_allclose(point_volume * n_grid, (2 * (degree - 1)) ** degree)
+        np.testing.assert_allclose(volume_factor, point_volume * len(good) / 2**degree)
+
+    def test_paths_agree(self) -> None:
+        compiled = maths.find_small_polys(3, 1)[0]
+        python = python_impl(maths.find_small_polys)(3, 1)[0]
+        np.testing.assert_allclose(compiled, python, rtol=0, atol=1e-12)
