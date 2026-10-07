@@ -261,8 +261,9 @@ class PruneStatsCollection:
     ) -> PruneStatsCollection:
         """Create PruneStatsCollection from numpy arrays.
 
-        Files written before `threshold_eff` was saved have no such field; it is
-        restored as NaN for them.
+        Fields are read by name, so extra fields (LOKI's files carry more) are
+        ignored. Files written before `threshold_eff` was saved have no such field,
+        and a timer the file lacks is missing too; both are restored as NaN.
         """
         collection = cls()
         has_eff = "threshold_eff" in (level_stats.dtype.names or ())
@@ -281,9 +282,13 @@ class PruneStatsCollection:
             )
             collection.stats_list.append(stats)
 
-        # Reconstruct timers
+        # Reconstruct timers by name: a timer the file lacks (LOKI writes no
+        # `batch_add`) is restored as NaN, and timers pyloki does not track are ignored.
+        timer_names = set(timer_stats.dtype.names or ())
         for name in cls.TIMER_NAMES:
-            collection.timers[name] = float(timer_stats[0][name])
+            collection.timers[name] = (
+                float(timer_stats[0][name]) if name in timer_names else float("nan")
+            )
 
         return collection
 

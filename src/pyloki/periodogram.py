@@ -674,6 +674,7 @@ class ScatteredPeriodogram:
 
 @attrs.define(auto_attribs=True, kw_only=True)
 class PruningStatsPlotter:
+    REQUIRED_FIELDS: ClassVar[frozenset[str]] = frozenset({"level", "n_leaves_surv"})
     data: pd.DataFrame = attrs.field(init=False, factory=pd.DataFrame)
 
     @property
@@ -688,8 +689,10 @@ class PruningStatsPlotter:
         Parameters
         ----------
         level_stats : np.ndarray
-            Level statistics, one record per level: 10 fields, or 9 for files
-            written before `threshold_eff` was saved.
+            Level statistics, one structured record per level. Fields are read by
+            name: `level` and `n_leaves_surv` are required, and any others are kept
+            as columns. This covers pyloki's own files (10 fields, or 9 before
+            `threshold_eff` was saved) and LOKI's, which carry more.
         run_id : str
             Unique Identifier for the specific run being added.
         """
@@ -697,8 +700,9 @@ class PruningStatsPlotter:
             msg = "level_stats should be a numpy array"
             raise TypeError(msg)
         names = level_stats.dtype.names
-        if names is None or len(names) not in {9, 10}:
-            msg = "level_stats should have 10 fields (9 before threshold_eff was saved)"
+        missing = sorted(self.REQUIRED_FIELDS - set(names or ()))
+        if missing:
+            msg = f"level_stats is missing required fields: {missing}"
             raise ValueError(msg)
         run_df = pd.DataFrame.from_records(level_stats)
         run_df["run_id"] = run_id
