@@ -261,9 +261,11 @@ class PruneStatsCollection:
     ) -> PruneStatsCollection:
         """Create PruneStatsCollection from numpy arrays.
 
-        Fields are read by name, so extra fields (LOKI's files carry more) are
-        ignored. Files written before `threshold_eff` was saved have no such field,
-        and a timer the file lacks is missing too; both are restored as NaN.
+        Fields are read by name, so extra level fields (LOKI's files carry more) are
+        ignored. Files written before `threshold_eff` was saved have no such field;
+        it is restored as NaN. Timers are read by name over 0.0 defaults: a timer the
+        file lacks stays 0.0, and one pyloki does not track is kept (but `to_array`
+        writes only `TIMER_NAMES`).
         """
         collection = cls()
         has_eff = "threshold_eff" in (level_stats.dtype.names or ())
@@ -282,13 +284,11 @@ class PruneStatsCollection:
             )
             collection.stats_list.append(stats)
 
-        # Reconstruct timers by name: a timer the file lacks (LOKI writes no
-        # `batch_add`) is restored as NaN, and timers pyloki does not track are ignored.
-        timer_names = set(timer_stats.dtype.names or ())
-        for name in cls.TIMER_NAMES:
-            collection.timers[name] = (
-                float(timer_stats[0][name]) if name in timer_names else float("nan")
-            )
+        # Reconstruct timers by name over the 0.0 defaults: a stage the file has no
+        # timer for (LOKI writes no `batch_add`) took no time, and a timer pyloki does
+        # not track (LOKI's `rfi`) is kept, so the summaries still add up.
+        for name in timer_stats.dtype.names or ():
+            collection.timers[name] = float(timer_stats[0][name])
 
         return collection
 

@@ -766,6 +766,7 @@ class PruningStatsPlotter:
                 raise ValueError(msg)
             pstats = cls()
             for run_id_str, run_group in f["runs"].items():
-                level_stats = run_group["level_stats"][:]
-                pstats.add_run(level_stats, run_id_str)
+                if "level_stats" not in run_group:  # LOKI omits them for empty runs
+                    continue
+                pstats.add_run(run_group["level_stats"][:], run_id_str)
         return pstats
