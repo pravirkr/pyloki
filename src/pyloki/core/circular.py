@@ -674,7 +674,7 @@ def circ_taylor_transform_batch(
     tiling_strategy: str,
     propagator_significance: float,
 ) -> np.ndarray:
-    """Re-center (in-place) the leaves to the next segment reference time."""
+    """Return the leaves re-centred to the next segment reference time (a copy)."""
     idx_circ_snap, idx_circ_crackle, idx_taylor = get_circ_taylor_mask(
         leaves_batch,
         propagator_significance=propagator_significance,
