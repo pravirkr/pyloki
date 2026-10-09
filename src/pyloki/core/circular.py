@@ -333,7 +333,7 @@ def circ_taylor_branch_batch(
     # If no expansion needed, return early (fast path)
     if n_crackle_expand == 0:
         total_leaves = n_keep
-        leaves_final = np.empty((total_leaves, poly_order + 2, 2), dtype=np.float64)
+        leaves_final = np.zeros((total_leaves, poly_order + 2, 2), dtype=np.float64)
         leaves_final[:, :-2, 0] = leaf_params_branch_cart
         leaves_final[:, :-2, 1] = leaves_branched_dparams
         leaves_final[:, -2, 0] = d0_cur_batch[batch_origins]
@@ -362,7 +362,7 @@ def circ_taylor_branch_batch(
     # Construct Final Array
     total_crackle_branches = np.sum(crackle_branched_counts)
     total_leaves = n_keep + total_crackle_branches
-    leaves_final = np.empty((total_leaves, poly_order + 2, 2), dtype=np.float64)
+    leaves_final = np.zeros((total_leaves, poly_order + 2, 2), dtype=np.float64)
     origins_final = np.empty(total_leaves, dtype=np.int64)
 
     if n_keep > 0:
