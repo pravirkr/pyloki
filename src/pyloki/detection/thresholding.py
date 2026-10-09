@@ -1053,6 +1053,63 @@ class DynamicThresholdScheme:
         return filename.as_posix()
 
 
+def schedule_survive_probs(
+    branching_pattern: np.ndarray,
+    *,
+    protect: int = 4,
+    return_stages: int = 3,
+    survive_nonbranch: float = 1.0,
+) -> tuple[np.ndarray, list[int], float]:
+    """Survive probabilities that protect the early pruning stages and return to size.
+
+    The plain choice, 1/bp at every branching stage, puts the first cuts where a weak
+    signal's partial S/N is lowest: at stages 1-2 a final S/N 14-19 pulsar has partial
+    S/N 2.5-3.6 and the cuts sit at 2.6-3.3. This schedule keeps every leaf at the first
+    ``protect`` stages, then spreads the protected stages' branching product as an extra
+    factor on the cuts at the next ``return_stages`` branching stages, so that the noise
+    tree returns to the plain ladder's size at the last of them and stays there (each
+    later stage keeps 1/bp of what arrives). Non-branching stages keep
+    ``survive_nonbranch`` (1 means no cut, as the plain ladder's minimum over trials).
+    The window is stated in branching stages, never in levels: a window fixed in levels
+    can hold a single branching stage, and the whole factor on one cut is worse than no
+    protection. ``protect=0`` returns the plain vector.
+
+    Parameters
+    ----------
+    branching_pattern : np.ndarray
+        Branching factor per stage, as `determine_scheme` takes it.
+    protect : int, optional
+        Number of leading stages with survive probability 1, by default 4.
+    return_stages : int, optional
+        Number of branching stages after the protected ones that carry the extra
+        factor, by default 3. Fewer are used when fewer exist.
+    survive_nonbranch : float, optional
+        Survive probability at the non-branching stages, by default 1.0.
+
+    Returns
+    -------
+    tuple[np.ndarray, list[int], float]
+        The survive probabilities, the (1-based) stages that carry the extra factor,
+        and the factor.
+    """
+    bp = np.asarray(branching_pattern, dtype=np.float64)
+    probs = 1.0 / bp
+    probs[np.abs(bp - 1.0) < 1e-9] = survive_nonbranch
+    protect = int(protect)
+    if protect <= 0:
+        return probs, [], 1.0
+    probs[:protect] = 1.0
+    stages = [i + 1 for i in range(protect, len(bp)) if bp[i] > 1.0 + 1e-4][
+        : max(int(return_stages), 0)
+    ]
+    if not stages:
+        return probs, [], 1.0
+    factor = float(np.prod(bp[:protect])) ** (1.0 / len(stages))
+    for st in stages:
+        probs[st - 1] /= factor
+    return probs, stages, factor
+
+
 def determine_scheme(
     survive_probs: np.ndarray,
     branching_pattern: np.ndarray,
