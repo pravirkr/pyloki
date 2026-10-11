@@ -32,10 +32,6 @@ from pyloki.utils import transforms
 from pyloki.utils.misc import C_VAL
 from pyloki.utils.world_tree import WorldTree
 
-# Library defects found while writing these tests. Each is pinned with a strict xfail
-# so that the fix, when it lands, turns the pin into a failure and forces its removal.
-REPORT_ISSUE = "#34: the fixed-grid report discards its re-centring transform"
-
 NBINS = 32
 COUNTS = np.array([4, 8])
 SCORE_WIDTHS = np.array([1, 2, 4])
@@ -193,15 +189,13 @@ class TestTaylorRouting:
         got = _taylor(moving=True).report(leaves.copy(), (T_ADD, 20.0), (T_INIT, 5.0))
         np.testing.assert_array_equal(got, taylor.poly_taylor_report_batch(leaves))
 
-    @pytest.mark.xfail(strict=True, reason=REPORT_ISSUE, raises=AssertionError)
     def test_report_fixed_grid_recentres(self) -> None:
-        """Pin the fixed-grid report discarding its re-centring transform.
+        """The fixed-grid report must keep its re-centring transform (#34).
 
-        `report_func` calls `poly_taylor_transform_batch(leaves, coord_report,
-        coord_end, ...)` and ignores the result: that kernel returns a new array and
-        leaves its input alone. On a fixed grid the leaves are expanded about
-        ``t_init``, so the reported frequency is ``f(t_init)`` rather than ``f`` at the
-        report time: 100.0 instead of ``100 (1 - 5 * 20 / c)`` for the leaf below.
+        On a fixed grid the leaves are expanded about ``t_init``, and `report_func`
+        re-centres them with `poly_taylor_transform_batch`, which returns a new array.
+        Before #35 that result was discarded, so the reported frequency was
+        ``f(t_init)``: 100.0 instead of ``100 (1 - 5 * 20 / c)`` for the leaf below.
         """
         leaf = np.zeros((1, 5, 2))
         leaf[0, 1, 0] = 5.0
@@ -289,9 +283,8 @@ class TestChebyshevRouting:
             chebyshev.poly_chebyshev_report_batch(leaves, (T_ADD, 5.0)),
         )
 
-    @pytest.mark.xfail(strict=True, reason=REPORT_ISSUE, raises=AssertionError)
     def test_report_fixed_grid_recentres(self) -> None:
-        """Pin the same discarded re-centring transform as `dyn_poly_taylor`."""
+        """The fixed-grid report must re-centre, as for `dyn_poly_taylor` (#34)."""
         leaves = _cheby_leaves()
         got = _cheby(moving=False).report(leaves.copy(), (T_ADD, 7.0), (T_INIT, 5.0))
         recentred = chebyshev.poly_chebyshev_transform_batch(
@@ -401,9 +394,8 @@ class TestCircularRouting:
         )
         assert len(strict) == 0  # the propagator's 2 sigma would reject both
 
-    @pytest.mark.xfail(strict=True, reason=REPORT_ISSUE, raises=AssertionError)
     def test_report_fixed_grid_recentres(self) -> None:
-        """Pin the same discarded re-centring transform as `dyn_poly_taylor`."""
+        """The fixed-grid report must re-centre, as for `dyn_poly_taylor` (#34)."""
         leaves = self._leaves()
         got = _circ(moving=False).report(leaves.copy(), (T_ADD, 20.0), (T_INIT, 5.0))
         recentred = taylor.poly_taylor_transform_batch(
