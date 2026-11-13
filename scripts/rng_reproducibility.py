@@ -37,7 +37,7 @@ reproducible and is unchanged.
 
 Usage:
 
-    PYTHONPATH=<worktree>/src <repo>/.venv/bin/python rng_reproducibility.py
+    PYTHONPATH=<worktree>/src <repo>/.venv/bin/python scripts/rng_reproducibility.py
 
 Against a tree without the fix, checks 3 and 4 fail with a TypeError on the `seed`
 keyword, and check 5 reports eight unseeded sites. Against a tree that seeds only the
@@ -154,8 +154,10 @@ def main() -> None:
         want_identical=False,
     )
 
-    print(f"\n3. The same, with seed=42, on {numba.get_num_threads()} threads "
-          f"({N_SEEDED}x)")
+    print(
+        f"\n3. The same, with seed=42, on {numba.get_num_threads()} threads "
+        f"({N_SEEDED}x)"
+    )
     parallel = [one_ladder(seed=42) for _ in range(N_SEEDED)]
     ok &= report("seeded and parallel -- the fix", parallel, want_identical=True)
 

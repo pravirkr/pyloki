@@ -1,5 +1,5 @@
 [build-system]
-requires = ["uv_build>=0.12.3,<0.13"]
+requires = ["uv_build>=0.12.24,<0.14"]
 build-backend = "uv_build"
 
 [project]
@@ -56,7 +56,7 @@ tests = [
     "pytest-mock",
     "sympy",
 ]
-dev = ["ruff", "ty"]
+dev = ["pre-commit", "ruff", "ty"]
 docs = [
     "sphinx",
     "sphinx-book-theme",
@@ -76,6 +76,7 @@ include = [
     "pyproject.toml",
     "src/**/*.py",
     "tests/**/*.py",
+    "scripts/**/*.py",
     "examples/**/*.ipynb",
 ]
 line-length = 88
@@ -99,12 +100,15 @@ ignore = [
     "FBT002",
     "TD",
     "FIX",
+    "COM812",
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "src/pyloki/**/*.py" = ["E402"]
 "src/pyloki/dynamic/**/*.py" = ["ARG001", "ARG002"]
+"tests/**/*.py" = ["ANN", "S101"]
 "examples/**/*.ipynb" = ["T201"]
+"scripts/**/*.py" = ["INP001", "T201"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 20
@@ -125,7 +129,7 @@ python-version = "3.12"
 
 [tool.ty.src]
 include = ["src"]
-exclude = ["src/pyloki/main.py", "tests", "docs"]
+exclude = ["tests", "docs"]
 
 [tool.ty.rules]
 index-out-of-bounds = "ignore"
@@ -157,10 +161,8 @@ markers = [
     "slow: repeats a full search pipeline per noise realisation; needs --runslow",
 ]
 
-[tool.coverage.paths]
-source = ["../src/"]
-
 [tool.coverage.run]
+source = ["src"]
 omit = ["tests/*", "docs/*", "*__init__.py", "*_types.py"]
 
 [tool.coverage.report]

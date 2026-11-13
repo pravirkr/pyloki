@@ -35,7 +35,9 @@ from tests.jit_utils import jit_variants
 
 # Library defects found while writing these tests. Each is pinned with a strict xfail
 # so that the fix, when it lands, turns the pin into a failure and forces its removal.
-MOVING_GRID_ISSUE = "#30: the moving-grid resolver can select the adjacent FFA frequency cell"
+MOVING_GRID_ISSUE = (
+    "#30: the moving-grid resolver can select the adjacent FFA frequency cell"
+)
 FLAG_ISSUE = "#31: the basis flag is written to the wrong leaves"
 UNUSED_ISSUE = "#36: two unused circular kernels do not work"
 

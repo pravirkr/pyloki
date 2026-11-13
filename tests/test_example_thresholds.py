@@ -87,7 +87,7 @@ MIN_DET_PROB_AT_HIGH_SNR = 0.90
 
 
 def branching_pattern() -> np.ndarray:
-    """A short pattern with the notebook's shape: branch hard early, then settle."""
+    """Return a short pattern with the notebook's shape: branch hard early."""
     pattern = np.ones(NSTAGES)
     pattern[0] = 8.0
     pattern[1:6] = 3.0
@@ -113,7 +113,7 @@ def detection_probability(ladder: np.ndarray, pattern: np.ndarray, snr: float) -
 
 @pytest.fixture(scope="module")
 def constant_scheme() -> dict:
-    """The notebook's "constant" scheme: survival probability 1/branching per stage."""
+    """Build the notebook's constant scheme (1/branching survival per stage)."""
     pattern = branching_pattern()
     info = thresholding.determine_scheme(
         1.0 / pattern,
@@ -201,7 +201,8 @@ def test_reference_ladders_and_their_ordering(constant_scheme) -> None:
     trials = np.asarray(schemes.trials_scheme(pattern, 1), dtype=np.float64)
     assert len(bound) == NSTAGES
     assert len(trials) == NSTAGES
-    assert np.all(np.isfinite(bound)) and np.all(np.isfinite(trials))
+    assert np.all(np.isfinite(bound))
+    assert np.all(np.isfinite(trials))
 
     # The notebook's combination, and what it means.
     minimized = np.minimum(bound, trials)

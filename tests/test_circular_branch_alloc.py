@@ -68,13 +68,15 @@ def _taylor_leaf(vel: float = 2e3, accel: float = 5.0) -> np.ndarray:
 
 def _with_steps(leaves: np.ndarray, factors: np.ndarray) -> np.ndarray:
     """Set the leaves' steps to multiples of the branching step, so some axes branch."""
-    dnew = psr_utils.poly_taylor_step_d_vec(5, COORD[1], NBINS, 1.0, leaves[:, -1, 0], t_ref=0)
+    dnew = psr_utils.poly_taylor_step_d_vec(
+        5, COORD[1], NBINS, 1.0, leaves[:, -1, 0], t_ref=0
+    )
     leaves[:, :5, 1] = dnew * factors
     return leaves
 
 
 def _expansion_input() -> np.ndarray:
-    """A hole leaf whose crackle needs branching: the crackle-expansion path."""
+    """Return leaves including a hole leaf whose crackle needs branching."""
     leaves = np.concatenate([_snap_leaf(), _hole_leaf(), _taylor_leaf()])
     leaves = _with_steps(leaves, np.array([3.3, 2.1, 2.4, 0.5, 2.2]))
     leaves[1, 2, 1] = abs(leaves[1, 2, 0]) / 10
@@ -91,7 +93,7 @@ def _poisoned_numpy() -> types.ModuleType:
     shim = types.ModuleType("numpy_poisoned")
     shim.__dict__.update(np.__dict__)
 
-    def empty(shape, dtype=float, *args, **kwargs):  # noqa: ANN001, ANN202, ARG001
+    def empty(shape, dtype=float, *args, **kwargs):
         dt = np.dtype(dtype)
         fill = np.nan if dt.kind == "f" else np.iinfo(dt).min
         return np.full(shape, fill, dtype=dt)

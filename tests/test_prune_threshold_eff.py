@@ -39,37 +39,71 @@ LINE = re.compile(r"score thresh:\s*([-\d.]+), eff:\s*([-\d.naN]+)")
 
 
 def build():
-    cfg = PulseSignalConfig(period=0.007, dt=64e-6, nsamps=NSAMPS, snr=SNR,
-                            ducy=DUCY, mod_kwargs={"acc": 1500.0})
+    cfg = PulseSignalConfig(
+        period=0.007,
+        dt=64e-6,
+        nsamps=NSAMPS,
+        snr=SNR,
+        ducy=DUCY,
+        mod_kwargs={"acc": 1500.0},
+    )
     tim = cfg.generate(shape="gaussian")
-    limits = ParamLimits.from_upper((140.0, 150.0), [1500.0], (-2500.0, 2500.0),
-                                    cfg.tobs)
+    limits = ParamLimits.from_upper(
+        (140.0, 150.0), [1500.0], (-2500.0, 2500.0), cfg.tobs
+    )
     bseg_ffa = NSAMPS // NSEGMENTS
     scfg = PulsarSearchConfig(
-        nsamps=cfg.nsamps, tsamp=cfg.dt, nbins=NBINS, eta=1,
-        param_limits=limits.limits, bseg_brute=bseg_ffa // FFA_LEVELS,
-        bseg_ffa=bseg_ffa, prune_poly_order=2, ducy_max=0.5, wtsp=1.2,
-        use_fourier=True, branch_max=32)
+        nsamps=cfg.nsamps,
+        tsamp=cfg.dt,
+        nbins=NBINS,
+        eta=1,
+        param_limits=limits.limits,
+        bseg_brute=bseg_ffa // FFA_LEVELS,
+        bseg_ffa=bseg_ffa,
+        prune_poly_order=2,
+        ducy_max=0.5,
+        wtsp=1.2,
+        use_fourier=True,
+        branch_max=32,
+    )
     dyp = DynamicProgramming(tim, scfg)
     dyp.initialize()
     dyp.execute()
-    bp = np.asarray(scfg.generate_branching_pattern(kind="poly_taylor_moving",
-                                                    ref_seg=0), dtype=np.float64)
-    scheme = thresholding.determine_scheme(1.0 / bp, bp, ref_ducy=DUCY, nbins=NBINS,
-                                           ntrials=1024, snr_final=SNR,
-                                           ducy_max=0.5, wtsp=1.2)
+    bp = np.asarray(
+        scfg.generate_branching_pattern(kind="poly_taylor_moving", ref_seg=0),
+        dtype=np.float64,
+    )
+    scheme = thresholding.determine_scheme(
+        1.0 / bp,
+        bp,
+        ref_ducy=DUCY,
+        nbins=NBINS,
+        ntrials=1024,
+        snr_final=SNR,
+        ducy_max=0.5,
+        wtsp=1.2,
+    )
     return dyp, np.asarray(scheme.thresholds, dtype=np.float64)
 
 
 def run(dyp, thresholds, max_sugg: int) -> tuple[list[tuple[float, float]], np.ndarray]:
-    """Prune once; return the log's (nominal, effective) pairs and the saved level_stats."""
+    """Prune once; return log (nominal, effective) pairs and saved level_stats."""
     with tempfile.TemporaryDirectory() as td:
-        result_file = prune_dyp_tree(dyp, thresholds, n_runs=1, max_sugg=max_sugg,
-                                     outdir=td, file_prefix="v", poly_basis="taylor",
-                                     n_workers=1, use_moving_grid=True)
+        result_file = prune_dyp_tree(
+            dyp,
+            thresholds,
+            n_runs=1,
+            max_sugg=max_sugg,
+            outdir=td,
+            file_prefix="v",
+            poly_basis="taylor",
+            n_workers=1,
+            use_moving_grid=True,
+        )
         logs = list(Path(td).rglob("*_log.txt"))
         if not logs:
-            raise SystemExit(f"no log written in {td}")
+            msg = f"no log written in {td}"
+            raise SystemExit(msg)
         text = max(logs, key=lambda p: p.stat().st_size).read_text()
         with h5py.File(result_file) as f:
             (group,) = f["runs"].values()
@@ -126,17 +160,28 @@ def test_level_stats_saves_threshold_eff_when_buffer_binds(runs):
     pruned = stats[1:]
     assert np.any(pruned["threshold_eff"] > pruned["threshold"])
     # The saved values are the ones the log reports.
-    np.testing.assert_allclose(pruned["threshold_eff"], [e for _, e in pairs][-len(pruned):],
-                               atol=0.006)
+    np.testing.assert_allclose(
+        pruned["threshold_eff"], [e for _, e in pairs][-len(pruned) :], atol=0.006
+    )
 
 
 def _collection() -> PruneStatsCollection:
     c = PruneStatsCollection()
     for level, (thr, eff) in enumerate([(0.0, 0.0), (1.5, 1.5), (2.0, 2.7)]):
-        c.update_stats(PruneStats(level=level, seg_idx=level, threshold=thr,
-                                  threshold_eff=eff, score_min=0.0, score_max=5.0,
-                                  n_branches=2, n_leaves=10, n_leaves_phy=10,
-                                  n_leaves_surv=5))
+        c.update_stats(
+            PruneStats(
+                level=level,
+                seg_idx=level,
+                threshold=thr,
+                threshold_eff=eff,
+                score_min=0.0,
+                score_max=5.0,
+                n_branches=2,
+                n_leaves=10,
+                n_leaves_phy=10,
+                n_leaves_surv=5,
+            )
+        )
     return c
 
 
