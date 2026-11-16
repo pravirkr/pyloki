@@ -630,7 +630,7 @@ def find_small_polys(
     oversampling: int = 4,
     npoints: int = 128,
     max_violations: int = 12,
-) -> tuple[list, float, float]:
+) -> tuple[np.ndarray, float, float]:
     """Find small polynomials in the phase space.
 
     Enumerate the phase space of all polynomials up to a certain resolution to find the
@@ -652,8 +652,8 @@ def find_small_polys(
 
     Returns
     -------
-    tuple[list, float, float]
-        - good_poly: List of small polynomials.
+    tuple[np.ndarray, float, float]
+        - good_poly: Array of small polynomials.
         - point_volume: Volume of a single point in the phase space.
         - volume_factor: Factor to scale the point volume to the total volume.
     """

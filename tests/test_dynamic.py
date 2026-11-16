@@ -190,7 +190,13 @@ class TestTaylorRouting:
         np.testing.assert_array_equal(got, taylor.poly_taylor_report_batch(leaves))
 
     def test_report_fixed_grid_recentres(self) -> None:
-        """Verify fixed-grid report re-centres leaves from `t_init` to `t_report`."""
+        """The fixed-grid report must keep its re-centring transform (#34).
+
+        On a fixed grid the leaves are expanded about ``t_init``, and `report_func`
+        re-centres them with `poly_taylor_transform_batch`, which returns a new array.
+        Before #35 that result was discarded, so the reported frequency was
+        ``f(t_init)``: 100.0 instead of ``100 (1 - 5 * 20 / c)`` for the leaf below.
+        """
         leaf = np.zeros((1, 5, 2))
         leaf[0, 1, 0] = 5.0
         leaf[0, :4, 1] = [1e-6, 0.05, 10.0, 0.0]
@@ -278,7 +284,7 @@ class TestChebyshevRouting:
         )
 
     def test_report_fixed_grid_recentres(self) -> None:
-        """Verify fixed-grid report re-centres leaves like `dyn_poly_taylor`."""
+        """The fixed-grid report must re-centre, as for `dyn_poly_taylor` (#34)."""
         leaves = _cheby_leaves()
         got = _cheby(moving=False).report(leaves.copy(), (T_ADD, 7.0), (T_INIT, 5.0))
         recentred = chebyshev.poly_chebyshev_transform_batch(
@@ -389,7 +395,7 @@ class TestCircularRouting:
         assert len(strict) == 0  # the propagator's 2 sigma would reject both
 
     def test_report_fixed_grid_recentres(self) -> None:
-        """Verify fixed-grid report re-centres leaves like `dyn_poly_taylor`."""
+        """The fixed-grid report must re-centre, as for `dyn_poly_taylor` (#34)."""
         leaves = self._leaves()
         got = _circ(moving=False).report(leaves.copy(), (T_ADD, 20.0), (T_INIT, 5.0))
         recentred = taylor.poly_taylor_transform_batch(

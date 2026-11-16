@@ -151,8 +151,8 @@ exclude = ["tests", "docs"]
 
 [tool.ty.rules]
 index-out-of-bounds = "ignore"
-unresolved-import = "ignore"
-not-iterable = "ignore"        # For Numba prange
+import-not-found = "ignore"
+not-iterable = "ignore"     # For Numba prange
 
 [tool.ty.analysis]
 replace-imports-with-any = ["astropy.**"]
@@ -167,8 +167,8 @@ include = [
 
 [tool.ty.overrides.rules]
 invalid-assignment = "ignore"
-invalid-return-type = "ignore"
-unresolved-attribute = "ignore"
+invalid-explicit-return = "ignore"
+missing-attribute = "ignore"
 
 
 [tool.pytest.ini_options]
