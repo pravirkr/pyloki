@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "pyloki"
 version = "0.8.0"
-description = "Detecting Pulsars"
+description = "Fast Folding Algorithm and pruned tree-search for detecting isolated and binary pulsars"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -14,6 +14,13 @@ authors = [
     { name = "Barak Zackay" },
 ]
 requires-python = ">=3.12"
+keywords = [
+    "pulsar",
+    "astronomy",
+    "radio-astronomy",
+    "fast-folding-algorithm",
+    "astrophysics",
+]
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
@@ -32,6 +39,7 @@ dependencies = [
     "astropy",
     "attrs",
     "h5py",
+    "llvmlite",
     "matplotlib",
     "pandas",
     "rich",
@@ -40,13 +48,16 @@ dependencies = [
     "scipy",
     "seaborn",
     "xarray",
-    "sigpyproc @ git+https://github.com/FRBs/sigpyproc3.git",
+    "sigpyproc>=2.0",
 ]
 
 [project.urls]
+Homepage = "https://github.com/pravirkr/pyloki"
 Repository = "https://github.com/pravirkr/pyloki"
+Issues = "https://github.com/pravirkr/pyloki/issues"
+"LOKI (C++/CUDA)" = "https://github.com/pravirkr/loki"
 
-[project.optional-dependencies]
+[dependency-groups]
 tests = [
     "pytest>=9.0",
     "pytest-cov",
@@ -67,6 +78,13 @@ docs = [
     "jupyter_sphinx",
     "sphinx-design",
 ]
+
+[tool.uv]
+default-groups = ["dev", "tests"]
+
+[tool.uv.build-backend]
+source-exclude = ["**/.DS_Store"]
+wheel-exclude = ["**/.DS_Store"]
 
 [project.scripts]
 pyloki_viewer = "pyloki.apps.pyloki_viewer:main"
