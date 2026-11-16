@@ -379,7 +379,7 @@ class TestNewAndTrim:
 
 
 @njit(cache=False)
-def _jit_methods(tree, leaves, folds, scores, backtracks):  # noqa: ANN202
+def _jit_methods(tree, leaves, folds, scores, backtracks):
     """Call each method from compiled code, which dispatches to the @overload_method."""
     new = tree.get_new(4)
     best = tree.get_best()

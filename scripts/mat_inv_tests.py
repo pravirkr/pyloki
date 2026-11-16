@@ -61,7 +61,7 @@ def poly_chebyshev_transform_matrix(
     return c_mat
 
 
-def power_pols(n, t_0):
+def power_pols(n: int, t_0: float) -> np.ndarray:
     pols = np.zeros([n + 1, n + 1])
     for i in range(n + 1):
         for j in range(i + 1):
@@ -69,13 +69,13 @@ def power_pols(n, t_0):
     return pols
 
 
-def translate_pols(pols, t_0):
+def translate_pols(pols: np.ndarray, t_0: float) -> np.ndarray:
     poly_order = len(pols[0]) - 1
     shifting_pols = power_pols(poly_order, t_0)
     return np.dot(pols, shifting_pols)
 
 
-def scale_pols(pols, scale):
+def scale_pols(pols: np.ndarray, scale: float) -> np.ndarray:
     output = np.zeros(pols.shape)
     for j in range(len(pols)):
         for i in range(len(pols[j])):
@@ -83,7 +83,7 @@ def scale_pols(pols, scale):
     return output
 
 
-def generate_chebyshev_polys_table(order, n_derivatives):
+def generate_chebyshev_polys_table(order: int, n_derivatives: int) -> np.ndarray:
     tab = np.zeros((n_derivatives + 1, order + 1, order + 1))
     tab[0][0][0] = 1.0
     tab[0][1][1] = 1.0
@@ -96,17 +96,22 @@ def generate_chebyshev_polys_table(order, n_derivatives):
     return tab
 
 
-def generalized_cheb_pols(poly_order, t0, scale):
+def generalized_cheb_pols(poly_order: int, t0: float, scale: float) -> np.ndarray:
     cheb_pols = generate_chebyshev_polys_table(poly_order, 0)[0]
     pols_scaled = scale_pols(cheb_pols, scale)
-    pols_trans = translate_pols(pols_scaled, t0)
-    return pols_trans
+    return translate_pols(pols_scaled, t0)
 
 
-def gen_transfer_matrix(poly_order, tc1, ts1, tc2, ts2):
-    M1 = generalized_cheb_pols(poly_order, tc1, ts1)
-    M2 = generalized_cheb_pols(poly_order, tc2, ts2)
-    return np.dot(M1, np.linalg.inv(M2))
+def gen_transfer_matrix(
+    poly_order: int,
+    tc1: float,
+    ts1: float,
+    tc2: float,
+    ts2: float,
+) -> np.ndarray:
+    m1 = generalized_cheb_pols(poly_order, tc1, ts1)
+    m2 = generalized_cheb_pols(poly_order, tc2, ts2)
+    return np.dot(m1, np.linalg.inv(m2))
 
 
 poly_order = 4

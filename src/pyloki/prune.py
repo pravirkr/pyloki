@@ -523,7 +523,7 @@ class Pruning:
             level=self.prune_level,
             seg_idx=self.scheme.get_segment_idx(self.prune_level),
             threshold=0,
-            threshold_eff=0,   # initial record: nothing has been pruned yet
+            threshold_eff=0,  # initial record: nothing has been pruned yet
             score_min=self.world_tree.score_min,
             score_max=self.world_tree.score_max,
             n_branches=self.world_tree.size,
@@ -916,8 +916,8 @@ def prune_dyp_tree(
             # processes to avoid pickling issues
             shared_progress = tracker.shared_progress
             log_queue = tracker.log_queue
-            # Each worker's temporaries are named after this call's result file, and only
-            # these are merged: another search sharing `outdir` has its own.
+            # Each worker's temporaries are named after this call's result file, and
+            # only these are merged: another search sharing `outdir` has its own.
             temp_files = []
 
             for ref_seg in ref_segs:

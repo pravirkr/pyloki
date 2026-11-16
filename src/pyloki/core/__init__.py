@@ -20,5 +20,4 @@ __all__ = [
     "generate_bp_poly_taylor_approx",
     "set_ffa_load_func",
     "set_prune_load_func",
-    "unify_fold",
 ]

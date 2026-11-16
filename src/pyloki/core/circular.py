@@ -967,7 +967,7 @@ def generate_bp_circ_taylor(
         n_branches = np.ones(n_freqs, dtype=np.float64)
 
         for i in range(n_freqs):
-            # The crackle is not branched here; carry its error like any unbranched parameter.
+            # Crackle is not branched here; carry its error like an unbranched param.
             dparam_cur_next[i, 0] = dparam_cur_batch[i, 0]
             for j in range(1, n_params):
                 if shift_bins_batch[i, j] < (eta - FLOAT_EPSILON):

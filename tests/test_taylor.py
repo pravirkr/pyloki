@@ -42,7 +42,9 @@ from tests.jit_utils import jit_variants
 
 # Library defects found while writing these tests. Each is pinned with a strict xfail
 # so that the fix, when it lands, turns the pin into a failure and forces its removal.
-MOVING_GRID_ISSUE = "#30: the moving-grid resolver can select the adjacent FFA frequency cell"
+MOVING_GRID_ISSUE = (
+    "#30: the moving-grid resolver can select the adjacent FFA frequency cell"
+)
 
 NBINS = 64
 LIMITS = np.array([[-20.0, 20.0], [99.0, 101.0]])  # [accel, freq]

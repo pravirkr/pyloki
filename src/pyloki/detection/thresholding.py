@@ -654,9 +654,7 @@ def run_stage_legacy(
                     # scheme fills up with states that look real and hold nothing.
                     # Slice assignment is the form that round-trips; see
                     # tests/test_thresholding.py::TestRecordAssignment.
-                    iprob_val = (
-                        np.digitize(cur_state[0]["success_h1_cumul"], probs) - 1
-                    )
+                    iprob_val = np.digitize(cur_state[0]["success_h1_cumul"], probs) - 1
                     iprob = int(iprob_val.item())  # Extract scalar
                     if iprob < 0 or iprob >= nprobs:  # Clamp to valid range
                         continue
@@ -706,9 +704,7 @@ def run_stage_improved(
                         nbranches,
                     )
                     # See run_stage_legacy: keep the array, assign to a slice.
-                    iprob_val = (
-                        np.digitize(cur_state[0]["success_h1_cumul"], probs) - 1
-                    )
+                    iprob_val = np.digitize(cur_state[0]["success_h1_cumul"], probs) - 1
                     iprob = int(iprob_val.item())  # Extract scalar
                     if iprob < 0 or iprob >= nprobs:  # Clamp to valid range
                         continue

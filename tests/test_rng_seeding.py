@@ -79,13 +79,16 @@ class TestPulseSignalConfig:
         first = getattr(_config(42), method)().ts_e
         second = getattr(_config(42), method)().ts_e
         np.testing.assert_array_equal(
-            first, second, err_msg=f"{method}() is not reproducible under seed=42",
+            first,
+            second,
+            err_msg=f"{method}() is not reproducible under seed=42",
         )
 
     @pytest.mark.parametrize("method", GENERATE_METHODS)
     def test_different_seeds_differ(self, method: str) -> None:
         assert not np.array_equal(
-            getattr(_config(42), method)().ts_e, getattr(_config(43), method)().ts_e,
+            getattr(_config(42), method)().ts_e,
+            getattr(_config(43), method)().ts_e,
         ), f"{method}() ignores the seed -- 42 and 43 gave the same noise"
 
     @pytest.mark.parametrize("method", GENERATE_METHODS)
@@ -134,19 +137,27 @@ class TestThresholding:
 
     def test_determine_scheme_same_seed_reproduces(self) -> None:
         first = thresholding.determine_scheme(
-            1.0 / BRANCHING_PATTERN, seed=7, **SCHEME_KW,
+            1.0 / BRANCHING_PATTERN,
+            seed=7,
+            **SCHEME_KW,
         )
         second = thresholding.determine_scheme(
-            1.0 / BRANCHING_PATTERN, seed=7, **SCHEME_KW,
+            1.0 / BRANCHING_PATTERN,
+            seed=7,
+            **SCHEME_KW,
         )
         np.testing.assert_array_equal(first.thresholds, second.thresholds)
 
     def test_determine_scheme_different_seeds_differ(self) -> None:
         first = thresholding.determine_scheme(
-            1.0 / BRANCHING_PATTERN, seed=7, **SCHEME_KW,
+            1.0 / BRANCHING_PATTERN,
+            seed=7,
+            **SCHEME_KW,
         )
         second = thresholding.determine_scheme(
-            1.0 / BRANCHING_PATTERN, seed=8, **SCHEME_KW,
+            1.0 / BRANCHING_PATTERN,
+            seed=8,
+            **SCHEME_KW,
         )
         assert not np.array_equal(first.thresholds, second.thresholds)
 
@@ -160,7 +171,9 @@ class TestThresholding:
     def test_evaluate_scheme_same_seed_reproduces(self) -> None:
         ladder = np.asarray(
             thresholding.determine_scheme(
-                1.0 / BRANCHING_PATTERN, seed=7, **SCHEME_KW,
+                1.0 / BRANCHING_PATTERN,
+                seed=7,
+                **SCHEME_KW,
             ).thresholds,
             dtype=np.float64,
         )
@@ -173,7 +186,9 @@ class TestThresholding:
 
         def draws(seed: int | None) -> np.ndarray:
             scheme = thresholding.DynamicThresholdScheme(
-                nthresholds=20, seed=seed, **SCHEME_KW,
+                nthresholds=20,
+                seed=seed,
+                **SCHEME_KW,
             )
             return scheme.rng.standard_normal(8)
 

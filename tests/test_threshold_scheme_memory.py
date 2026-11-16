@@ -39,7 +39,11 @@ def _peak(fn: Callable[[], object]) -> int:
 def _determine(nstages: int) -> Callable[[], object]:
     bp = np.ones(nstages)
     return lambda: thresholding.determine_scheme(
-        1 / bp, bp, ntrials=4096, seed=SEED, **KW,
+        1 / bp,
+        bp,
+        ntrials=4096,
+        seed=SEED,
+        **KW,
     )
 
 
@@ -47,7 +51,11 @@ def _evaluate(nstages: int) -> Callable[[], object]:
     bp = np.ones(nstages)
     thresholds = np.full(nstages, -np.inf)
     return lambda: thresholding.evaluate_scheme(
-        thresholds, bp, ntrials=4096, seed=SEED, **KW,
+        thresholds,
+        bp,
+        ntrials=4096,
+        seed=SEED,
+        **KW,
     )
 
 
@@ -93,8 +101,16 @@ def _keep_every_stage(
         if istage > 0 and prev_folds.is_empty:
             break
         cur_state, cur_folds = gen_next(
-            prev_state, prev_folds, per_stage[istage], bp[istage], bias_snr,
-            profile, rng, ntrials, ducy_max, wtsp,
+            prev_state,
+            prev_folds,
+            per_stage[istage],
+            bp[istage],
+            bias_snr,
+            profile,
+            rng,
+            ntrials,
+            ducy_max,
+            wtsp,
         )
         states.append(cur_state[0])
         fold_states.append(cur_folds)
@@ -105,20 +121,28 @@ PATTERNS = {
     "mixed": np.array([1.0, 2.0, 1.0, 3.0, 1.0, 1.5, 1.0, 2.0]),
     "unbranched": np.ones(40),
 }
-OUT_KW = {"ref_ducy": 0.1, "nbins": 32, "ntrials": 512, "snr_final": 8.0,
-          "ducy_max": 0.5, "wtsp": 1.2}
+OUT_KW = {
+    "ref_ducy": 0.1,
+    "nbins": 32,
+    "ntrials": 512,
+    "snr_final": 8.0,
+    "ducy_max": 0.5,
+    "wtsp": 1.2,
+}
 
 
 @pytest.mark.parametrize("name", list(PATTERNS))
 def test_determine_scheme_output_unchanged(name: str) -> None:
     bp = PATTERNS[name]
     got = thresholding.determine_scheme(1 / bp, bp, seed=SEED, **OUT_KW).entries
-    want = _keep_every_stage(thresholding.gen_next_using_surv_prob, 1 / bp, bp,
-                             seed=SEED, **OUT_KW)
+    want = _keep_every_stage(
+        thresholding.gen_next_using_surv_prob, 1 / bp, bp, seed=SEED, **OUT_KW
+    )
     assert got == want
     # The comparison can fail: another seed gives other states.
-    assert got != _keep_every_stage(thresholding.gen_next_using_surv_prob, 1 / bp, bp,
-                                    seed=SEED + 1, **OUT_KW)
+    assert got != _keep_every_stage(
+        thresholding.gen_next_using_surv_prob, 1 / bp, bp, seed=SEED + 1, **OUT_KW
+    )
 
 
 @pytest.mark.parametrize("name", list(PATTERNS))
@@ -126,8 +150,10 @@ def test_evaluate_scheme_output_unchanged(name: str) -> None:
     bp = PATTERNS[name]
     thresholds = np.linspace(0.5, 3.0, len(bp))
     got = thresholding.evaluate_scheme(thresholds, bp, seed=SEED, **OUT_KW).entries
-    want = _keep_every_stage(thresholding.gen_next_using_thresh, thresholds, bp,
-                             seed=SEED, **OUT_KW)
+    want = _keep_every_stage(
+        thresholding.gen_next_using_thresh, thresholds, bp, seed=SEED, **OUT_KW
+    )
     assert got == want
-    assert got != _keep_every_stage(thresholding.gen_next_using_thresh, thresholds, bp,
-                                    seed=SEED + 1, **OUT_KW)
+    assert got != _keep_every_stage(
+        thresholding.gen_next_using_thresh, thresholds, bp, seed=SEED + 1, **OUT_KW
+    )

@@ -314,7 +314,7 @@ class DynamicProgramming:
         # Initialize the fold structure and reshape to correct dimensions
         param_arr_t = typed.List(param_arr)
         fold = self.dp_funcs.init(self.ts_data.ts_e, self.ts_data.ts_v, param_arr_t)
-        fold = np.expand_dims(fold, axis=list(range(1, self.cfg.nparams)))
+        fold = np.expand_dims(fold, axis=tuple(range(1, self.cfg.nparams)))
         fold = self.dp_funcs.pack(fold, self.ffa_level)
 
         self._fold = fold.astype(self.data_type)

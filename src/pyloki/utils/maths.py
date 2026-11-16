@@ -274,6 +274,7 @@ def poly_taylor_transform_matrix(
 
     return t_mat
 
+
 @njit(cache=True, fastmath=True)
 def circ_taylor_transform_matrix(
     delta_t: float,
@@ -323,7 +324,7 @@ def circ_taylor_transform_matrix(
     l_mat[5, 2] = omega_cu * s
     l_mat[5, 3] = -omega_sq * c
 
-    l_mat = l_mat[1:6, 1:6]      # drop d0 properly
+    l_mat = l_mat[1:6, 1:6]  # drop d0 properly
     if coeff_order == 1:
         l_mat = l_mat[::-1, ::-1]
     return l_mat
@@ -359,7 +360,7 @@ def circ_taylor_transform_matrix_n(
     l_mat[5, 2] = omega_cu * s
     l_mat[5, 3] = -omega_sq * c
 
-    l_mat = l_mat[1:6, 1:6]      # drop d0 properly
+    l_mat = l_mat[1:6, 1:6]  # drop d0 properly
     return l_mat[::-1, ::-1]
 
 
@@ -629,7 +630,7 @@ def find_small_polys(
     oversampling: int = 4,
     npoints: int = 128,
     max_violations: int = 12,
-) -> tuple[list, float, float]:
+) -> tuple[np.ndarray, float, float]:
     """Find small polynomials in the phase space.
 
     Enumerate the phase space of all polynomials up to a certain resolution to find the
@@ -651,8 +652,8 @@ def find_small_polys(
 
     Returns
     -------
-    tuple[list, float, float]
-        - good_poly: List of small polynomials.
+    tuple[np.ndarray, float, float]
+        - good_poly: Array of small polynomials.
         - point_volume: Volume of a single point in the phase space.
         - volume_factor: Factor to scale the point volume to the total volume.
     """

@@ -159,7 +159,7 @@ def boxcar_snr_2d_serial(
     widths: npt.NDArray[np.int64],
     stdnoise: float = 1.0,
 ) -> npt.NDArray[np.float32]:
-    """Serial twin of `boxcar_snr_2d`, for use inside a parallel region.
+    """Compute boxcar S/N serially (`boxcar_snr_2d` twin for parallel regions).
 
     Identical results; only the `prange` is a plain `range`. Calling the parallel
     version from inside another parallel region is a nested parallel launch, which

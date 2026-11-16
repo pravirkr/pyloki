@@ -150,16 +150,25 @@ class TestTrialsScheme:
         expected = stats.norm.isf(1.0 / np.cumprod(pattern))
         assert np.all(expected > 0.0), "test is vacuous unless all entries are positive"
         np.testing.assert_allclose(
-            schemes.trials_scheme(pattern, trials_start=1), expected,
+            schemes.trials_scheme(pattern, trials_start=1),
+            expected,
         )
 
     def test_scheme_runs_on_a_pattern_that_starts_unbranched(self) -> None:
         """End to end: the configuration that used to produce an empty beam."""
         scheme = DynamicThresholdScheme(
             np.array([1.0, 1.0, 4.0, 2.0, 2.0]),
-            ref_ducy=0.1, nbins=32, ntrials=256, nprobs=8, prob_min=0.05,
-            snr_final=8.0, nthresholds=30, ducy_max=0.3, wtsp=1.5,
-            beam_width=2.5, mode="improved",
+            ref_ducy=0.1,
+            nbins=32,
+            ntrials=256,
+            nprobs=8,
+            prob_min=0.05,
+            snr_final=8.0,
+            nthresholds=30,
+            ducy_max=0.3,
+            wtsp=1.5,
+            beam_width=2.5,
+            mode="improved",
         )
         assert np.all(np.isfinite(scheme.guess_path))
         scheme.run(thres_neigh=5)
