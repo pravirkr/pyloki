@@ -362,18 +362,14 @@ class TestInterpolateMissing:
 
 
 class TestLstsqWeighted:
-    """Contracts run on ``.py_func`` only: the compiled kernel does not compile.
+    """Contracts run on both the compiled kernel and its ``.py_func`` (#23)."""
 
-    It passes ``rcond=None`` to `np.linalg.lstsq`, which numba's overload rejects for
-    every input (`TypingError`); nothing in the library calls it, so nothing noticed.
-    """
-
-    @pytest.mark.xfail(strict=True, reason="#23", raises=TypingError)
     def test_compiled_kernel_compiles(self) -> None:
         design = np.vstack([np.ones(5), np.arange(5.0)]).T
-        np_utils.lstsq_weighted(design, np.arange(5.0), np.ones(5))
+        x_hat, _, _ = np_utils.lstsq_weighted(design, np.arange(5.0), np.ones(5))
+        np.testing.assert_allclose(x_hat, [0.0, 1.0], atol=1e-12)
 
-    @pytest.mark.parametrize("impl", [np_utils.lstsq_weighted.py_func])
+    @pytest.mark.parametrize("impl", jit_variants(np_utils.lstsq_weighted))
     def test_recovers_exact_solution(self, impl) -> None:
         rng = np.random.default_rng(61)
         t = np.linspace(-1, 1, 30)
@@ -388,7 +384,7 @@ class TestLstsqWeighted:
             cov, np.linalg.inv(design.T @ w @ design), rtol=1e-10
         )
 
-    @pytest.mark.parametrize("impl", [np_utils.lstsq_weighted.py_func])
+    @pytest.mark.parametrize("impl", jit_variants(np_utils.lstsq_weighted))
     def test_weights_downweight_outlier(self, impl) -> None:
         t = np.linspace(0, 1, 11)
         design = np.vstack([np.ones_like(t), t]).T
@@ -399,7 +395,7 @@ class TestLstsqWeighted:
         x_hat, _, _ = impl(design, data, errors)
         np.testing.assert_allclose(x_hat, [2.0, 3.0], atol=1e-9)
 
-    @pytest.mark.parametrize("impl", [np_utils.lstsq_weighted.py_func])
+    @pytest.mark.parametrize("impl", jit_variants(np_utils.lstsq_weighted))
     def test_rank_deficient_uses_pinv(self, impl) -> None:
         t = np.linspace(-1, 1, 20)
         design = np.vstack([t, 2 * t]).T  # rank 1
