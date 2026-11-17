@@ -45,20 +45,22 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
 import pytest
 
-from pyloki.config import ParamLimits, PulsarSearchConfig
-from pyloki.detection import thresholding
-from pyloki.ffa import DynamicProgramming
-from pyloki.periodogram import ScatteredPeriodogram
-from pyloki.prune import prune_dyp_tree
+from pyloki.config import ParamLimits
 from pyloki.simulation.pulse import PulseSignalConfig
+from tests._pipelines import (
+    EpSearch,
+    best_candidate,
+    check_candidates,
+    check_clears_final_threshold,
+    check_stage_count,
+    run_ep,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pandas as pd
 
 # Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
 # threshold ladder were drawn from unseeded generators inside pyloki and this file
@@ -92,7 +94,6 @@ NSEGMENTS = 8
 FFA_LEVELS = 16  # bseg_ffa // bseg_brute
 SNR = 20.0
 MAX_SUGG = 2**16
-N_RUNS = 1
 
 # --- Tolerances, ~10x the measured spread ------------------------------------------
 ACCEL_TOL = 50.0  # measured error 4.56, reported daccel 46.3
@@ -103,9 +104,20 @@ MAX_DACCEL_FRACTION = 0.10  # daccel must be < 10% of the injected accel
 MAX_DFREQ_FRACTION = 1e-4  # dfreq must be < 1e-4 of the frequency
 
 
+SEARCH = EpSearch(
+    nsegments=NSEGMENTS,
+    prune_poly_order=2,
+    kind="poly_taylor_moving",
+    max_sugg=MAX_SUGG,
+    ffa_levels=FFA_LEVELS,
+    nbins=NBINS,
+    eta=ETA,
+)
+
+
 def _run_search(seed: int, outdir: Path) -> dict:
     """Run the notebook's pipeline at one noise realisation."""
-    cfg = PulseSignalConfig(
+    signal = PulseSignalConfig(
         period=PULSAR_PERIOD,
         dt=DT,
         nsamps=NSAMPS,
@@ -114,67 +126,12 @@ def _run_search(seed: int, outdir: Path) -> dict:
         mod_kwargs={"acc": ACCEL},
         seed=seed,
     )
-    tim_data = cfg.generate(shape="gaussian")
-
-    limits = ParamLimits.from_upper(FREQ_RANGE, [ACCEL], ACCEL_SEARCH_RANGE, cfg.tobs)
-    bseg_ffa = NSAMPS // NSEGMENTS
-    search_cfg = PulsarSearchConfig(
-        nsamps=cfg.nsamps,
-        tsamp=cfg.dt,
-        nbins=NBINS,
-        eta=ETA,
-        param_limits=limits.limits,
-        bseg_brute=bseg_ffa // FFA_LEVELS,
-        bseg_ffa=bseg_ffa,
-        prune_poly_order=2,
-        ducy_max=0.5,
-        wtsp=1.2,
-        use_fourier=True,
-        branch_max=32,
+    limits = ParamLimits.from_upper(
+        FREQ_RANGE, [ACCEL], ACCEL_SEARCH_RANGE, signal.tobs
     )
-    dyp = DynamicProgramming(tim_data, search_cfg)
-    dyp.initialize()
-    dyp.execute()
-
-    branching_pattern = np.asarray(
-        search_cfg.generate_branching_pattern(kind="poly_taylor_moving", ref_seg=0),
-        dtype=np.float64,
-    )
-    # The notebook hardcodes 128 thresholds, which only fit its stage count. Deriving
-    # them from the branching pattern with a constant survivor population per stage is
-    # how examples/optimal_thresholds.ipynb builds its "constant" scheme, and it tracks
-    # any change in the pattern.
-    scheme = thresholding.determine_scheme(
-        1.0 / branching_pattern,
-        branching_pattern,
-        ref_ducy=DUCY,
-        nbins=NBINS,
-        ntrials=1024,
-        snr_final=SNR,
-        ducy_max=0.5,
-        wtsp=1.2,
-        seed=seed,
-    )
-    thresholds = np.asarray(scheme.thresholds, dtype=np.float64)
-
-    result_file = prune_dyp_tree(
-        dyp,
-        thresholds,
-        n_runs=N_RUNS,
-        max_sugg=MAX_SUGG,
-        outdir=str(outdir),
-        file_prefix="test_accel",
-        poly_basis="taylor",
-        n_workers=1,
-        use_moving_grid=True,
-    )
-    pgram = ScatteredPeriodogram.load(result_file)
     return {
-        "data": pgram.data,
-        "true_freq": cfg.freq,
-        "nsegments": dyp.nsegments,
-        "thresholds": thresholds,
-        "branching_pattern": branching_pattern,
+        **run_ep(signal, limits.limits, SEARCH, seed, outdir),
+        "true_freq": signal.freq,
     }
 
 
@@ -184,16 +141,11 @@ def ep_accel_search(tmp_path_factory) -> dict:
     return _run_search(SEED, tmp_path_factory.mktemp("ep_accel"))
 
 
-def _best(result: dict) -> pd.Series:
-    data = result["data"]
-    return data.loc[data["score"].idxmax()]
-
-
 # One source for each recovery predicate, shared by the pinned tests and the sweep.
 
 
 def _check_freq(result: dict, seed: object = SEED) -> None:
-    best, true_freq = _best(result), result["true_freq"]
+    best, true_freq = best_candidate(result), result["true_freq"]
     assert best["dfreq"] / true_freq < MAX_DFREQ_FRACTION, (
         f"frequency is not actually constrained (seed={seed}): "
         f"dfreq={best['dfreq']:.3e} on freq={true_freq:.6f}"
@@ -206,7 +158,7 @@ def _check_freq(result: dict, seed: object = SEED) -> None:
 
 
 def _check_accel(result: dict, seed: object = SEED) -> None:
-    best = _best(result)
+    best = best_candidate(result)
     assert best["daccel"] < MAX_DACCEL_FRACTION * ACCEL, (
         f"acceleration is not actually constrained (seed={seed}): "
         f"daccel={best['daccel']:.3f} against accel={ACCEL:.1f} -- the recovery "
@@ -242,19 +194,11 @@ def test_recovery_does_not_depend_on_the_noise_realisation(
 
 
 def test_pipeline_produces_candidates(ep_accel_search) -> None:
-    """The search runs to completion and survives thresholding."""
-    data = ep_accel_search["data"]
-    assert len(data) > 0, "no candidates survived; the search found nothing at all"
-    for column in ("accel", "daccel", "freq", "dfreq", "score"):
-        assert column in data.columns, f"missing column {column!r}"
+    check_candidates(ep_accel_search, ["accel", "daccel", "freq", "dfreq"])
 
 
 def test_stage_count_matches_configuration(ep_accel_search) -> None:
-    """`nsegments` is driven by `bseg_ffa`, and the threshold ladder must match it."""
-    assert ep_accel_search["nsegments"] == NSEGMENTS
-    assert len(ep_accel_search["thresholds"]) == len(
-        ep_accel_search["branching_pattern"]
-    )
+    check_stage_count(ep_accel_search, NSEGMENTS)
 
 
 def test_recovers_injected_frequency(ep_accel_search) -> None:
@@ -266,11 +210,4 @@ def test_recovers_injected_acceleration(ep_accel_search) -> None:
 
 
 def test_best_candidate_clears_the_final_threshold(ep_accel_search) -> None:
-    """A recovered signal should score above the last stage's threshold."""
-    data = ep_accel_search["data"]
-    best_score = float(data["score"].max())
-    final_threshold = float(ep_accel_search["thresholds"][-1])
-    assert best_score > final_threshold, (
-        f"best score {best_score:.3f} does not clear the final threshold "
-        f"{final_threshold:.3f}"
-    )
+    check_clears_final_threshold(ep_accel_search)

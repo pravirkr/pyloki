@@ -14,8 +14,8 @@ and nothing else. The same check found #43.
 
 Covered here: the kernels that assemble their output field by field (the shape of #41
 and #43), the circular resolvers (their rows are filled per leaf class), and the FFA
-plan. ``circ_taylor_branch_batch`` and the branching-pattern generators carry this
-check in their own fix PRs. ``pruning_iteration_batched`` needs a live pruning state
+plan, ``circ_taylor_branch_batch`` (#41) and the branching-pattern generators.
+``pruning_iteration_batched`` needs a live pruning state
 and is not run; by reading, it writes every column of its width-(n+2) backtrack row
 (0, 1..n and n+1).
 """
@@ -30,7 +30,7 @@ from numba import typed
 
 from pyloki import ffa, kepler
 from pyloki.config import ParamLimits, PulsarSearchConfig
-from pyloki.core import circular, common, fold
+from pyloki.core import chebyshev, circular, common, fold, taylor
 from pyloki.simulation import modulate
 from pyloki.utils import np_utils, psr_utils, transforms
 
@@ -89,13 +89,17 @@ def _assert_same(control, poisoned) -> None:
         assert poisoned == control
 
 
-def check(monkeypatch, module, func, *args, **kwargs) -> None:
-    """Run ``func`` (a kernel ``py_func`` or plain function) both ways and compare."""
+def check(monkeypatch, module, func, *args, **kwargs):
+    """Run ``func`` (a kernel ``py_func`` or plain function) both ways and compare.
+
+    Returns the control result, for checks that the case did real work.
+    """
     control = func(*_copies(args), **kwargs)
     monkeypatch.setattr(module, "np", poisoned_numpy())
     poisoned = func(*_copies(args), **kwargs)
     monkeypatch.undo()
     _assert_same(control, poisoned)
+    return control
 
 
 # ----------------------------------------------------------------- fixtures
@@ -421,3 +425,93 @@ def test_ffa_plan_configure(monkeypatch) -> None:
         assert len(level_p) == len(level_c)
         for c, p in zip(level_c, level_p, strict=True):
             np.testing.assert_array_equal(p, c)
+
+
+# ----------------------------------------------------------------- branching
+
+
+def _branch_input(*, expand_crackle: bool) -> np.ndarray:
+    """Circular leaves whose steps are set so that some axes branch.
+
+    With ``expand_crackle`` the hole leaf's crackle needs branching (the expansion
+    path); without it there is no hole leaf and the kernel takes its early return.
+    """
+    leaves = _circular_leaves() if expand_crackle else _circular_leaves()[[0, 2]]
+    factors = [3.3, 2.1, 2.4, 0.5, 2.2] if expand_crackle else [0.5, 0.5, 2.4, 0.5, 2.2]
+    dnew = psr_utils.poly_taylor_step_d_vec(
+        5, 12.0, NBINS, 1.0, leaves[:, -1, 0], t_ref=0
+    )
+    leaves[:, :5, 1] = dnew * np.array(factors)
+    if expand_crackle:
+        leaves[1, 2, 1] = abs(leaves[1, 2, 0]) / 10
+    return leaves
+
+
+@pytest.mark.parametrize("expand_crackle", [False, True])
+def test_circ_taylor_branch_batch(monkeypatch, expand_crackle: bool) -> None:
+    leaves = _branch_input(expand_crackle=expand_crackle)
+    out, _ = check(
+        monkeypatch,
+        circular,
+        circular.circ_taylor_branch_batch.py_func,
+        leaves,
+        (20.0, 12.0),
+        NBINS,
+        1.0,
+        5,
+        64,
+        2.0,
+    )
+    assert len(out) > len(leaves)  # something branched, so the path did real work
+
+
+_PARAM_ARR_3 = typed.List([np.array([0.0]), np.array([0.0]), np.array([100.0])])
+_PARAM_ARR_5 = typed.List([np.array([0.0])] * 4 + [np.array([100.0])])
+BP_GENERATORS = {
+    "taylor": (
+        taylor,
+        taylor.generate_bp_poly_taylor,
+        _PARAM_ARR_3,
+        np.array([2e-4, 2.0, 0.05]),
+        {"use_cheby_coarsening": False},
+    ),
+    "chebyshev": (
+        chebyshev,
+        chebyshev.generate_bp_poly_chebyshev,
+        _PARAM_ARR_3,
+        np.array([2e-4, 2.0, 0.05]),
+        {},
+    ),
+    "circular": (
+        circular,
+        circular.generate_bp_circ_taylor,
+        _PARAM_ARR_5,
+        np.array([1e-9, 1e-6, 2e-4, 2.0, 0.05]),
+        {},
+    ),
+}
+
+
+@pytest.mark.parametrize("strategy", STRATEGIES)
+@pytest.mark.parametrize("moving", [True, False])
+@pytest.mark.parametrize("name", sorted(BP_GENERATORS))
+def test_branching_pattern_generators(
+    monkeypatch, name: str, moving: bool, strategy: str
+) -> None:
+    module, kernel, param_arr, dparams, kwargs = BP_GENERATORS[name]
+    pattern = check(
+        monkeypatch,
+        module,
+        kernel.py_func,
+        param_arr,
+        dparams,
+        10.0,  # tseg_ffa
+        16,  # nsegments
+        NBINS,
+        1.0,  # eta
+        8,  # ref_seg
+        use_moving_grid=moving,
+        tiling_strategy=strategy,
+        **kwargs,
+    )
+    assert np.isfinite(pattern).all()

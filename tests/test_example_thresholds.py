@@ -33,16 +33,6 @@ runner -- a coin flip either way. It is left out until the nesting is fixed upst
 and it is worth reporting: a public API demonstrated in a shipped example aborts the
 process on a default install.
 
-## The `schemes` import is guarded
-
-`pyloki/detection/schemes.py` imports `tkinter`, `tkinter.filedialog`,
-`tkinter.messagebox`, `tkinter.ttk` and `matplotlib.backends.backend_tkagg` at **module
-level** (lines 4, 6, 15), so the module is unimportable wherever Tk is absent -- which
-includes minimal and headless installs. The tests that need it use
-`pytest.importorskip`, so they run where Tk exists and skip cleanly where it does not,
-rather than failing. Also worth reporting: a library module should not require a GUI
-toolkit at import time.
-
 ## Sizing
 
 The notebook uses its own 127-stage branching pattern with `ntrials=2**10`. This uses a
@@ -63,7 +53,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pyloki.detection import thresholding
+from pyloki.detection import schemes, thresholding
 
 # Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
 # threshold ladder were drawn from unseeded generators inside pyloki and this file
@@ -186,15 +176,7 @@ def test_detection_probability_rises_with_injected_snr(constant_scheme) -> None:
 
 
 def test_reference_ladders_and_their_ordering(constant_scheme) -> None:
-    """`bound_scheme` vs `trials_scheme`, and that a stricter ladder detects less.
-
-    Skipped where Tk is unavailable: `pyloki.detection.schemes` imports tkinter at
-    module level (see the module docstring).
-    """
-    schemes = pytest.importorskip(
-        "pyloki.detection.schemes",
-        reason="pyloki.detection.schemes imports tkinter at module level",
-    )
+    """`bound_scheme` vs `trials_scheme`, and that a stricter ladder detects less."""
     pattern = constant_scheme["pattern"]
 
     bound = np.asarray(schemes.bound_scheme(NSTAGES, TARGET_SNR), dtype=np.float64)
@@ -204,14 +186,11 @@ def test_reference_ladders_and_their_ordering(constant_scheme) -> None:
     assert np.all(np.isfinite(bound))
     assert np.all(np.isfinite(trials))
 
-    # The notebook's combination, and what it means.
-    minimized = np.minimum(bound, trials)
-    np.testing.assert_array_equal(minimized, np.minimum(bound, trials))
-    assert np.all(minimized <= bound + 1e-12)
-    assert np.all(minimized <= trials + 1e-12)
+    # `bound` is the strict ladder and `trials` the permissive one: stage by stage,
+    # so the notebook's `np.minimum(bound, trials)` is `trials` here.
+    assert np.all(bound >= trials), f"bound={bound}\ntrials={trials}"
 
-    # `bound` is the strict ladder and `trials` the permissive one here, so `bound`
-    # must not detect more. Measured: ~0.09 against ~0.996.
+    # A stricter ladder must not detect more. Measured: ~0.09 against ~0.996.
     det_bound = detection_probability(bound, pattern, TARGET_SNR)
     det_trials = detection_probability(trials, pattern, TARGET_SNR)
     assert det_bound <= det_trials, (

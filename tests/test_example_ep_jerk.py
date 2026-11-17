@@ -56,20 +56,22 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
 import pytest
 
-from pyloki.config import ParamLimits, PulsarSearchConfig
-from pyloki.detection import thresholding
-from pyloki.ffa import DynamicProgramming
-from pyloki.periodogram import ScatteredPeriodogram
-from pyloki.prune import prune_dyp_tree
+from pyloki.config import ParamLimits
 from pyloki.simulation.pulse import PulseSignalConfig
+from tests._pipelines import (
+    EpSearch,
+    best_candidate,
+    check_candidates,
+    check_clears_final_threshold,
+    check_stage_count,
+    run_ep,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pandas as pd
 
 # --- The notebook's physical setup, unchanged -------------------------------------
 PULSAR_PERIOD = 0.007
@@ -116,9 +118,21 @@ SEED = 42
 SEED_SWEEP = (7, 11, 1, 15, 26)
 
 
+SEARCH = EpSearch(
+    nsegments=NSEGMENTS,
+    prune_poly_order=3,
+    kind="poly_taylor_moving",
+    max_sugg=MAX_SUGG,
+    ffa_levels=FFA_LEVELS,
+    nbins=NBINS,
+    eta=ETA,
+    config_kwargs={"tiling_strategy": "aggressive"},
+)
+
+
 def _run_search(seed: int, outdir: Path) -> dict:
     """Run the notebook's pipeline at one noise realisation."""
-    cfg = PulseSignalConfig(
+    signal = PulseSignalConfig(
         period=PULSAR_PERIOD,
         dt=DT,
         nsamps=NSAMPS,
@@ -127,68 +141,12 @@ def _run_search(seed: int, outdir: Path) -> dict:
         mod_kwargs={"acc": ACCEL, "jerk": JERK},
         seed=seed,
     )
-    tim_data = cfg.generate(shape="gaussian")
-
     limits = ParamLimits.from_upper(
-        FREQ_RANGE, [JERK, ACCEL], JERK_SEARCH_RANGE, cfg.tobs
+        FREQ_RANGE, [JERK, ACCEL], JERK_SEARCH_RANGE, signal.tobs
     )
-    bseg_ffa = NSAMPS // NSEGMENTS
-    search_cfg = PulsarSearchConfig(
-        nsamps=cfg.nsamps,
-        tsamp=cfg.dt,
-        nbins=NBINS,
-        eta=ETA,
-        param_limits=limits.limits,
-        bseg_brute=bseg_ffa // FFA_LEVELS,
-        bseg_ffa=bseg_ffa,
-        prune_poly_order=3,
-        ducy_max=0.5,
-        wtsp=1.2,
-        use_fourier=True,
-        tiling_strategy="aggressive",
-        branch_max=32,
-    )
-    dyp = DynamicProgramming(tim_data, search_cfg)
-    dyp.initialize()
-    dyp.execute()
-
-    branching_pattern = np.asarray(
-        search_cfg.generate_branching_pattern(
-            kind="poly_taylor_moving", ref_seg=dyp.nsegments // 2
-        ),
-        dtype=np.float64,
-    )
-    scheme = thresholding.determine_scheme(
-        1.0 / branching_pattern,
-        branching_pattern,
-        ref_ducy=DUCY,
-        nbins=NBINS,
-        ntrials=1024,
-        snr_final=SNR,
-        ducy_max=0.5,
-        wtsp=1.2,
-        seed=seed,
-    )
-    thresholds = np.asarray(scheme.thresholds, dtype=np.float64)
-
-    result_file = prune_dyp_tree(
-        dyp,
-        thresholds,
-        n_runs=1,
-        max_sugg=MAX_SUGG,
-        outdir=str(outdir),
-        file_prefix="test_jerk",
-        poly_basis="taylor",
-        n_workers=1,
-        use_moving_grid=True,
-    )
-    pgram = ScatteredPeriodogram.load(result_file)
     return {
-        "data": pgram.data,
-        "true_freq": cfg.freq,
-        "nsegments": dyp.nsegments,
-        "thresholds": thresholds,
-        "branching_pattern": branching_pattern,
+        **run_ep(signal, limits.limits, SEARCH, seed, outdir),
+        "true_freq": signal.freq,
     }
 
 
@@ -198,17 +156,12 @@ def ep_jerk_search(tmp_path_factory) -> dict:
     return _run_search(SEED, tmp_path_factory.mktemp("ep_jerk"))
 
 
-def _best(result: dict) -> pd.Series:
-    data = result["data"]
-    return data.loc[data["score"].idxmax()]
-
-
 # One source for each recovery predicate. The pinned tests and the seed sweep both
 # call these, so a sweep cannot quietly assert something weaker than the fast path.
 
 
 def _check_accel(result: dict, seed: object = SEED) -> None:
-    best = _best(result)
+    best = best_candidate(result)
     assert best["daccel"] < MAX_DACCEL_FRACTION * ACCEL, (
         f"acceleration is not actually constrained (seed={seed}): "
         f"daccel={best['daccel']:.3f} against accel={ACCEL:.1f} -- the recovery "
@@ -224,7 +177,7 @@ def _check_accel(result: dict, seed: object = SEED) -> None:
 
 
 def _check_jerk(result: dict, seed: object = SEED) -> None:
-    best = _best(result)
+    best = best_candidate(result)
     assert best["djerk"] < MAX_DJERK_FRACTION * JERK, (
         f"jerk is not actually constrained (seed={seed}): "
         f"djerk={best['djerk']:.4f} against jerk={JERK} -- the recovery check "
@@ -238,7 +191,7 @@ def _check_jerk(result: dict, seed: object = SEED) -> None:
 
 
 def _check_freq(result: dict, seed: object = SEED) -> None:
-    best = _best(result)
+    best = best_candidate(result)
     error = abs(float(best["freq"]) - result["true_freq"])
     assert error < FREQ_TOL, (
         f"frequency not recovered (seed={seed}): got {best['freq']:.10f}, "
@@ -277,15 +230,13 @@ def test_recovery_does_not_depend_on_the_noise_realisation(
 
 
 def test_pipeline_produces_candidates(ep_jerk_search) -> None:
-    data = ep_jerk_search["data"]
-    assert len(data) > 0, "no candidates survived; the search found nothing at all"
-    for column in ("jerk", "djerk", "accel", "daccel", "freq", "dfreq", "score"):
-        assert column in data.columns, f"missing column {column!r}"
+    check_candidates(
+        ep_jerk_search, ["jerk", "djerk", "accel", "daccel", "freq", "dfreq"]
+    )
 
 
 def test_stage_count_matches_configuration(ep_jerk_search) -> None:
-    assert ep_jerk_search["nsegments"] == NSEGMENTS
-    assert len(ep_jerk_search["thresholds"]) == len(ep_jerk_search["branching_pattern"])
+    check_stage_count(ep_jerk_search, NSEGMENTS)
 
 
 def test_recovers_injected_frequency(ep_jerk_search) -> None:
@@ -306,10 +257,4 @@ def test_recovers_injected_jerk(ep_jerk_search) -> None:
 
 
 def test_best_candidate_clears_the_final_threshold(ep_jerk_search) -> None:
-    data = ep_jerk_search["data"]
-    best_score = float(data["score"].max())
-    final_threshold = float(ep_jerk_search["thresholds"][-1])
-    assert best_score > final_threshold, (
-        f"best score {best_score:.3f} does not clear the final threshold "
-        f"{final_threshold:.3f}"
-    )
+    check_clears_final_threshold(ep_jerk_search)

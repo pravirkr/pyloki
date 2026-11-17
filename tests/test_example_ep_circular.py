@@ -55,12 +55,15 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from pyloki.config import ParamLimits, PulsarSearchConfig
-from pyloki.detection import thresholding
-from pyloki.ffa import DynamicProgramming
-from pyloki.periodogram import ScatteredPeriodogram
-from pyloki.prune import prune_dyp_tree
+from pyloki.config import ParamLimits
 from pyloki.simulation.pulse import PulseSignalConfig
+from tests._pipelines import (
+    EpSearch,
+    check_candidates,
+    check_clears_final_threshold,
+    check_stage_count,
+    run_ep,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -110,95 +113,47 @@ TOLERANCES = {
 }
 
 
+TOBS = NSAMPS * DT
+SEARCH = EpSearch(
+    nsegments=NSEGMENTS,
+    prune_poly_order=5,
+    kind="circ_taylor_moving",
+    max_sugg=MAX_SUGG,
+    ffa_levels=FFA_LEVELS,
+    nbins=NBINS,
+    eta=ETA,
+    branch_max=BRANCH_MAX,
+    config_kwargs={"m_p_min": M_P_MIN, "m_c_max": M_C_MAX, "p_orb_min": TOBS},
+)
+
+
 def _run_search(seed: int, outdir: Path) -> dict:
     """Run the notebook's pipeline at one noise realisation."""
-    tobs = NSAMPS * DT
-    p_orb = tobs / TOBS_OVER_PORB
-    cfg = PulseSignalConfig(
+    signal = PulseSignalConfig(
         period=PULSAR_PERIOD,
         dt=DT,
         nsamps=NSAMPS,
         snr=SNR,
         ducy=DUCY,
-        mod_kwargs={"p_orb": p_orb, "psi": PSI, "m_c": M_C},
+        mod_kwargs={"p_orb": TOBS / TOBS_OVER_PORB, "psi": PSI, "m_c": M_C},
         mod_type="circular",
         seed=seed,
     )
-    tim_data = cfg.generate(shape="gaussian")
-    # The truth is the Taylor gauge of the circular orbit, as the notebook computes it.
-    truth = cfg.mod_func.to_derivatives_gauge(cfg.freq)
-
-    # NOTE: m_p_min, not m_p -- the notebook's spelling is stale (see docstring).
     limits = ParamLimits.from_circular(
-        FREQ_RANGE, tobs, M_C_MAX, m_p_min=M_P_MIN, poly_order=5
+        FREQ_RANGE, TOBS, M_C_MAX, m_p_min=M_P_MIN, poly_order=5
     )
-    bseg_ffa = NSAMPS // NSEGMENTS
-    search_cfg = PulsarSearchConfig(
-        nsamps=cfg.nsamps,
-        tsamp=cfg.dt,
-        nbins=NBINS,
-        eta=ETA,
-        param_limits=limits.limits,
-        bseg_brute=bseg_ffa // FFA_LEVELS,
-        bseg_ffa=bseg_ffa,
-        prune_poly_order=5,
-        m_p_min=M_P_MIN,
-        m_c_max=M_C_MAX,
-        p_orb_min=tobs,
-        ducy_max=0.5,
-        wtsp=1.2,
-        use_fourier=True,
-        branch_max=BRANCH_MAX,
-    )
-    dyp = DynamicProgramming(tim_data, search_cfg)
-    dyp.initialize()
-    dyp.execute()
-
-    branching_pattern = np.asarray(
-        search_cfg.generate_branching_pattern(
-            kind="circ_taylor_moving", ref_seg=dyp.nsegments // 2
-        ),
-        dtype=np.float64,
-    )
-    scheme = thresholding.determine_scheme(
-        1.0 / branching_pattern,
-        branching_pattern,
-        ref_ducy=DUCY,
-        nbins=NBINS,
-        ntrials=1024,
-        snr_final=SNR,
-        ducy_max=0.5,
-        wtsp=1.2,
-        seed=seed,
-    )
-    thresholds = np.asarray(scheme.thresholds, dtype=np.float64)
-
-    result_file = prune_dyp_tree(
-        dyp,
-        thresholds,
-        n_runs=1,
-        max_sugg=MAX_SUGG,
-        outdir=str(outdir),
-        file_prefix="test_circular",
-        poly_basis="taylor",
-        n_workers=1,
-        use_moving_grid=True,
-    )
-    pgram = ScatteredPeriodogram.load(result_file)
-    return {
-        "data": pgram.data,
-        # to_derivatives_gauge names it "acc"; the periodogram column is "accel".
-        "truth": {
-            "crackle": float(truth["crackle"]),
-            "snap": float(truth["snap"]),
-            "jerk": float(truth["jerk"]),
-            "accel": float(truth["acc"]),
-            "freq": float(truth["freq"]),
-        },
-        "nsegments": dyp.nsegments,
-        "thresholds": thresholds,
-        "branching_pattern": branching_pattern,
+    result = run_ep(signal, limits.limits, SEARCH, seed, outdir)
+    # The truth is the Taylor gauge of the circular orbit, as the notebook computes
+    # it. `to_derivatives_gauge` names it "acc"; the periodogram column is "accel".
+    truth = signal.mod_func.to_derivatives_gauge(signal.freq)
+    result["truth"] = {
+        "crackle": float(truth["crackle"]),
+        "snap": float(truth["snap"]),
+        "jerk": float(truth["jerk"]),
+        "accel": float(truth["acc"]),
+        "freq": float(truth["freq"]),
     }
+    return result
 
 
 @pytest.fixture(scope="module")
@@ -246,18 +201,13 @@ def test_recovery_does_not_depend_on_the_noise_realisation(
 
 
 def test_pipeline_produces_candidates(ep_circular_search) -> None:
-    data = ep_circular_search["data"]
-    assert len(data) > 0, "no candidates survived; the search found nothing at all"
-    for name in TOLERANCES:
-        assert name in data.columns, f"missing column {name!r}"
-        assert f"d{name}" in data.columns, f"missing column d{name!r}"
+    check_candidates(
+        ep_circular_search, [c for name in TOLERANCES for c in (name, f"d{name}")]
+    )
 
 
 def test_stage_count_matches_configuration(ep_circular_search) -> None:
-    assert ep_circular_search["nsegments"] == NSEGMENTS
-    assert len(ep_circular_search["thresholds"]) == len(
-        ep_circular_search["branching_pattern"]
-    )
+    check_stage_count(ep_circular_search, NSEGMENTS)
 
 
 @pytest.mark.parametrize("param", list(TOLERANCES))
@@ -267,10 +217,4 @@ def test_recovers_injected_parameter(ep_circular_search, param: str) -> None:
 
 
 def test_best_candidate_clears_the_final_threshold(ep_circular_search) -> None:
-    data = ep_circular_search["data"]
-    best_score = float(data["score"].max())
-    final_threshold = float(ep_circular_search["thresholds"][-1])
-    assert best_score > final_threshold, (
-        f"best score {best_score:.3f} does not clear the final threshold "
-        f"{final_threshold:.3f}"
-    )
+    check_clears_final_threshold(ep_circular_search)

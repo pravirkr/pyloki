@@ -31,15 +31,21 @@ from pyloki.core import circular
 from pyloki.utils import psr_utils, transforms
 from pyloki.utils.misc import C_VAL
 from pyloki.utils.snail import MiddleOutScheme
+from tests._kernel_refs import (
+    CELL_DV,
+    COUNTS,
+    LIMITS,
+    NBINS,
+    T_ADD,
+    T_INIT,
+    assert_phase,
+    expected_phase,
+    grid_cell,
+    instantaneous_cell,
+)
 from tests.jit_utils import jit_variants
 
-NBINS = 64
-LIMITS = np.array([[-20.0, 20.0], [99.0, 101.0]])  # [accel, freq]
-COUNTS = np.array([16, 64])
 SIG = 2.0
-# T_ADD - T_INIT is not a whole number of cycles at f0, so a wrong proper time shows.
-T_INIT, T_ADD = 10.0, 30.0037
-CELL_DV = (2 / 64) * C_VAL / 100.0
 
 AMP, OMEGA, PHASE = 3e4, 2 * np.pi / 400.0, 0.7
 
@@ -88,20 +94,6 @@ def _hole_leaf() -> np.ndarray:
 def _taylor_leaf(vel: float = 0.0, accel: float = 5.0) -> np.ndarray:
     state = np.array([0.0, 0.0, 0.0, accel, vel, 0.0])
     return _leaf(state, np.array([1.0, 1.0, 1.0, 0.01, 10.0, 0.0]))
-
-
-def _cell(value: float, limits: np.ndarray, count: int) -> int:
-    lo, hi = limits
-    return int(np.clip(np.floor(count * (value - lo) / (hi - lo)), 0, count - 1))
-
-
-def _phase(dt: float, delay: float, f0: float) -> float:
-    return ((dt - delay) * f0) % 1 * NBINS
-
-
-def _assert_phase(got: float, expected: float) -> None:
-    diff = (got - expected + NBINS / 2) % NBINS - NBINS / 2
-    assert abs(diff) < 1e-6, (got, expected)
 
 
 class TestClassification:
@@ -179,9 +171,15 @@ class TestValidate:
 
     @pytest.mark.parametrize("impl", jit_variants(circular.circ_taylor_validate_batch))
     def test_leaf_wrapper_reads_snap_and_accel_rows(self, impl) -> None:
-        leaves = np.concatenate([_snap_leaf(), _hole_leaf(), _taylor_leaf()])
-        origins = np.array([7, 8, 9])
+        # Snap with the orbit's sign flipped is unphysical, so it must be dropped.
+        # Only the snap/accel rows (1, 3) give exactly [0, 2, 3]; reading any other
+        # row pair keeps a different set.
+        bad_sign = _snap_leaf()
+        bad_sign[0, 1, 0] *= -1
+        leaves = np.concatenate([_snap_leaf(), bad_sign, _hole_leaf(), _taylor_leaf()])
+        origins = np.array([7, 8, 9, 10])
         kept, kept_origins = impl(leaves, origins, 100.0, 1e12, 5.0)
+        np.testing.assert_array_equal(kept_origins, [7, 9, 10])
         expected = circular.circ_validate_batch(
             leaves[:, 1, 0],
             leaves[:, 1, 1],
@@ -231,9 +229,9 @@ class TestResolve:
             SIG,
         )
         state = _propagate(leaf, T_ADD - T_INIT)
-        _assert_phase(phase[0], _phase(T_ADD - T_INIT, state[-1] / C_VAL, 100.0))
-        assert idx[0, 0] == _cell(state[-3], LIMITS[0], 16)
-        assert idx[0, 1] == _cell(100.0 * (1 - state[-2] / C_VAL), LIMITS[1], 64)
+        assert_phase(phase[0], expected_phase(T_ADD - T_INIT, state[-1] / C_VAL, 100.0))
+        assert idx[0, 0] == grid_cell(state[-3], LIMITS[0], 16)
+        assert idx[0, 1] == grid_cell(100.0 * (1 - state[-2] / C_VAL), LIMITS[1], 64)
 
     def test_circular_propagator_matches_the_analytic_orbit(self) -> None:
         """Guard the reference: the propagator reproduces the orbit it models."""
@@ -268,9 +266,9 @@ class TestResolve:
         at_add = _propagate(moved, T_ADD - t_cur)
         at_init = _propagate(moved, T_INIT - t_cur)
         delay = (at_add[-1] - at_init[-1]) / C_VAL
-        _assert_phase(phase[0], _phase(T_ADD - T_INIT, delay, 100.0))
-        assert idx[0, 0] == _cell(at_add[-3], LIMITS[0], 16)
-        assert idx[0, 1] == _cell(100.0 * (1 - at_add[-2] / C_VAL), LIMITS[1], 64)
+        assert_phase(phase[0], expected_phase(T_ADD - T_INIT, delay, 100.0))
+        assert idx[0, 0] == grid_cell(at_add[-3], LIMITS[0], 16)
+        assert idx[0, 1] == grid_cell(100.0 * (1 - at_add[-2] / C_VAL), LIMITS[1], 64)
 
     @pytest.mark.parametrize("impl", jit_variants(circular.circ_taylor_resolve_batch))
     def test_moving_grid_hole_leaf_uses_the_crackle_propagator(self, impl) -> None:
@@ -288,18 +286,9 @@ class TestResolve:
         )
         at_add = _propagate(leaf, T_ADD - T_INIT)
         delay = (at_add[-1] - leaf[0, 5, 0]) / C_VAL
-        _assert_phase(phase[0], _phase(T_ADD - T_INIT, delay, 100.0))
-        assert idx[0, 0] == _cell(at_add[-3], LIMITS[0], 16)
-        assert idx[0, 1] == _cell(100.0 * (1 - at_add[-2] / C_VAL), LIMITS[1], 64)
-
-    @staticmethod
-    def _instantaneous_cell(resolve) -> tuple[int, int]:
-        eps = 1e-3
-        hi = resolve(T_ADD + eps)[1] / NBINS
-        lo = resolve(T_ADD - eps)[1] / NBINS
-        dcyc = (hi - lo + 0.5) % 1 - 0.5
-        f_inst = (dcyc + round(100.0 * 2 * eps - dcyc)) / (2 * eps)
-        return resolve(T_ADD)[0][1], _cell(f_inst, LIMITS[1], 64)
+        assert_phase(phase[0], expected_phase(T_ADD - T_INIT, delay, 100.0))
+        assert idx[0, 0] == grid_cell(at_add[-3], LIMITS[0], 16)
+        assert idx[0, 1] == grid_cell(100.0 * (1 - at_add[-2] / C_VAL), LIMITS[1], 64)
 
     @pytest.mark.parametrize(
         "impl", jit_variants(circular.circ_taylor_fixed_resolve_batch)
@@ -331,7 +320,7 @@ class TestResolve:
             )
             return idx[0], ph[0]
 
-        picked, expected = self._instantaneous_cell(resolve)
+        picked, expected = instantaneous_cell(resolve, T_ADD, 100.0)
         assert picked == expected
 
     @pytest.mark.parametrize("impl", jit_variants(circular.circ_taylor_resolve_batch))
@@ -368,7 +357,7 @@ class TestResolve:
             )
             return idx[0], ph[0]
 
-        picked, expected = self._instantaneous_cell(resolve)
+        picked, expected = instantaneous_cell(resolve, T_ADD, 100.0)
         assert picked == expected
 
     @pytest.mark.parametrize("impl", jit_variants(circular.circ_taylor_resolve_batch))
@@ -428,11 +417,11 @@ class TestResolve:
         for i in range(4):
             for s, (t_seg, _) in enumerate(segs):
                 state = _propagate(leaves[i : i + 1], t_seg - t_cur)
-                _assert_phase(
-                    phase[i, s], _phase(t_seg - t_cur, state[-1] / C_VAL, 100.0)
+                assert_phase(
+                    phase[i, s], expected_phase(t_seg - t_cur, state[-1] / C_VAL, 100.0)
                 )
-                assert idx[i, s, 0] == _cell(state[-3], LIMITS[0], 16)
-                assert idx[i, s, 1] == _cell(
+                assert idx[i, s, 0] == grid_cell(state[-3], LIMITS[0], 16)
+                assert idx[i, s, 1] == grid_cell(
                     100.0 * (1 - state[-2] / C_VAL), LIMITS[1], 64
                 )
 
@@ -584,8 +573,8 @@ class TestUnusedKernels:
         idx, phase = impl(leaf, (T_ADD, 1.0), (T_INIT, 1.0), COUNTS, LIMITS, NBINS)
         nu_new = nu + w * (T_ADD - T_INIT)
         delay = x * np.sin(nu_new) - x * np.sin(nu)
-        _assert_phase(phase[0], _phase(T_ADD - T_INIT, delay, f))
-        assert idx[0, 0] == _cell(-C_VAL * w**2 * x * np.sin(nu_new), LIMITS[0], 16)
+        assert_phase(phase[0], expected_phase(T_ADD - T_INIT, delay, f))
+        assert idx[0, 0] == grid_cell(-C_VAL * w**2 * x * np.sin(nu_new), LIMITS[0], 16)
 
     @pytest.mark.parametrize("impl", jit_variants(circular.poly_circular_resolve_batch))
     def test_physical_resolve_cell_follows_its_own_phase(self, impl) -> None:
@@ -603,7 +592,7 @@ class TestUnusedKernels:
             idx, ph = impl(leaf, (t, 1.0), (T_INIT, 1.0), COUNTS, LIMITS, NBINS)
             return idx[0], ph[0]
 
-        picked, expected = TestResolve._instantaneous_cell(resolve)  # noqa: SLF001
+        picked, expected = instantaneous_cell(resolve, T_ADD, 100.0)
         assert picked == expected
 
 

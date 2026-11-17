@@ -302,7 +302,13 @@ class TestChebyshevRouting:
 class TestCircularRouting:
     @staticmethod
     def _leaves() -> np.ndarray:
-        return _taylor_leaves(5)
+        # Leaf 0 gets a physical snap (opposite in sign to accel) at 3 sigma: snap
+        # class at the propagator significance (2), Taylor class at the validation
+        # significance (5). Resolve and transform then differ if the bundle passes
+        # the wrong one.
+        leaves = _taylor_leaves(5)
+        leaves[0, 1] = [-0.3 * np.sign(leaves[0, 3, 0]), 0.1]
+        return leaves
 
     @pytest.mark.parametrize("moving", [True, False])
     def test_resolve(self, moving: bool) -> None:
@@ -394,6 +400,11 @@ class TestCircularRouting:
         )
         assert len(strict) == 0  # the propagator's 2 sigma would reject both
 
+    def test_report_moving(self) -> None:
+        leaves = self._leaves()
+        got = _circ(moving=True).report(leaves.copy(), (T_ADD, 20.0), (T_INIT, 5.0))
+        np.testing.assert_array_equal(got, taylor.poly_taylor_report_batch(leaves))
+
     def test_report_fixed_grid_recentres(self) -> None:
         """The fixed-grid report must re-centre, as for `dyn_poly_taylor` (#34)."""
         leaves = self._leaves()
@@ -478,6 +489,8 @@ class TestAscend:
         leaves = _taylor_leaves(3)
         leaves = np.concatenate([leaves, leaves[:2]])
         dyp = rng.standard_normal((4, 4, 8, 2, NBINS)).astype(np.float32)
+        # Channel 1 is the variance: keep it positive, or every score is the sentinel.
+        dyp[..., 1, :] = np.abs(dyp[..., 1, :]) + 1.0
         idx_segments = np.array([0, 2, 3])
         coord_segments = np.array([[5.0, 5.0], [25.0, 5.0], [35.0, 5.0]])
 
@@ -520,11 +533,9 @@ class TestAscend:
             phase,
         )
         np.testing.assert_allclose(many.folds, combined, rtol=1e-6)
-        np.testing.assert_allclose(
-            many.scores,
-            scoring.snr_score_batch_func(combined, SCORE_WIDTHS),
-            rtol=1e-6,
-        )
+        expected = scoring.snr_score_batch_func(combined, SCORE_WIDTHS)
+        assert np.all(np.abs(expected) < 1e6), "scores must be real, not the sentinel"
+        np.testing.assert_allclose(many.scores, expected, rtol=1e-6)
 
 
 class TestFFARouting:

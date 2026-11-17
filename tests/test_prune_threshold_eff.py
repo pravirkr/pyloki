@@ -25,65 +25,42 @@ import h5py
 import numpy as np
 import pytest
 
-from pyloki.config import ParamLimits, PulsarSearchConfig
-from pyloki.detection import thresholding
-from pyloki.ffa import DynamicProgramming
+from pyloki.config import ParamLimits
 from pyloki.io.cands import PruneStats, PruneStatsCollection
 from pyloki.periodogram import PruningStatsPlotter
 from pyloki.prune import prune_dyp_tree
 from pyloki.simulation.pulse import PulseSignalConfig
+from tests._pipelines import EpSearch, build_ep
 
 NSAMPS, NSEGMENTS, FFA_LEVELS, NBINS, SNR, DUCY = 2**21, 8, 16, 64, 20.0, 0.1
+SEED = 42
 
 LINE = re.compile(r"score thresh:\s*([-\d.]+), eff:\s*([-\d.naN]+)")
 
 
 def build():
-    cfg = PulseSignalConfig(
+    signal = PulseSignalConfig(
         period=0.007,
         dt=64e-6,
         nsamps=NSAMPS,
         snr=SNR,
         ducy=DUCY,
         mod_kwargs={"acc": 1500.0},
+        seed=SEED,
     )
-    tim = cfg.generate(shape="gaussian")
     limits = ParamLimits.from_upper(
-        (140.0, 150.0), [1500.0], (-2500.0, 2500.0), cfg.tobs
+        (140.0, 150.0), [1500.0], (-2500.0, 2500.0), signal.tobs
     )
-    bseg_ffa = NSAMPS // NSEGMENTS
-    scfg = PulsarSearchConfig(
-        nsamps=cfg.nsamps,
-        tsamp=cfg.dt,
-        nbins=NBINS,
-        eta=1,
-        param_limits=limits.limits,
-        bseg_brute=bseg_ffa // FFA_LEVELS,
-        bseg_ffa=bseg_ffa,
+    search = EpSearch(
+        nsegments=NSEGMENTS,
         prune_poly_order=2,
-        ducy_max=0.5,
-        wtsp=1.2,
-        use_fourier=True,
-        branch_max=32,
-    )
-    dyp = DynamicProgramming(tim, scfg)
-    dyp.initialize()
-    dyp.execute()
-    bp = np.asarray(
-        scfg.generate_branching_pattern(kind="poly_taylor_moving", ref_seg=0),
-        dtype=np.float64,
-    )
-    scheme = thresholding.determine_scheme(
-        1.0 / bp,
-        bp,
-        ref_ducy=DUCY,
+        kind="poly_taylor_moving",
+        max_sugg=0,  # each test prunes with its own buffer size
+        ffa_levels=FFA_LEVELS,
         nbins=NBINS,
-        ntrials=1024,
-        snr_final=SNR,
-        ducy_max=0.5,
-        wtsp=1.2,
     )
-    return dyp, np.asarray(scheme.thresholds, dtype=np.float64)
+    dyp, thresholds, _ = build_ep(signal, limits.limits, search, SEED)
+    return dyp, thresholds
 
 
 def run(dyp, thresholds, max_sugg: int) -> tuple[list[tuple[float, float]], np.ndarray]:

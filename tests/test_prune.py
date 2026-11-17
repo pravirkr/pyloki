@@ -10,13 +10,11 @@ by running it: if the boxing regresses, the test crashes the worker instead of
 silently passing.
 """
 
-import tempfile
-
+import h5py
 import numpy as np
 import pytest
 
 from pyloki.config import ParamLimits, PulsarSearchConfig
-from pyloki.detection import thresholding
 from pyloki.ffa import DynamicProgramming
 from pyloki.prune import Pruning, prune_dyp_tree
 from pyloki.simulation.pulse import PulseSignalConfig
@@ -66,36 +64,39 @@ def small_search():
     return dyp, search_cfg, nbins
 
 
-def test_prune_dyp_tree_completes(small_search) -> None:
-    dyp, search_cfg, nbins = small_search
+def test_prune_dyp_tree_writes_its_run(small_search, tmp_path) -> None:
+    dyp, search_cfg, _ = small_search
+    ref_seg = dyp.nsegments // 2
     branching_pattern = search_cfg.generate_branching_pattern(
-        kind="poly_taylor_moving", ref_seg=dyp.nsegments // 2
+        kind="poly_taylor_moving", ref_seg=ref_seg
     )
     thresholds = np.linspace(1.5, 6.0, len(branching_pattern))
-    thresholding.evaluate_scheme(
+    result_file = prune_dyp_tree(
+        dyp,
         thresholds,
-        branching_pattern,
-        ref_ducy=0.1,
-        nbins=nbins,
-        ntrials=256,
-        snr_final=9.0,
-        ducy_max=0.5,
-        wtsp=1.2,
-        seed=SEED,
+        n_runs=1,
+        max_sugg=2**12,
+        outdir=tmp_path,
+        file_prefix="smoke",
+        poly_basis="taylor",
+        n_workers=1,
+        use_moving_grid=True,
     )
-    with tempfile.TemporaryDirectory() as tmpdir:
-        result_file = prune_dyp_tree(
-            dyp,
-            thresholds,
-            n_runs=1,
-            max_sugg=2**12,
-            outdir=tmpdir,
-            file_prefix="smoke",
-            poly_basis="taylor",
-            n_workers=1,
-            use_moving_grid=True,
-        )
-        assert result_file is not None
+    with h5py.File(result_file, "r") as h5:
+        assert h5.attrs["nsegments"] == dyp.nsegments
+        assert h5.attrs["max_sugg"] == 2**12
+        assert list(h5["runs"]) == [f"{ref_seg:03d}_00"]
+        run = h5["runs"][f"{ref_seg:03d}_00"]
+        level_stats = run["level_stats"][()]
+        scores = run["scores"][()]
+        param_sets = run["param_sets"][()]
+    # One stats row per segment, and every segment is visited exactly once.
+    assert len(level_stats) == dyp.nsegments
+    assert sorted(level_stats["seg_idx"]) == list(range(dyp.nsegments))
+    # The injected signal survives, and every survivor clears the final threshold.
+    assert len(scores) == len(param_sets) > 0
+    assert np.all(np.isfinite(scores))
+    assert np.all(scores >= thresholds[-1])
 
 
 def test_pruning_execute_without_task_id(small_search, tmp_path) -> None:

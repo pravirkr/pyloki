@@ -37,11 +37,19 @@ from numpy import polynomial
 from pyloki.core import taylor
 from pyloki.utils import psr_utils, transforms
 from pyloki.utils.misc import C_VAL
+from tests._kernel_refs import (
+    CELL_DV,
+    COUNTS,
+    LIMITS,
+    NBINS,
+    T_ADD,
+    T_INIT,
+    assert_phase,
+    expected_phase,
+    grid_cell,
+    instantaneous_cell,
+)
 from tests.jit_utils import jit_variants
-
-NBINS = 64
-LIMITS = np.array([[-20.0, 20.0], [99.0, 101.0]])  # [accel, freq]
-COUNTS = np.array([16, 64])
 
 
 def _leaf(jerk: float, accel: float, vel: float, pos: float, f0: float) -> np.ndarray:
@@ -60,21 +68,6 @@ def _shifted(coeffs: np.ndarray, t_ref: float) -> polynomial.Polynomial:
     for j, c in enumerate(coeffs):
         out = out + c * base**j
     return out
-
-
-def _cell(value: float, limits: np.ndarray, count: int) -> int:
-    lo, hi = limits
-    return int(np.clip(np.floor(count * (value - lo) / (hi - lo)), 0, count - 1))
-
-
-def _phase(dt: float, delay: float, f0: float) -> float:
-    return ((dt - delay) * f0) % 1 * NBINS
-
-
-def _assert_phase(got: float, expected: float) -> None:
-    """Compare phases on the circle of NBINS bins (63.999... and 0 are equal)."""
-    diff = (got - expected + NBINS / 2) % NBINS - NBINS / 2
-    assert abs(diff) < 1e-6, (got, expected)
 
 
 class TestSeed:
@@ -99,9 +92,6 @@ class TestSeed:
 
 
 class TestResolve:
-    # T_ADD - T_INIT is not a whole number of cycles at f0: a wrong proper time shows.
-    T_INIT, T_ADD = 10.0, 30.0037
-
     @pytest.mark.parametrize(
         "impl", jit_variants(taylor.poly_taylor_fixed_resolve_batch)
     )
@@ -110,19 +100,19 @@ class TestResolve:
         leaf = _leaf(2e-3, 5.0, vel, 0.0, 100.0)
         idx, phase = impl(
             leaf,
-            (self.T_ADD, 1.0),
-            (self.T_INIT, 1.0),
+            (T_ADD, 1.0),
+            (T_INIT, 1.0),
             COUNTS,
             LIMITS,
             NBINS,
         )
-        p = _shifted(leaf[0, :4, 0][::-1] / [1, 1, 2, 6], self.T_INIT)
-        accel = p.deriv(2)(self.T_ADD)
-        freq = 100.0 * (1 - p.deriv(1)(self.T_ADD) / C_VAL)
-        delay = p(self.T_ADD) / C_VAL
-        _assert_phase(phase[0], _phase(self.T_ADD - self.T_INIT, delay, 100.0))
-        assert idx[0, 0] == _cell(accel, LIMITS[0], 16)
-        assert idx[0, 1] == _cell(freq, LIMITS[1], 64)
+        p = _shifted(leaf[0, :4, 0][::-1] / [1, 1, 2, 6], T_INIT)
+        accel = p.deriv(2)(T_ADD)
+        freq = 100.0 * (1 - p.deriv(1)(T_ADD) / C_VAL)
+        delay = p(T_ADD) / C_VAL
+        assert_phase(phase[0], expected_phase(T_ADD - T_INIT, delay, 100.0))
+        assert idx[0, 0] == grid_cell(accel, LIMITS[0], 16)
+        assert idx[0, 1] == grid_cell(freq, LIMITS[1], 64)
 
     @pytest.mark.parametrize("impl", jit_variants(taylor.poly_taylor_resolve_batch))
     # Non-round times, so that no interval is a whole number of cycles at f0.
@@ -135,7 +125,7 @@ class TestResolve:
         the moving- and fixed-grid frequency conventions agree (module docstring).
         """
         jerk, accel_init = 2e-3, 5.0
-        dt = t_cur - self.T_INIT
+        dt = t_cur - T_INIT
         # Taylor state at t_cur of a trajectory with v(t_init) = 0, x(t_init) = x_init.
         vel_cur = accel_init * dt + jerk * dt**2 / 2
         pos_cur = x_init + accel_init * dt**2 / 2 + jerk * dt**3 / 6
@@ -143,20 +133,20 @@ class TestResolve:
         leaf = _leaf(jerk, accel_cur, vel_cur, pos_cur, 100.0)
         idx, phase = impl(
             leaf,
-            (self.T_ADD, 1.0),
+            (T_ADD, 1.0),
             (t_cur, 1.0),
-            (self.T_INIT, 1.0),
+            (T_INIT, 1.0),
             COUNTS,
             LIMITS,
             NBINS,
         )
         p = _shifted(leaf[0, :4, 0][::-1] / [1, 1, 2, 6], t_cur)
-        assert p.deriv(1)(self.T_INIT) == pytest.approx(0.0, abs=1e-9)
-        delay = (p(self.T_ADD) - p(self.T_INIT)) / C_VAL
-        freq = 100.0 * (1 - p.deriv(1)(self.T_ADD) / C_VAL)
-        _assert_phase(phase[0], _phase(self.T_ADD - self.T_INIT, delay, 100.0))
-        assert idx[0, 0] == _cell(p.deriv(2)(self.T_ADD), LIMITS[0], 16)
-        assert idx[0, 1] == _cell(freq, LIMITS[1], 64)
+        assert p.deriv(1)(T_INIT) == pytest.approx(0.0, abs=1e-9)
+        delay = (p(T_ADD) - p(T_INIT)) / C_VAL
+        freq = 100.0 * (1 - p.deriv(1)(T_ADD) / C_VAL)
+        assert_phase(phase[0], expected_phase(T_ADD - T_INIT, delay, 100.0))
+        assert idx[0, 0] == grid_cell(p.deriv(2)(T_ADD), LIMITS[0], 16)
+        assert idx[0, 1] == grid_cell(freq, LIMITS[1], 64)
 
     @pytest.mark.parametrize("impl", jit_variants(taylor.poly_taylor_resolve_batch))
     @pytest.mark.parametrize("vel", [-4.6e4, 3e4])
@@ -165,30 +155,17 @@ class TestResolve:
         leaf = _leaf(0.0, 5.0, vel, 0.0, 100.0)
         _, phase = impl(
             leaf,
-            (self.T_ADD, 1.0),
-            (self.T_INIT, 1.0),
-            (self.T_INIT, 1.0),
+            (T_ADD, 1.0),
+            (T_INIT, 1.0),
+            (T_INIT, 1.0),
             COUNTS,
             LIMITS,
             NBINS,
         )
-        p = _shifted(leaf[0, :4, 0][::-1] / [1, 1, 2, 6], self.T_INIT)
-        delay = (p(self.T_ADD) - p(self.T_INIT)) / C_VAL
-        _assert_phase(phase[0], _phase(self.T_ADD - self.T_INIT, delay, 100.0))
+        p = _shifted(leaf[0, :4, 0][::-1] / [1, 1, 2, 6], T_INIT)
+        delay = (p(T_ADD) - p(T_INIT)) / C_VAL
+        assert_phase(phase[0], expected_phase(T_ADD - T_INIT, delay, 100.0))
 
-    @staticmethod
-    def _instantaneous_cell(resolve, leaf: np.ndarray, t_add: float) -> tuple[int, int]:
-        """Return (picked freq cell, cell of the derivative of the returned phase)."""
-        eps, f0 = 1e-3, leaf[0, -1, 0]
-        hi = resolve(leaf, t_add + eps)[1] / NBINS
-        lo = resolve(leaf, t_add - eps)[1] / NBINS
-        dcyc = (hi - lo + 0.5) % 1 - 0.5
-        f_inst = (dcyc + round(f0 * 2 * eps - dcyc)) / (2 * eps)
-        return resolve(leaf, t_add)[0][1], _cell(f_inst, LIMITS[1], 64)
-
-    # A leaf's velocity at t_init is its frequency offset: dv = (c / f0) df. One cell of
-    # this grid (2/64 Hz at 100 Hz) is about 9.4e4 m/s.
-    CELL_DV = (2 / 64) * C_VAL / 100.0
     OFFSETS = (-0.5, -0.25, 0.0, 0.25, 0.5)
 
     @pytest.mark.parametrize(
@@ -196,39 +173,42 @@ class TestResolve:
     )
     @pytest.mark.parametrize("frac", OFFSETS)
     def test_fixed_grid_cell_follows_its_own_phase(self, impl, frac: float) -> None:
-        leaf = _leaf(0.0, 5.0, frac * self.CELL_DV, 0.0, 100.0)
+        leaf = _leaf(0.0, 5.0, frac * CELL_DV, 0.0, 100.0)
 
         def resolve(lf: np.ndarray, t: float) -> tuple[np.ndarray, float]:
-            idx, ph = impl(lf, (t, 1.0), (self.T_INIT, 1.0), COUNTS, LIMITS, NBINS)
+            idx, ph = impl(lf, (t, 1.0), (T_INIT, 1.0), COUNTS, LIMITS, NBINS)
             return idx[0], ph[0]
 
-        picked, expected = self._instantaneous_cell(resolve, leaf, self.T_ADD)
+        picked, expected = instantaneous_cell(lambda t: resolve(leaf, t), T_ADD, 100.0)
         assert picked == expected
 
     @pytest.mark.parametrize("impl", jit_variants(taylor.poly_taylor_resolve_batch))
+    @pytest.mark.parametrize("t_cur", [T_INIT, 18.3719])
     @pytest.mark.parametrize("frac", OFFSETS)
-    def test_moving_grid_cell_follows_its_own_phase(self, impl, frac: float) -> None:
+    def test_moving_grid_cell_follows_its_own_phase(
+        self, impl, t_cur: float, frac: float
+    ) -> None:
         """The moving-grid resolver picks the cell of its own phase's derivative (#30).
 
-        Before #30 was fixed, it computed ``f0 (1 - (v(t_add) - v(t_init)) / c)`` while
-        its phase kept ``v(t_init)`` through the delay, so at ``v(t_init) = -0.5`` cell
-        it picked cell 31 when the derivative of its phase lay in cell 32.
+        The leaf is the trajectory ``x = v dt + a dt^2 / 2`` about t_init, expressed
+        at t_cur, with ``v`` a fraction of a frequency cell.
         """
-        leaf = _leaf(0.0, 5.0, frac * self.CELL_DV, 0.0, 100.0)
+        accel, vel, dt = 5.0, frac * CELL_DV, t_cur - T_INIT
+        leaf = _leaf(0.0, accel, vel + accel * dt, vel * dt + accel * dt**2 / 2, 100.0)
 
-        def resolve(lf: np.ndarray, t: float) -> tuple[np.ndarray, float]:
+        def resolve(t: float) -> tuple[np.ndarray, float]:
             idx, ph = impl(
-                lf,
+                leaf,
                 (t, 1.0),
-                (self.T_INIT, 1.0),
-                (self.T_INIT, 1.0),
+                (t_cur, 1.0),
+                (T_INIT, 1.0),
                 COUNTS,
                 LIMITS,
                 NBINS,
             )
             return idx[0], ph[0]
 
-        picked, expected = self._instantaneous_cell(resolve, leaf, self.T_ADD)
+        picked, expected = instantaneous_cell(resolve, T_ADD, 100.0)
         assert picked == expected
 
     @pytest.mark.parametrize(
@@ -249,10 +229,10 @@ class TestResolve:
             f0 = leaf[i, -1, 0]
             for s, (t_seg, _) in enumerate(seg_times):
                 delay = p(t_seg) / C_VAL
-                _assert_phase(phase[i, s], _phase(t_seg - t_cur, delay, f0))
+                assert_phase(phase[i, s], expected_phase(t_seg - t_cur, delay, f0))
                 freq = f0 * (1 - p.deriv(1)(t_seg) / C_VAL)
-                assert idx[i, s, 0] == _cell(p.deriv(2)(t_seg), LIMITS[0], 16)
-                assert idx[i, s, 1] == _cell(freq, LIMITS[1], 64)
+                assert idx[i, s, 0] == grid_cell(p.deriv(2)(t_seg), LIMITS[0], 16)
+                assert idx[i, s, 1] == grid_cell(freq, LIMITS[1], 64)
 
 
 class TestBranch:
