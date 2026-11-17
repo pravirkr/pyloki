@@ -355,6 +355,7 @@ class TestChebyshevTransform:
 # fixed and tested in #21.
 #
 
+
 class TestFactKernel:
     @pytest.mark.parametrize("impl", jit_variants(maths.fact))
     @pytest.mark.parametrize("n", range(21))
