@@ -333,7 +333,7 @@ def circ_taylor_branch_batch(
     # If no expansion needed, return early (fast path)
     if n_crackle_expand == 0:
         total_leaves = n_keep
-        leaves_final = np.empty((total_leaves, poly_order + 2, 2), dtype=np.float64)
+        leaves_final = np.zeros((total_leaves, poly_order + 2, 2), dtype=np.float64)
         leaves_final[:, :-2, 0] = leaf_params_branch_cart
         leaves_final[:, :-2, 1] = leaves_branched_dparams
         leaves_final[:, -2, 0] = d0_cur_batch[batch_origins]
@@ -362,7 +362,7 @@ def circ_taylor_branch_batch(
     # Construct Final Array
     total_crackle_branches = np.sum(crackle_branched_counts)
     total_leaves = n_keep + total_crackle_branches
-    leaves_final = np.empty((total_leaves, poly_order + 2, 2), dtype=np.float64)
+    leaves_final = np.zeros((total_leaves, poly_order + 2, 2), dtype=np.float64)
     origins_final = np.empty(total_leaves, dtype=np.int64)
 
     if n_keep > 0:
@@ -510,7 +510,7 @@ def circ_taylor_resolve_batch(
         leaves_batch[idx_taylor, -1, 1] = 0
 
     accel_new_batch = dvec_t_add[:, -3]
-    vel_new_batch = dvec_t_add[:, -2] - dvec_t_init[:, -2]
+    vel_new_batch = dvec_t_add[:, -2]
     freq_new_batch = f0_batch * (1 - vel_new_batch / C_VAL)
     delay_batch = (dvec_t_add[:, -1] - dvec_t_init[:, -1]) / C_VAL
     relative_phase_batch = psr_utils.get_phase_idx(
@@ -674,7 +674,7 @@ def circ_taylor_transform_batch(
     tiling_strategy: str,
     propagator_significance: float,
 ) -> np.ndarray:
-    """Re-center (in-place) the leaves to the next segment reference time."""
+    """Return the leaves re-centred to the next segment reference time (a copy)."""
     idx_circ_snap, idx_circ_crackle, idx_taylor = get_circ_taylor_mask(
         leaves_batch,
         propagator_significance=propagator_significance,
@@ -928,7 +928,7 @@ def generate_bp_circ_taylor(
 
     dparam_cur_batch = np.empty((n_freqs, n_params), dtype=np.float64)
     dparam_cur_next = np.empty((n_freqs, n_params), dtype=np.float64)
-    dparam_d_vec = np.empty((n_freqs, n_params + 1), dtype=np.float64)
+    dparam_d_vec = np.zeros((n_freqs, n_params + 1), dtype=np.float64)
     for i in range(n_freqs):
         dparam_cur_batch[i, :n_params] = dparams_act
     # f = f0(1 - v / C) => dv = -(C/f0) * df
@@ -967,6 +967,8 @@ def generate_bp_circ_taylor(
         n_branches = np.ones(n_freqs, dtype=np.float64)
 
         for i in range(n_freqs):
+            # Crackle is not branched here; carry its error like an unbranched param.
+            dparam_cur_next[i, 0] = dparam_cur_batch[i, 0]
             for j in range(1, n_params):
                 if shift_bins_batch[i, j] < (eta - FLOAT_EPSILON):
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]

@@ -213,6 +213,7 @@ class PruneStatsCollection:
                 ("level", np.int32),
                 ("seg_idx", np.int32),
                 ("threshold", np.float32),
+                ("threshold_eff", np.float32),
                 ("score_min", np.float32),
                 ("score_max", np.float32),
                 ("n_branches", np.int32),
@@ -227,6 +228,7 @@ class PruneStatsCollection:
                 stats.level,
                 stats.seg_idx,
                 stats.threshold,
+                stats.threshold_eff,
                 stats.score_min,
                 stats.score_max,
                 stats.n_branches,
@@ -257,13 +259,22 @@ class PruneStatsCollection:
         level_stats: np.ndarray,
         timer_stats: np.ndarray,
     ) -> PruneStatsCollection:
-        """Create PruneStatsCollection from numpy arrays."""
+        """Create PruneStatsCollection from numpy arrays.
+
+        Fields are read by name, so extra level fields (LOKI's files carry more) are
+        ignored. Files written before `threshold_eff` was saved have no such field;
+        it is restored as NaN. Timers are read by name over 0.0 defaults: a timer the
+        file lacks stays 0.0, and one pyloki does not track is kept (but `to_array`
+        writes only `TIMER_NAMES`).
+        """
         collection = cls()
+        has_eff = "threshold_eff" in (level_stats.dtype.names or ())
         for row in level_stats:
             stats = PruneStats(
                 level=int(row["level"]),
                 seg_idx=int(row["seg_idx"]),
                 threshold=float(row["threshold"]),
+                threshold_eff=float(row["threshold_eff"]) if has_eff else float("nan"),
                 score_min=float(row["score_min"]),
                 score_max=float(row["score_max"]),
                 n_branches=int(row["n_branches"]),
@@ -273,8 +284,10 @@ class PruneStatsCollection:
             )
             collection.stats_list.append(stats)
 
-        # Reconstruct timers
-        for name in cls.TIMER_NAMES:
+        # Reconstruct timers by name over the 0.0 defaults: a stage the file has no
+        # timer for (LOKI writes no `batch_add`) took no time, and a timer pyloki does
+        # not track (LOKI's `rfi`) is kept, so the summaries still add up.
+        for name in timer_stats.dtype.names or ():
             collection.timers[name] = float(timer_stats[0][name])
 
         return collection
@@ -372,6 +385,7 @@ def merge_prune_result_files(
     results_dir: str | Path,
     log_file: Path,
     result_file: Path,
+    temp_files: list[tuple[Path, Path]] | None = None,
 ) -> None:
     """Merge temporary HDF5 and log files into result files.
 
@@ -388,14 +402,23 @@ def merge_prune_result_files(
         Path to the log file to be merged.
     result_file : Path
         Path to the final result file.
+    temp_files : list[tuple[Path, Path]] | None, optional
+        The (log, result) temporaries to merge, in order. Pass the files this call
+        wrote: without it, every ``tmp_*`` file in `results_dir` is merged, including
+        another search's that shares the directory. A missing file is skipped (a
+        worker that failed may have written none).
 
     """
-    temp_log_files = list(Path(results_dir).glob("tmp_*_log.txt"))
-    temp_h5_files = list(Path(results_dir).glob("tmp_*_results.h5"))
+    if temp_files is not None:
+        temp_log_files = [log for log, _ in temp_files if log.exists()]
+        temp_h5_files = [h5 for _, h5 in temp_files if h5.exists()]
+    else:
+        temp_log_files = list(Path(results_dir).glob("tmp_*_log.txt"))
+        temp_h5_files = list(Path(results_dir).glob("tmp_*_results.h5"))
 
-    # Sort files by ref_seg
-    temp_log_files.sort(key=extract_ref_seg)
-    temp_h5_files.sort(key=extract_ref_seg)
+        # Sort files by ref_seg
+        temp_log_files.sort(key=extract_ref_seg)
+        temp_h5_files.sort(key=extract_ref_seg)
 
     with log_file.open("a") as main_log:
         for temp_log in temp_log_files:

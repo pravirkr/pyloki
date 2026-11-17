@@ -193,9 +193,7 @@ def _run_case(case: FfaCase, seed: int) -> dict:
             wtsp=case.wtsp,
             use_fourier=use_fourier,
         )
-        _dyp, pgram = ffa_search(
-            tim_data, search_cfg, quiet=True, show_progress=False
-        )
+        _dyp, pgram = ffa_search(tim_data, search_cfg, quiet=True, show_progress=False)
         results[use_fourier] = pgram
     return {"case": case, "truth": truth, "pgrams": results, "seed": seed}
 
@@ -213,9 +211,7 @@ def _index_offsets(pgram, truth: dict[str, float]) -> dict[str, int]:
     for dim, idx in zip(pgram.data.dims, best_indices, strict=False):
         name = str(dim)
         if name in truth:
-            true_idx = np_utils.find_nearest_sorted_idx(
-                pgram.params[name], truth[name]
-            )
+            true_idx = np_utils.find_nearest_sorted_idx(pgram.params[name], truth[name])
             offsets[name] = int(idx) - int(true_idx)
     return offsets
 

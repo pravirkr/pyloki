@@ -240,7 +240,7 @@ def poly_chebyshev_resolve_batch(
         t0_init,
     )
     accel_new_batch = dvec_t_add[:, -3]
-    vel_new_batch = dvec_t_add[:, -2] - dvec_t_init[:, -2]
+    vel_new_batch = dvec_t_add[:, -2]
     freq_new_batch = f0_batch * (1 - vel_new_batch / C_VAL)
     delay_batch = (dvec_t_add[:, -1] - dvec_t_init[:, -1]) / C_VAL
     relative_phase_batch = psr_utils.get_phase_idx(
@@ -519,6 +519,8 @@ def generate_bp_poly_chebyshev(
         n_branches = np.ones(n_freqs, dtype=np.int64)
 
         for i in range(n_freqs):
+            # The alpha_0 error is not branched; carry it with the others.
+            dparam_cur_next[i, n_params] = dparam_cur_batch[i, n_params]
             for j in range(n_params):
                 if shift_bins_batch[i, j] < (eta - FLOAT_EPSILON):
                     dparam_cur_next[i, j] = dparam_cur_batch[i, j]

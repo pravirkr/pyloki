@@ -52,7 +52,7 @@ class Periodogram:
 
     def find_best_indices(self) -> tuple[int, ...]:
         flat_index = np.argmax(self.data.values)
-        return np.unravel_index(int(flat_index), self.data.shape)  # ty:ignore[invalid-return-type]
+        return np.unravel_index(int(flat_index), self.data.shape)  # ty:ignore[invalid-explicit-return]
 
     def find_best_params(self) -> dict[str, float]:
         best_snr = self.data.max().item()
@@ -674,6 +674,7 @@ class ScatteredPeriodogram:
 
 @attrs.define(auto_attribs=True, kw_only=True)
 class PruningStatsPlotter:
+    REQUIRED_FIELDS: ClassVar[frozenset[str]] = frozenset({"level", "n_leaves_surv"})
     data: pd.DataFrame = attrs.field(init=False, factory=pd.DataFrame)
 
     @property
@@ -688,15 +689,20 @@ class PruningStatsPlotter:
         Parameters
         ----------
         level_stats : np.ndarray
-            Level statistics (n_levels, 9).
+            Level statistics, one structured record per level. Fields are read by
+            name: `level` and `n_leaves_surv` are required, and any others are kept
+            as columns. This covers pyloki's own files (10 fields, or 9 before
+            `threshold_eff` was saved) and LOKI's, which carry more.
         run_id : str
             Unique Identifier for the specific run being added.
         """
         if not isinstance(level_stats, np.ndarray):
             msg = "level_stats should be a numpy array"
             raise TypeError(msg)
-        if level_stats.dtype.names is None or len(level_stats.dtype.names) != 9:
-            msg = "level_stats should have 9 fields"
+        names = level_stats.dtype.names
+        missing = sorted(self.REQUIRED_FIELDS - set(names or ()))
+        if missing:
+            msg = f"level_stats is missing required fields: {missing}"
             raise ValueError(msg)
         run_df = pd.DataFrame.from_records(level_stats)
         run_df["run_id"] = run_id
@@ -760,6 +766,7 @@ class PruningStatsPlotter:
                 raise ValueError(msg)
             pstats = cls()
             for run_id_str, run_group in f["runs"].items():
-                level_stats = run_group["level_stats"][:]
-                pstats.add_run(level_stats, run_id_str)
+                if "level_stats" not in run_group:  # LOKI omits them for empty runs
+                    continue
+                pstats.add_run(run_group["level_stats"][:], run_id_str)
         return pstats

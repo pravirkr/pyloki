@@ -165,7 +165,7 @@ def get_shifted_snr(
 
 def get_best_snr(fold: np.ndarray, ducy_max: float, wtsp: float) -> float:
     widths = scoring.generate_box_width_trials(len(fold), ducy_max=ducy_max, wtsp=wtsp)
-    return scoring.boxcar_snr_1d(fold, widths, 1.0).max()
+    return float(scoring.boxcar_snr_1d(fold, widths, 1.0).max())
 
 
 class TestFFASensitivity:

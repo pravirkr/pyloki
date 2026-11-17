@@ -285,9 +285,7 @@ def test_pipeline_produces_candidates(ep_jerk_search) -> None:
 
 def test_stage_count_matches_configuration(ep_jerk_search) -> None:
     assert ep_jerk_search["nsegments"] == NSEGMENTS
-    assert len(ep_jerk_search["thresholds"]) == len(
-        ep_jerk_search["branching_pattern"]
-    )
+    assert len(ep_jerk_search["thresholds"]) == len(ep_jerk_search["branching_pattern"])
 
 
 def test_recovers_injected_frequency(ep_jerk_search) -> None:

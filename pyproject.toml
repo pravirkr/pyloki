@@ -1,11 +1,11 @@
 [build-system]
-requires = ["uv_build>=0.12.3,<0.13"]
+requires = ["uv_build>=0.12.24,<0.14"]
 build-backend = "uv_build"
 
 [project]
 name = "pyloki"
 version = "0.8.0"
-description = "Detecting Pulsars"
+description = "Fast Folding Algorithm and pruned tree-search for detecting isolated and binary pulsars"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -14,6 +14,13 @@ authors = [
     { name = "Barak Zackay" },
 ]
 requires-python = ">=3.12"
+keywords = [
+    "pulsar",
+    "astronomy",
+    "radio-astronomy",
+    "fast-folding-algorithm",
+    "astrophysics",
+]
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
@@ -32,6 +39,7 @@ dependencies = [
     "astropy",
     "attrs",
     "h5py",
+    "llvmlite",
     "matplotlib",
     "pandas",
     "rich",
@@ -40,13 +48,16 @@ dependencies = [
     "scipy",
     "seaborn",
     "xarray",
-    "sigpyproc @ git+https://github.com/FRBs/sigpyproc3.git",
+    "sigpyproc>=2.0",
 ]
 
 [project.urls]
+Homepage = "https://github.com/pravirkr/pyloki"
 Repository = "https://github.com/pravirkr/pyloki"
+Issues = "https://github.com/pravirkr/pyloki/issues"
+"LOKI (C++/CUDA)" = "https://github.com/pravirkr/loki"
 
-[project.optional-dependencies]
+[dependency-groups]
 tests = [
     "pytest>=9.0",
     "pytest-cov",
@@ -56,7 +67,7 @@ tests = [
     "pytest-mock",
     "sympy",
 ]
-dev = ["ruff", "ty"]
+dev = ["pre-commit", "ruff", "ty"]
 docs = [
     "sphinx",
     "sphinx-book-theme",
@@ -68,6 +79,13 @@ docs = [
     "sphinx-design",
 ]
 
+[tool.uv]
+default-groups = ["dev", "tests"]
+
+[tool.uv.build-backend]
+source-exclude = ["**/.DS_Store"]
+wheel-exclude = ["**/.DS_Store"]
+
 [project.scripts]
 pyloki_viewer = "pyloki.apps.pyloki_viewer:main"
 
@@ -76,6 +94,7 @@ include = [
     "pyproject.toml",
     "src/**/*.py",
     "tests/**/*.py",
+    "scripts/**/*.py",
     "examples/**/*.ipynb",
 ]
 line-length = 88
@@ -99,12 +118,15 @@ ignore = [
     "FBT002",
     "TD",
     "FIX",
+    "COM812",
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "src/pyloki/**/*.py" = ["E402"]
 "src/pyloki/dynamic/**/*.py" = ["ARG001", "ARG002"]
+"tests/**/*.py" = ["ANN", "S101"]
 "examples/**/*.ipynb" = ["T201"]
+"scripts/**/*.py" = ["INP001", "T201"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 20
@@ -125,12 +147,12 @@ python-version = "3.12"
 
 [tool.ty.src]
 include = ["src"]
-exclude = ["src/pyloki/main.py", "tests", "docs"]
+exclude = ["tests", "docs"]
 
 [tool.ty.rules]
 index-out-of-bounds = "ignore"
-unresolved-import = "ignore"
-not-iterable = "ignore"        # For Numba prange
+import-not-found = "ignore"
+not-iterable = "ignore"     # For Numba prange
 
 [tool.ty.analysis]
 replace-imports-with-any = ["astropy.**"]
@@ -145,8 +167,8 @@ include = [
 
 [tool.ty.overrides.rules]
 invalid-assignment = "ignore"
-invalid-return-type = "ignore"
-unresolved-attribute = "ignore"
+invalid-explicit-return = "ignore"
+missing-attribute = "ignore"
 
 
 [tool.pytest.ini_options]
@@ -157,10 +179,8 @@ markers = [
     "slow: repeats a full search pipeline per noise realisation; needs --runslow",
 ]
 
-[tool.coverage.paths]
-source = ["../src/"]
-
 [tool.coverage.run]
+source = ["src"]
 omit = ["tests/*", "docs/*", "*__init__.py", "*_types.py"]
 
 [tool.coverage.report]
