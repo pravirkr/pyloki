@@ -59,8 +59,34 @@ jobs:
       - name: Install package and test dependencies
         run: uv sync --no-group dev
 
+      # About half the pytest step is Numba compiling kernels from scratch. Persist
+      # its on-disk cache (`cache=True` kernels) between runs.
+      #
+      # The key must match exactly, with no `restore-keys` fallback: Numba checks a
+      # cached kernel only against its own source file, not against jitted callees
+      # in other files, so a cache restored from different `src` can run stale
+      # machine code. uv.lock pins the numba/llvmlite versions.
+      - name: Restore Numba cache
+        id: numba-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/numba-cache
+          key: numba-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/**/*.py') }}
+
       - name: Run pytest
-        run: uv run --no-sync pytest --cov=src --cov-report=xml -v
+        env:
+          NUMBA_CACHE_DIR: ${{ runner.temp }}/numba-cache
+        run: >-
+          uv run --no-sync pytest -p no:sugar
+          --cov=src --cov-report=xml --durations=25
+
+      # Saved even when tests fail: the compiled kernels are still valid.
+      - name: Save Numba cache
+        if: always() && steps.numba-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/numba-cache
+          key: ${{ steps.numba-cache.outputs.cache-primary-key }}
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.14'
