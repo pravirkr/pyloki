@@ -758,105 +758,6 @@ def get_circ_chebyshev_mask(
 
 
 @njit(cache=True, fastmath=True)
-def cir_physical_branch_batch(
-    param_vec_batch: np.ndarray,
-    coord_cur: tuple[float, float],
-    nbins: int,
-    eta: float,
-    poly_order: int,
-    branch_max: int = 16,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Branch a batch of parameter sets to leaves."""
-    n_batch = len(param_vec_batch)
-    nparams = 2
-    _, scale_cur = coord_cur
-    param_cur_batch = param_vec_batch[:, :nparams, 0]
-    dparam_cur_batch = param_vec_batch[:, :nparams, 1]
-    x_cos_nu_cur_batch = param_vec_batch[:, 2, 0]
-    dx_cos_nu_cur_batch = param_vec_batch[:, 2, 1]
-    x_sin_nu_cur_batch = param_vec_batch[:, 3, 0]
-    dx_sin_nu_cur_batch = param_vec_batch[:, 3, 1]
-    f0_batch = param_vec_batch[:, -2, 0]
-    t0_batch = param_vec_batch[:, -1, 0]
-    scale_batch = param_vec_batch[:, -1, 1]
-    x_cur_batch = np.sqrt(x_cos_nu_cur_batch**2 + x_sin_nu_cur_batch**2)
-
-    tseg_cur = 2 * scale_cur
-    dparam_opt_batch = np.empty((n_batch, nparams), dtype=np.float64)
-    domega_opt_batch = psr_utils.poly_taylor_step_d_vec(
-        nparams,
-        tseg_cur,
-        nbins,
-        eta,
-        x_cur_batch,
-    )
-    dfreq_opt_batch = psr_utils.poly_taylor_step_f(
-        1,
-        tseg_cur,
-        nbins,
-        eta,
-        t_ref=tseg_cur / 2,
-    )
-    dparam_opt_batch[:, 0] = domega_opt_batch
-    dparam_opt_batch[:, 1] = dfreq_opt_batch
-
-    shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
-        dparam_cur_batch,
-        dparam_opt_batch,
-        tseg_cur,
-        nbins,
-        x_cur_batch,
-        t_ref=tseg_cur / 2,
-    )
-
-    # --- Vectorized Padded Branching ---
-    pad_branched_params = np.empty((n_batch, nparams, branch_max), dtype=np.float64)
-    pad_branched_dparams = np.empty((n_batch, nparams), dtype=np.float64)
-    branched_counts = np.empty((n_batch, nparams), dtype=np.int64)
-    for i in range(n_batch):
-        for j in range(nparams):
-            dparam_act, count = psr_utils.branch_param_padded(
-                pad_branched_params[i, j],
-                param_cur_batch[i, j],
-                dparam_cur_batch[i, j],
-                dparam_opt_batch[i, j],
-            )
-            pad_branched_dparams[i, j] = dparam_act
-            branched_counts[i, j] = count
-
-    # --- Vectorized Selection ---
-    # Select based on mask: shape (n_batch, nparams, 1)
-    mask_2d = shift_bins_batch > eta  # Shape (n_batch, nparams)
-    for i in range(n_batch):
-        for j in range(nparams):
-            if not mask_2d[i, j]:
-                pad_branched_params[i, j, :] = 0
-                pad_branched_params[i, j, 0] = param_cur_batch[i, j]
-                pad_branched_dparams[i, j] = dparam_cur_batch[i, j]
-                branched_counts[i, j] = 1
-
-    # --- Optimized Padded Cartesian Product ---
-    batch_leaves_circular, batch_origins = np_utils.cartesian_prod_padded(
-        pad_branched_params,
-        branched_counts,
-        n_batch,
-        nparams,
-    )
-    total_leaves = len(batch_origins)
-    batch_leaves = np.zeros((total_leaves, poly_order + 2, 2), dtype=np.float64)
-    batch_leaves[:, :-2, 0] = batch_leaves_circular
-    batch_leaves[:, :-2, 1] = pad_branched_dparams[batch_origins]
-    batch_leaves[:, 2, 0] = x_cos_nu_cur_batch[batch_origins]
-    batch_leaves[:, 2, 1] = dx_cos_nu_cur_batch[batch_origins]
-    batch_leaves[:, 3, 0] = x_sin_nu_cur_batch[batch_origins]
-    batch_leaves[:, 3, 1] = dx_sin_nu_cur_batch[batch_origins]
-    batch_leaves[:, -2, 0] = f0_batch[batch_origins]
-    batch_leaves[:, -1, 0] = t0_batch[batch_origins]
-    batch_leaves[:, -1, 1] = scale_batch[batch_origins]
-    return batch_leaves, batch_origins
-
-
-@njit(cache=True, fastmath=True)
 def poly_circular_resolve_batch(
     leaf_batch: np.ndarray,
     coord_add: tuple[float, float],
@@ -885,7 +786,7 @@ def poly_circular_resolve_batch(
     a_new_batch = -C_VAL * omega_orb_batch**2 * x_sin_nu_new_batch
     v_new_batch = omega_orb_batch * x_cos_nu_new_batch  # C_VAL division included
     delay_batch = x_sin_nu_new_batch - x_sin_nu_batch  # C_VAL division included
-    f_new_batch = f_cur_batch * (1 + v_new_batch)
+    f_new_batch = f_cur_batch * (1 - v_new_batch)
 
     relative_phase_batch = psr_utils.get_phase_idx(
         delta_t,
