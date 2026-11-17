@@ -35,9 +35,6 @@ from pyloki.utils import maths, transforms
 from pyloki.utils.misc import C_VAL
 from tests.jit_utils import jit_variants
 
-# Library defects found while writing these tests. Each is pinned with a strict xfail
-# so that the fix, when it lands, turns the pin into a failure and forces its removal.
-
 STRATEGIES = ("conservative", "quadrature", "aggressive")
 
 
@@ -705,20 +702,13 @@ class TestChebyshevLimits:
         generic = transforms.taylor_to_chebyshev_limits_generic(limits, self.TS)
         np.testing.assert_allclose(impl(limits[0, :-1], self.TS), generic[0, :-1])
 
-    @pytest.mark.xfail(strict=True, reason="#26", raises=AssertionError)
     @pytest.mark.parametrize(
         "impl",
         jit_variants(transforms.taylor_to_chebyshev_limits_upto_d2),
     )
     @pytest.mark.parametrize("n_higher", [2, 3, 4])
     def test_upto_d2_unrolls_generic(self, impl, n_higher: int) -> None:
-        """Pin the unrolled branches disagreeing with the docstring and each other.
-
-        The docstring orders the output ``[alpha_kmax, ..., alpha_2]``. The 2- and
-        3-parameter branches return it ascending, and the 4-parameter branch returns
-        it descending but writes ``alpha_2`` to row 0 and then overwrites that row
-        with ``alpha_5``, so ``alpha_2`` is lost and row 3 stays zero.
-        """
+        """Unrolled branches match ``generic`` in descending order (#26)."""
         limits = self._limits(n_higher + 1, n_batch=1)
         generic = transforms.taylor_to_chebyshev_limits_generic(limits, self.TS)
         np.testing.assert_allclose(

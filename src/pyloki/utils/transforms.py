@@ -1025,7 +1025,7 @@ def taylor_to_chebyshev_limits_upto_d2(
     Returns
     -------
     np.ndarray
-        Chebyshev coefficient limits. Shape (nparams - 1, 2).
+        Chebyshev coefficient limits. Shape (nparams, 2).
         Order is [alpha_kmax, ..., alpha_2].
     """
     n_params, _ = taylor_limits.shape
@@ -1051,11 +1051,11 @@ def taylor_to_chebyshev_limits_upto_d2(
         d3_min = taylor_limits[0, 0] * ts3 / 6.0
         d3_max = taylor_limits[0, 1] * ts3 / 6.0
         # alpha_2 = 0.5(d2 ts^2/2!)
-        result[0, 0] = 0.5 * d2_min
-        result[0, 1] = 0.5 * d2_max
+        result[1, 0] = 0.5 * d2_min
+        result[1, 1] = 0.5 * d2_max
         # alpha_3 = 0.25(d3 ts^3/3!)
-        result[1, 0] = 0.25 * d3_min
-        result[1, 1] = 0.25 * d3_max
+        result[0, 0] = 0.25 * d3_min
+        result[0, 1] = 0.25 * d3_max
         return result
 
     if n_params == 3:
@@ -1071,16 +1071,16 @@ def taylor_to_chebyshev_limits_upto_d2(
         d4_min = taylor_limits[0, 0] * ts4 / 24.0
         d4_max = taylor_limits[0, 1] * ts4 / 24.0
         # alpha_2 = 0.5(d2 ts^2/2!) + 0.5(d4 ts^4/4!)
-        result[0, 0] = 0.5 * d2_min + 0.5 * d4_min
-        result[0, 1] = 0.5 * d2_max + 0.5 * d4_max
+        result[2, 0] = 0.5 * d2_min + 0.5 * d4_min
+        result[2, 1] = 0.5 * d2_max + 0.5 * d4_max
 
         # alpha_3 = 0.25(d3 ts^3/3!)
         result[1, 0] = 0.25 * d3_min
         result[1, 1] = 0.25 * d3_max
 
         # alpha_4 = 0.125(d4 ts^4/4!)
-        result[2, 0] = 0.125 * d4_min
-        result[2, 1] = 0.125 * d4_max
+        result[0, 0] = 0.125 * d4_min
+        result[0, 1] = 0.125 * d4_max
         return result
 
     if n_params == 4:
@@ -1099,8 +1099,8 @@ def taylor_to_chebyshev_limits_upto_d2(
         d5_min = taylor_limits[0, 0] * ts5 / 120.0
         d5_max = taylor_limits[0, 1] * ts5 / 120.0
         # alpha_2 = 0.5(d2 ts^2/2!) + 0.5(d4 ts^4/4!)
-        result[0, 0] = 0.5 * d2_min + 0.5 * d4_min
-        result[0, 1] = 0.5 * d2_max + 0.5 * d4_max
+        result[3, 0] = 0.5 * d2_min + 0.5 * d4_min
+        result[3, 1] = 0.5 * d2_max + 0.5 * d4_max
 
         # alpha_3 = 0.25(d3 ts^3/3!) + 0.3125(d5 ts^5/5!)
         result[2, 0] = 0.25 * d3_min + 0.3125 * d5_min
