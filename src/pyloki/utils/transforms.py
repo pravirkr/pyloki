@@ -362,7 +362,7 @@ def shift_taylor_circular_errors(
         sig_d2_j = np.sqrt(sig_d2_i**2 + (delta_t * sig_d3_i) ** 2)
         sig_d3_j = np.sqrt(sig_d3_i**2 + sig_d2_i**2 * omega_orb_sq_max)
         sig_d1_j = np.sqrt(
-            sig_d1_i**2 + (delta_t * sig_d3_i / 2) ** 2 + (delta_t * sig_d2_i) ** 2,
+            sig_d1_i**2 + (delta_t**2 * sig_d3_i / 2) ** 2 + (delta_t * sig_d2_i) ** 2,
         )
     elif tiling_strategy == "aggressive":
         sig_d2_j = sig_d2_i

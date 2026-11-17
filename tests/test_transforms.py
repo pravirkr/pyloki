@@ -325,24 +325,17 @@ class TestShiftTaylorCircularErrors:
             worst = self._worst_accel_jerk(sig3, sig2, delta_t)[index]
             np.testing.assert_allclose(out[row], worst, rtol=1e-6)
 
-    @pytest.mark.xfail(strict=True, reason="#27", raises=AssertionError)
     @pytest.mark.parametrize(
         "impl",
         jit_variants(transforms.shift_taylor_circular_errors),
     )
-    @pytest.mark.parametrize("delta_t", [2.0, 5.0])
+    @pytest.mark.parametrize("delta_t", [0.5, 2.0, 5.0])
     def test_quadrature_velocity_bounds_the_transport(
         self,
         impl,
         delta_t: float,
     ) -> None:
-        """Pin the velocity term scaling as ``dt`` instead of ``dt**2``.
-
-        ``d1_j = d1 + d3 (1 - cos) / w**2 + d2 sin / w``, so a jerk error reaches the
-        velocity with coefficient up to ``dt**2 / 2``. The kernel uses
-        ``delta_t * sig_d3 / 2``, which has units of acceleration, and so falls
-        short of the transport for ``dt > 1`` (in whatever time unit is used).
-        """
+        """Velocity error bounds ``d1`` transport as ``dt**2 / 2`` for jerk (#27)."""
         sig_jerk_only = np.array([[0.0, 0.0, 1.0, 0.0, 0.0, 0.0]])
         out = impl(
             sig_jerk_only,
