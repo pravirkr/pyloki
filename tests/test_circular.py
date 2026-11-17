@@ -15,8 +15,8 @@ The references are these.
   in `test_transforms.py`) and, for a circular orbit, from the analytic orbit. The
   phase is ``frac(((t_add - t_init) - delay) f0) nbins``, compared on the circle.
 - The frequency cell each resolver picks must contain the instantaneous frequency of
-  its own phase model (the time derivative of the phase it returns). The fixed grid
-  meets that for every class; the moving grid does not (pinned, as in `core.taylor`).
+  its own phase model (the time derivative of the phase it returns). Both the fixed
+  and moving grids meet that for every class (#30).
 """
 
 from __future__ import annotations
@@ -35,9 +35,6 @@ from tests.jit_utils import jit_variants
 
 # Library defects found while writing these tests. Each is pinned with a strict xfail
 # so that the fix, when it lands, turns the pin into a failure and forces its removal.
-MOVING_GRID_ISSUE = (
-    "#30: the moving-grid resolver can select the adjacent FFA frequency cell"
-)
 FLAG_ISSUE = "#31: the basis flag is written to the wrong leaves"
 UNUSED_ISSUE = "#36: two unused circular kernels do not work"
 
@@ -282,7 +279,7 @@ class TestResolve:
 
     @pytest.mark.parametrize("impl", jit_variants(circular.circ_taylor_resolve_batch))
     def test_moving_grid_hole_leaf_uses_the_crackle_propagator(self, impl) -> None:
-        """Phase and accel cell for a hole leaf; its freq cell has the #30 defect."""
+        """Phase, accel, and freq cells for a hole leaf using the crackle propagator."""
         leaf = _hole_leaf()
         idx, phase = impl(
             leaf.copy(),
@@ -298,6 +295,7 @@ class TestResolve:
         delay = (at_add[-1] - leaf[0, 5, 0]) / C_VAL
         _assert_phase(phase[0], _phase(T_ADD - T_INIT, delay, 100.0))
         assert idx[0, 0] == _cell(at_add[-3], LIMITS[0], 16)
+        assert idx[0, 1] == _cell(100.0 * (1 - at_add[-2] / C_VAL), LIMITS[1], 64)
 
     @staticmethod
     def _instantaneous_cell(resolve) -> tuple[int, int]:
@@ -341,24 +339,20 @@ class TestResolve:
         picked, expected = self._instantaneous_cell(resolve)
         assert picked == expected
 
-    @pytest.mark.xfail(strict=True, reason=MOVING_GRID_ISSUE, raises=AssertionError)
     @pytest.mark.parametrize("impl", jit_variants(circular.circ_taylor_resolve_batch))
-    @pytest.mark.parametrize(
-        ("kind", "frac"),
-        [("taylor", -0.5), ("taylor", -0.25), ("snap", 0.25), ("snap", 0.5)],
-    )
+    @pytest.mark.parametrize("kind", ["taylor", "snap"])
+    @pytest.mark.parametrize("frac", [-0.5, -0.25, 0.0, 0.25, 0.5])
     def test_moving_grid_cell_follows_its_own_phase(
         self,
         impl,
         kind: str,
         frac: float,
     ) -> None:
-        """Pin the moving grid dropping the velocity at t_init from the frequency.
+        """The moving-grid resolver picks the cell of its own phase's derivative (#30).
 
-        As in `core.taylor`: the subtraction of the leaf's own ``v(t_init)`` follows
-        the per-class propagation, so it applies to every class. A Taylor-class leaf
-        at -0.5 cell picks 31 against 32; a circular-orbit leaf with a +0.25 or +0.5
-        cell velocity offset picks 32 against 31.
+        Before #30 was fixed, dropping ``v(t_init)`` caused a Taylor-class leaf at
+        -0.5 cell to pick 31 against 32, and a circular-orbit leaf with a +0.25 or +0.5
+        cell velocity offset to pick 32 against 31.
         """
         leaf = (
             _taylor_leaf(frac * CELL_DV)

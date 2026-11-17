@@ -18,12 +18,11 @@ The references are these.
   must agree.
 
 On the moving grid, `poly_taylor_resolve_batch` takes the added segment's frequency
-from the velocity change since ``t_init``, where the fixed-grid and ascend resolvers use
-the absolute velocity. A test independent of either convention decides between them:
-the frequency cell a resolver picks must contain the instantaneous frequency of its own
-phase model at ``t_add``, i.e. the time derivative of the phase it returns. The fixed
-grid meets that; the moving grid misses by the leaf's velocity at ``t_init``, so it is
-pinned as a defect (`TestResolve.test_moving_grid_cell_follows_its_own_phase`).
+from the absolute velocity at ``t_add`` (matching the fixed-grid and ascend
+resolvers). A test independent of either convention verifies this: the frequency cell a
+resolver picks must contain the instantaneous frequency of its own phase model at
+``t_add``, i.e. the time derivative of the phase it returns
+(`TestResolve.test_moving_grid_cell_follows_its_own_phase`).
 """
 
 from __future__ import annotations
@@ -39,12 +38,6 @@ from pyloki.core import taylor
 from pyloki.utils import psr_utils, transforms
 from pyloki.utils.misc import C_VAL
 from tests.jit_utils import jit_variants
-
-# Library defects found while writing these tests. Each is pinned with a strict xfail
-# so that the fix, when it lands, turns the pin into a failure and forces its removal.
-MOVING_GRID_ISSUE = (
-    "#30: the moving-grid resolver can select the adjacent FFA frequency cell"
-)
 
 NBINS = 64
 LIMITS = np.array([[-20.0, 20.0], [99.0, 101.0]])  # [accel, freq]
@@ -212,16 +205,14 @@ class TestResolve:
         picked, expected = self._instantaneous_cell(resolve, leaf, self.T_ADD)
         assert picked == expected
 
-    @pytest.mark.xfail(strict=True, reason=MOVING_GRID_ISSUE, raises=AssertionError)
     @pytest.mark.parametrize("impl", jit_variants(taylor.poly_taylor_resolve_batch))
-    @pytest.mark.parametrize("frac", [-0.5, -0.25])
+    @pytest.mark.parametrize("frac", OFFSETS)
     def test_moving_grid_cell_follows_its_own_phase(self, impl, frac: float) -> None:
-        """Pin the moving grid dropping the velocity at t_init from the frequency.
+        """The moving-grid resolver picks the cell of its own phase's derivative (#30).
 
-        It computes ``f0 (1 - (v(t_add) - v(t_init)) / c)``. Its phase includes
-        ``v(t_init)`` (through the delay), so the frequency it resolves to is not
-        that phase's own rate: for ``v(t_init) = -0.5`` cell it picks cell 31, and
-        the derivative of its phase lies in cell 32. The fixed grid picks 32.
+        Before #30 was fixed, it computed ``f0 (1 - (v(t_add) - v(t_init)) / c)`` while
+        its phase kept ``v(t_init)`` through the delay, so at ``v(t_init) = -0.5`` cell
+        it picked cell 31 when the derivative of its phase lay in cell 32.
         """
         leaf = _leaf(0.0, 5.0, frac * self.CELL_DV, 0.0, 100.0)
 

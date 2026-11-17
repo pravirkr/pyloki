@@ -510,7 +510,7 @@ def circ_taylor_resolve_batch(
         leaves_batch[idx_circ_crackle, -1, 1] = 0
 
     accel_new_batch = dvec_t_add[:, -3]
-    vel_new_batch = dvec_t_add[:, -2] - dvec_t_init[:, -2]
+    vel_new_batch = dvec_t_add[:, -2]
     freq_new_batch = f0_batch * (1 - vel_new_batch / C_VAL)
     delay_batch = (dvec_t_add[:, -1] - dvec_t_init[:, -1]) / C_VAL
     relative_phase_batch = psr_utils.get_phase_idx(
