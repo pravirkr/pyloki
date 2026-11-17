@@ -13,9 +13,8 @@ The references are these.
   domain's scale. The phase is ``frac(((t_add - t_init) - delay) f0) nbins``, compared
   on the circle.
 - The frequency cell each resolver picks must contain the instantaneous frequency of
-  its own phase model: the time derivative of the phase it returns. The fixed grid
-  meets that. The moving grid misses by the leaf's velocity at ``t_init``, the same
-  defect as in `core.taylor`, and is pinned.
+  its own phase model: the time derivative of the phase it returns. Both the fixed and
+  moving grids meet that (#30).
 - Seeding and reporting are checked against `core.taylor`'s seed and gauge transform,
   through `transforms.taylor_to_cheby_full` and `cheby_to_taylor_full`.
 - Branching is checked against the non-padded `psr_utils.branch_param` after the
@@ -36,12 +35,6 @@ from pyloki.core import chebyshev, taylor
 from pyloki.utils import psr_utils, transforms
 from pyloki.utils.misc import C_VAL
 from tests.jit_utils import jit_variants
-
-# Library defects found while writing these tests. Each is pinned with a strict xfail
-# so that the fix, when it lands, turns the pin into a failure and forces its removal.
-MOVING_GRID_ISSUE = (
-    "#30: the moving-grid resolver can select the adjacent FFA frequency cell"
-)
 
 NBINS = 64
 LIMITS = np.array([[-20.0, 20.0], [99.0, 101.0]])  # [accel, freq]
@@ -191,23 +184,22 @@ class TestResolve:
         picked, expected = self._instantaneous_cell(resolve, self.T_ADD, 100.0)
         assert picked == expected
 
-    @pytest.mark.xfail(strict=True, reason=MOVING_GRID_ISSUE, raises=AssertionError)
     @pytest.mark.parametrize(
         "impl", jit_variants(chebyshev.poly_chebyshev_resolve_batch)
     )
     @pytest.mark.parametrize("t_cur", [10.0, 18.3719])
-    @pytest.mark.parametrize("frac", [-0.5, -0.25])
+    @pytest.mark.parametrize("frac", [-0.5, -0.25, 0.0, 0.25, 0.5])
     def test_moving_grid_cell_follows_its_own_phase(
         self,
         impl,
         t_cur: float,
         frac: float,
     ) -> None:
-        """Pin the moving grid dropping the velocity at t_init from the frequency.
+        """The moving-grid resolver picks the cell of its own phase's derivative (#30).
 
-        As in `core.taylor`: it computes ``f0 (1 - (v(t_add) - v(t_init)) / c)`` while
-        its phase includes ``v(t_init)``, so at ``v(t_init) = -0.5`` cell it picks cell
-        31 and the derivative of its own phase lies in cell 32.
+        Before #30 was fixed, it computed ``f0 (1 - (v(t_add) - v(t_init)) / c)`` while
+        its phase included ``v(t_init)``, so at ``v(t_init) = -0.5`` cell it picked cell
+        31 when the derivative of its own phase lay in cell 32.
         """
         state = _state_with_offset(5.0, frac * self.CELL_DV, self.T_INIT, t_cur)
         leaf = _cheby_leaf(state, 100.0)
