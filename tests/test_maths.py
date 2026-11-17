@@ -369,17 +369,15 @@ class TestFactKernel:
         expected = np.array([math.factorial(k) for k in range(21)], dtype=float)
         np.testing.assert_array_equal(maths.fact(n), expected.reshape(3, 7))
 
-    @pytest.mark.xfail(strict=True, reason="#22", raises=AssertionError)
-    @pytest.mark.parametrize("n", [21, 30, 66, 119])
-    def test_above_20(self, n: int) -> None:
-        """Pin the int64 overflow in the factorial table.
+    @pytest.mark.parametrize("impl", jit_variants(maths.fact))
+    @pytest.mark.parametrize("n", [21, 30, 66, 119, 120, 170])
+    def test_above_20(self, impl, n: int) -> None:
+        """Double-precision factorial above 20! (#22).
 
-        `fact_factory` fills its table with ``_fact(ii, 0)``, an int64 product in
-        compiled code, which overflows from 21! on: ``fact(21)`` is -4.2e18 and
-        ``fact(n)`` is 0 for every n >= 66. The table is built at import, so both paths
-        see it.
+        Before #22 was fixed, `fact_factory` filled its table with an int64 product,
+        overflowing from 21! onward and returning 0 for every n >= 66.
         """
-        np.testing.assert_allclose(maths.fact(n), float(math.factorial(n)), rtol=1e-12)
+        np.testing.assert_allclose(impl(n), float(math.factorial(n)), rtol=1e-12)
 
 
 class TestNbinomKernel:
@@ -401,29 +399,34 @@ class TestNbinomKernel:
         assert impl(n, k) == math.comb(n, k)
         assert impl(n, n - k) == math.comb(n, k)
 
-    # Wrong below n = 67, ZeroDivisionError from there (compiled): both are the defect.
-    @pytest.mark.xfail(
-        strict=True,
-        reason="#22",
-        raises=(AssertionError, ZeroDivisionError),
-    )
+    @pytest.mark.parametrize("impl", jit_variants(maths.nbinom))
     @pytest.mark.parametrize(("n", "k"), [(21, 1), (30, 15), (100, 50)])
-    def test_factorial_branch_above_20(self, n: int, k: int) -> None:
-        """Pin the factorial branch inheriting the broken `fact`.
+    def test_factorial_branch_above_20(self, impl, n: int, k: int) -> None:
+        """The n <= 120 branch matches ``math.comb`` to float64 precision (#22).
 
-        For 21 <= n <= 120 the result divides values of the broken `fact`
-        (`TestFactKernel.test_above_20`): wrong, or ZeroDivisionError from n = 67.
+        Exact for values within float64 integer precision (like C(21, 1), C(30, 15))
+        and within double precision for larger combinations like C(100, 50) ~ 1e29.
         """
-        assert maths.nbinom(n, k) == math.comb(n, k)
+        expected = math.comb(n, k)
+        got = impl(n, k)
+        if expected <= 2**52:
+            assert got == expected
+        else:
+            np.testing.assert_allclose(got, float(expected), rtol=1e-12)
 
-    @pytest.mark.xfail(strict=True, reason="#22", raises=AssertionError)
-    def test_multiplicative_branch_compiled_overflows(self) -> None:
-        """Pin the compiled and Python paths diverging above int64.
+    @pytest.mark.parametrize("impl", jit_variants(maths.nbinom))
+    def test_multiplicative_branch_above_int64(self, impl) -> None:
+        """Compiled and Python paths agree above int64 (#22).
 
-        Compiled, the product formula wraps in int64; ``.py_func`` uses Python ints
-        and is exact, so the two paths diverge: C(200, 100) is 9.2e16 vs 9.1e58.
+        Before #22 was fixed, the multiplicative loop used an int64 accumulator and
+        wrapped on C(200, 100) ~ 9.1e58. Both paths now compute in float64.
         """
-        assert maths.nbinom(200, 100) == maths.nbinom.py_func(200, 100)
+        np.testing.assert_allclose(
+            impl(200, 100), float(math.comb(200, 100)), rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            maths.nbinom(200, 100), maths.nbinom.py_func(200, 100), rtol=1e-12
+        )
 
 
 class TestIsPowerOfTwo:

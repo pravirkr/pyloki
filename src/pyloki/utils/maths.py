@@ -12,10 +12,10 @@ def fact_factory(n_tab_out: int = 100) -> np.ufunc:
     fact_tab = np.ones(n_tab_out)
 
     @njit(cache=True)
-    def _fact(num: int, n_tab: int = n_tab_out) -> int:
-        if num < n_tab:
+    def _fact(num: int, n_tab: int = n_tab_out) -> float:
+        if 0 <= num < n_tab:
             return fact_tab[num]
-        ret = 1
+        ret = 1.0
         for nn in range(1, num + 1):
             ret *= nn
         return ret
@@ -24,7 +24,7 @@ def fact_factory(n_tab_out: int = 100) -> np.ufunc:
         fact_tab[ii] = _fact(ii, 0)
 
     @vectorize(cache=True)
-    def fact_vec(num: int) -> int:
+    def fact_vec(num: int) -> float:
         return _fact(num)
 
     return fact_vec
@@ -34,22 +34,22 @@ fact = fact_factory(120)
 
 
 @njit(cache=True, fastmath=True)
-def nbinom(n: int, k: int) -> int:
-    """Hybrid integer binomial coefficient."""
+def nbinom(n: int, k: int) -> float:
+    """Hybrid binomial coefficient."""
     if k < 0 or k > n:
-        return 0
+        return 0.0
     if k in (0, n):
-        return 1
+        return 1.0
     # Use symmetry
     k = min(k, n - k)
     # Use factorial for small values, multiplicative for large
     if n <= 120:
-        return fact(n) // (fact(k) * fact(n - k))
+        return np.round(fact(n) / (fact(k) * fact(n - k)))
     # Multiplicative approach for large n
-    result = 1
+    result = 1.0
     for i in range(k):
-        result = result * (n - i) // (i + 1)
-    return result
+        result = result * (n - i) / (i + 1)
+    return np.round(result)
 
 
 def gen_norm_isf_table(max_minus_logsf: float, minus_logsf_res: float) -> np.ndarray:
