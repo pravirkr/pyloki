@@ -30,13 +30,9 @@ import math
 import numpy as np
 import pytest
 from numba import njit
-from numba.core.errors import TypingError
 
 from pyloki.utils import world_tree as wt
 from tests.jit_utils import jit_variants
-
-# Library defects found while writing these tests. Each is pinned with a strict xfail
-# so that the fix, when it lands, turns the pin into a failure and forces its removal.
 
 NPARAMS, NBINS = 2, 8
 
@@ -438,33 +434,20 @@ class TestUniqueIndices:
         scores = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         np.testing.assert_array_equal(impl(leaves, scores), [0, 1, 2])
 
-    @pytest.mark.xfail(strict=True, reason="#51", raises=AssertionError)
     @pytest.mark.parametrize("impl", jit_variants(wt.get_unique_indices_scores))
     def test_scores_keep_best_of_each_repeat(self, impl) -> None:
-        """Pin the running count being reset by a better-scoring repeat.
-
-        On a repeat with a higher score the kernel does ``count = count_dict[key]``,
-        which rewinds the output position, so later unique entries overwrite earlier
-        ones: ``[A, B, A (better), C]`` returns ``[3]`` instead of ``[2, 1, 3]``.
-        """
+        """A higher-scoring repeat replaces its slot without rewinding count (#51)."""
         leaves = self._leaves([(1.0, 10.0), (2.0, 20.0), (1.0, 10.0), (3.0, 30.0)])
         scores = np.array([1.0, 2.0, 5.0, 3.0], dtype=np.float32)
         np.testing.assert_array_equal(np.sort(impl(leaves, scores)), [1, 2, 3])
 
-    @pytest.mark.xfail(strict=True, reason="#51", raises=AssertionError)
     @pytest.mark.parametrize("impl", jit_variants(wt.get_unique_indices_scores))
     def test_scores_distinct_leaves_are_distinct(self, impl) -> None:
-        """Pin the key being the sum of rows ``d0`` and ``f0``.
-
-        ``(1, 10)`` and ``(2, 9)`` share the key 11e9, so they count as repeats: with
-        scores ``[2, 1]`` the result is ``[0]`` (the collision alone), and with
-        ``[1, 2]`` it is empty (collision plus the reset above).
-        """
+        """Leaves differing in rows whose sum matches remain distinct (#51)."""
         leaves = self._leaves([(1.0, 10.0), (2.0, 9.0)])
         scores = np.array([1.0, 2.0], dtype=np.float32)
         np.testing.assert_array_equal(np.sort(impl(leaves, scores)), [0, 1])
 
-    @pytest.mark.xfail(strict=True, reason="#51", raises=TypingError)
     @pytest.mark.parametrize(("cls", "dtype"), TREES)
     @pytest.mark.parametrize(
         "impl",
@@ -476,9 +459,33 @@ class TestUniqueIndices:
         ],
     )
     def test_trim_repeats_compiles(self, cls, dtype, impl) -> None:
-        """Pin ``trim_repeats*`` passing a 2-D slice where the helper indexes 3-D.
+        """``trim_repeats*`` pass 3-D leaves to `get_unique_indices_scores` (#51)."""
+        tree = _tree(cls, dtype, 6, 6)
+        impl(tree)
+        assert tree.valid_size > 0
 
-        They hand ``leaves[:n, :nparams, 0]`` (2-D) to `get_unique_indices_scores`,
-        which reads ``leaves[ii][-2:, 0]``; numba finds no ``getitem`` for that.
-        """
-        impl(_tree(cls, dtype, 6, 6))
+    @pytest.mark.parametrize(("cls", "dtype"), TREES)
+    def test_trim_repeats_deduplicates_and_keeps_best(self, cls, dtype) -> None:
+        leaves, folds, scores, backtracks = _rows(5, dtype, 123)
+        leaves[2] = leaves[0].copy()
+        leaves[4] = leaves[1].copy()
+        scores[:] = np.array([1.0, 4.0, 5.0, 2.0, 3.0], dtype=np.float32)
+        tree = cls(leaves, folds, scores, backtracks)
+        source = _live(tree)
+        tree.trim_repeats()
+        assert tree.valid_size == 3
+        np.testing.assert_array_equal(np.sort(tree.scores[:3]), [2.0, 4.0, 5.0])
+        _assert_rows_match(tree, source)
+
+    @pytest.mark.parametrize(("cls", "dtype"), TREES)
+    def test_trim_repeats_threshold_keeps_unique_above_median(self, cls, dtype) -> None:
+        leaves, folds, scores, backtracks = _rows(5, dtype, 124)
+        leaves[2] = leaves[0].copy()
+        scores[:] = np.array([1.0, 2.0, 5.0, 4.0, 3.0], dtype=np.float32)
+        tree = cls(leaves, folds, scores, backtracks)
+        source = _live(tree)
+        threshold = tree.trim_repeats_threshold()
+        assert threshold == pytest.approx(3.0)
+        assert tree.valid_size == 3
+        np.testing.assert_array_equal(np.sort(tree.scores[:3]), [3.0, 4.0, 5.0])
+        _assert_rows_match(tree, source)
