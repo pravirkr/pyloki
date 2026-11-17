@@ -204,8 +204,8 @@ def taylor_to_circular_full(param_sets: np.ndarray) -> np.ndarray:
     -------
     np.ndarray
         The circular parameters. Shape is (n_batch, 4, 2).
-        params: [omega, freq, x_cos_phi, x_sin_phi]
-        dparams: [domega, dfreq, dx_cos_phi, dx_sin_phi]
+        params: [omega, freq, x_sin_phi, x_cos_phi]
+        dparams: [domega, dfreq, dx_sin_phi, dx_cos_phi]
     """
     snap, jerk, accel, freq = (
         param_sets[:, 0, 0],

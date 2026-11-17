@@ -364,7 +364,7 @@ class TestShiftTaylorCircularErrors:
 
 
 class TestTaylorToCircular:
-    """``[snap, jerk, accel, freq] -> [omega, freq, x_cos_phi, x_sin_phi]``."""
+    """``[snap, jerk, accel, freq] -> [omega, freq, x_sin_phi, x_cos_phi]``."""
 
     AMP_LS, OMEGA, PHASE, FREQ = 2.0, 2 * np.pi / 3600.0, 0.9, 200.0
 
@@ -430,17 +430,17 @@ class TestTaylorToCircular:
         )
 
     @pytest.mark.parametrize("impl", jit_variants(transforms.taylor_to_circular_full))
-    @pytest.mark.parametrize("row", [0, 1, 3], ids=["omega", "freq", "x_sin_phi"])
+    @pytest.mark.parametrize("row", [0, 1, 3], ids=["omega", "freq", "x_cos_phi"])
     def test_errors_are_first_order(self, impl, row: int) -> None:
         values, errors = self._inputs()
         out = impl(np.stack([values, errors], axis=-1)[None])[0]
         np.testing.assert_allclose(out[row, 1], self._linear_errors()[row], rtol=1e-5)
 
     @pytest.mark.parametrize("impl", jit_variants(transforms.taylor_to_circular_full))
-    def test_x_cos_phi_error_is_first_order(self, impl) -> None:
-        """``dx_cos_phi`` accounts for ``accel`` entering twice via ``omega**2`` (#28).
+    def test_x_sin_phi_error_is_first_order(self, impl) -> None:
+        """``dx_sin_phi`` accounts for ``accel`` entering twice via ``omega**2`` (#28).
 
-        ``x_cos_phi = accel**2 / (snap * C)``, so relative ``accel`` error enters
+        ``x_sin_phi = accel**2 / (snap * C)``, so relative ``accel`` error enters
         with weight 2 rather than as independent quadrature terms ``accel`` and
         ``omega**2``.
         """
