@@ -354,9 +354,6 @@ class TestChebyshevTransform:
 # `chi_sq_minus_logsf_func` are deliberately not covered here: their table edges are
 # fixed and tested in #21.
 #
-# Library defects found while writing these are pinned with a strict xfail, so that the
-# fix, when it lands, turns the pin into a failure and forces its removal.
-
 
 class TestFactKernel:
     @pytest.mark.parametrize("impl", jit_variants(maths.fact))
@@ -450,7 +447,7 @@ class TestChebyshevPolysTable:
     @pytest.mark.parametrize("impl", jit_variants(maths.generalized_cheb_pols))
     @pytest.mark.parametrize(("t0", "scale"), [(0.0, 1.0), (0.0, 1.7), (0.3, 1.0)])
     def test_generalized_where_correct(self, impl, t0: float, scale: float) -> None:
-        """Correct whenever ``t0 == 0`` or ``scale == 1``; see the xfail below."""
+        """Correct whenever ``t0 == 0`` or ``scale == 1``."""
         self._check_generalized(impl, t0, scale)
 
     @pytest.mark.parametrize("impl", jit_variants(maths.generalized_cheb_pols))

@@ -35,9 +35,6 @@ from numba.core.errors import TypingError
 from pyloki.utils import np_utils
 from tests.jit_utils import jit_variants
 
-# Library defects found while writing these tests. Each is pinned with a strict xfail
-# so that the fix, when it lands, turns the pin into a failure and forces its removal.
-
 
 def _brute_nearest(array: np.ndarray, value: float) -> int:
     """Index of the closest entry; the first (smallest) index on an exact tie."""
