@@ -448,26 +448,17 @@ class TestDetermineRefSegs:
                 assert segs[-1] <= nsegments - 1
                 assert np.all(np.diff(segs) >= 0)
 
-    def test_pareto_anchors_distinct_below_nsegments_minus_one(self) -> None:
-        """No two runs share a reference segment.
-
-        Holds for every ``n_runs`` except ``nsegments - 1``; that case is pinned below.
-        """
+    def test_pareto_anchors_distinct(self) -> None:
+        """No two runs share a reference segment for any valid ``n_runs``."""
         for nsegments in range(1, 200):
-            for n_runs in range(1, nsegments - 1):
+            for n_runs in range(1, nsegments + 1):
                 segs = np_utils.determine_ref_segs_pareto(nsegments, n_runs)
                 assert len(set(segs)) == n_runs, (nsegments, n_runs, segs)
 
-    @pytest.mark.xfail(strict=True, reason="#25", raises=AssertionError)
     @pytest.mark.parametrize("nsegments", [3, 4, 16, 64])
     def test_pareto_anchors_distinct_at_nsegments_minus_one(
         self, nsegments: int
     ) -> None:
-        """Pin two runs landing on one segment at ``n_runs == nsegments - 1``.
-
-        ``margin = round((M - 1) / (2 (M - 1)))`` rounds 1/2 up to 1, so the anchors
-        are squeezed into ``M - 2`` slots: e.g. ``(3, 2) -> [1, 1]``,
-        ``(4, 3) -> [1, 2, 2]``. `prune.py` feeds a user's ``n_runs`` straight in.
-        """
+        """Ensure ``n_runs == nsegments - 1`` gives distinct anchors."""
         segs = np_utils.determine_ref_segs_pareto(nsegments, nsegments - 1)
         assert len(set(segs)) == nsegments - 1, segs

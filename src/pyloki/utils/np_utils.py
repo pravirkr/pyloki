@@ -436,7 +436,8 @@ def determine_ref_segs_pareto(nsegments: int, n_runs: int) -> list[int]:
     # Special case: single anchor → center
     if n_runs == 1:
         return [nsegments // 2]
-    margin = _round_div(nsegments - 1, 2 * n_runs)
+    # Cap margin so hi - lo >= n_runs - 1, ensuring all n_runs anchors are distinct
+    margin = min(_round_div(nsegments - 1, 2 * n_runs), (nsegments - n_runs) // 2)
     lo = margin
     hi = nsegments - 1 - margin
     denom = n_runs - 1
