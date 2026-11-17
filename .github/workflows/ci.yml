@@ -65,13 +65,21 @@ jobs:
       # The key must match exactly, with no `restore-keys` fallback: Numba checks a
       # cached kernel only against its own source file, not against jitted callees
       # in other files, so a cache restored from different `src` can run stale
-      # machine code. uv.lock pins the numba/llvmlite versions.
+      # machine code. uv.lock is not tracked, so the installed numba/llvmlite
+      # versions are read from the environment instead.
+      - name: Get Numba version
+        id: numba-version
+        run: >-
+          echo "version=$(uv run --no-sync python -c
+          'import numba, llvmlite; print(f"{numba.__version__}-{llvmlite.__version__}")')"
+          >> "$GITHUB_OUTPUT"
+
       - name: Restore Numba cache
         id: numba-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/numba-cache
-          key: numba-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/**/*.py') }}
+          key: numba-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-nb${{ steps.numba-version.outputs.version }}-${{ hashFiles('src/**/*.py') }}
 
       - name: Run pytest
         env:
