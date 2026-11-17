@@ -25,13 +25,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from numba.core.errors import TypingError
 
 from pyloki.utils import snail
 from tests.jit_utils import jit_variants
-
-# Library defects found while writing these tests. Each is pinned with a strict xfail
-# so that the fix, when it lands, turns the pin into a failure and forces its removal.
 
 SCHEMES = [
     (7, 2, 0.5, 1),
@@ -150,32 +146,24 @@ class TestCoordinates:
         for i, idx in enumerate(seg_idx):
             np.testing.assert_allclose(coords[i], ((idx + 0.5) * spec[2], spec[2] / 2))
 
+    @pytest.mark.parametrize(
+        "impl",
+        [
+            *jit_variants(snail.get_delta_func),
+            pytest.param(lambda s, lvl: s.get_delta(lvl), id="method"),
+            pytest.param(
+                lambda s, lvl: type(s).get_delta.py_func(s, lvl),
+                id="method_py",
+            ),
+        ],
+    )
     @pytest.mark.parametrize("spec", SCHEMES)
-    def test_delta(self, spec) -> None:
-        """Contract on ``py_func`` only; the compiled kernel does not compile."""
-        impl = snail.get_delta_func.py_func
+    def test_delta(self, impl, spec) -> None:
+        """Offset from the reference segment midpoint (#53)."""
         s = _scheme(spec)
         t0 = (spec[1] + 0.5) * spec[2]
         for level in range(spec[0]):
             assert impl(s, level) == pytest.approx(_coord(*spec[:3], level)[0] - t0)
-
-    @pytest.mark.xfail(strict=True, reason="#53", raises=TypingError)
-    @pytest.mark.parametrize(
-        "call",
-        [
-            pytest.param(lambda s: snail.get_delta_func(s, 1), id="kernel"),
-            pytest.param(lambda s: s.get_delta(1), id="method"),
-            pytest.param(lambda s: type(s).get_delta.py_func(s, 1), id="method_py"),
-        ],
-    )
-    def test_delta_compiles(self, call) -> None:
-        """Pin `get_delta_func` reading ``self.ref_time``.
-
-        ``ref_time`` is a property of the Python proxy, not a field of the
-        ``structref``, so compiled code has no such attribute (`TypingError`). The
-        proxy's `get_delta` method is itself ``@njit`` and fails the same way.
-        """
-        call(_scheme((7, 2, 0.5, 1)))
 
     @pytest.mark.parametrize(
         "impl",
