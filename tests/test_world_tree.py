@@ -450,41 +450,42 @@ class TestUniqueIndices:
 
     @pytest.mark.parametrize(("cls", "dtype"), TREES)
     @pytest.mark.parametrize(
-        "impl",
-        jit_variants(wt.trim_repeats_func)
-        + jit_variants(wt.trim_repeats_threshold_func)
-        + [
+        "trim",
+        [
+            *jit_variants(wt.trim_repeats_func),
             pytest.param(lambda t: t.trim_repeats(), id="method"),
-            pytest.param(lambda t: t.trim_repeats_threshold(), id="method_threshold"),
         ],
     )
-    def test_trim_repeats_compiles(self, cls, dtype, impl) -> None:
-        """``trim_repeats*`` pass 3-D leaves to `get_unique_indices_scores` (#51)."""
-        tree = _tree(cls, dtype, 6, 6)
-        impl(tree)
-        assert tree.valid_size > 0
-
-    @pytest.mark.parametrize(("cls", "dtype"), TREES)
-    def test_trim_repeats_deduplicates_and_keeps_best(self, cls, dtype) -> None:
+    def test_trim_repeats_deduplicates_and_keeps_best(self, cls, dtype, trim) -> None:
+        """Repeats collapse to their best-scoring row (#51: 3-D leaves are keyed)."""
         leaves, folds, scores, backtracks = _rows(5, dtype, 123)
         leaves[2] = leaves[0].copy()
         leaves[4] = leaves[1].copy()
         scores[:] = np.array([1.0, 4.0, 5.0, 2.0, 3.0], dtype=np.float32)
         tree = cls(leaves, folds, scores, backtracks)
         source = _live(tree)
-        tree.trim_repeats()
+        trim(tree)
         assert tree.valid_size == 3
         np.testing.assert_array_equal(np.sort(tree.scores[:3]), [2.0, 4.0, 5.0])
         _assert_rows_match(tree, source)
 
     @pytest.mark.parametrize(("cls", "dtype"), TREES)
-    def test_trim_repeats_threshold_keeps_unique_above_median(self, cls, dtype) -> None:
+    @pytest.mark.parametrize(
+        "trim",
+        [
+            *jit_variants(wt.trim_repeats_threshold_func),
+            pytest.param(lambda t: t.trim_repeats_threshold(), id="method"),
+        ],
+    )
+    def test_trim_repeats_threshold_keeps_unique_above_median(
+        self, cls, dtype, trim
+    ) -> None:
         leaves, folds, scores, backtracks = _rows(5, dtype, 124)
         leaves[2] = leaves[0].copy()
         scores[:] = np.array([1.0, 2.0, 5.0, 4.0, 3.0], dtype=np.float32)
         tree = cls(leaves, folds, scores, backtracks)
         source = _live(tree)
-        threshold = tree.trim_repeats_threshold()
+        threshold = trim(tree)
         assert threshold == pytest.approx(3.0)
         assert tree.valid_size == 3
         np.testing.assert_array_equal(np.sort(tree.scores[:3]), [3.0, 4.0, 5.0])

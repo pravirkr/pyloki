@@ -5,12 +5,6 @@ derivatives (crackle, snap, jerk, accel, freq) of a pulsar in a circular binary.
 `test_example_ep_accel.py`'s docstring first for the shared pipeline; only the
 differences are covered here.
 
-**The notebook does not run against the current API.** Its cell 2 calls
-`ParamLimits.from_circular(..., m_p=m_p_min, ...)`, but the parameter is named
-`m_p_min` (`config.py:206`), so that cell raises `TypeError`. This test uses the
-correct keyword. Converting the example is what surfaced it -- worth fixing in the
-notebook separately.
-
 Scaling: `nsamps 2**24 -> 2**21`, 128 stages -> 64, `n_runs 16 -> 1`,
 `max_sugg 2**21 -> 2**18`, 4 workers -> 1, `branch_max 128 -> 32`, thresholds derived
 rather than hardcoded, `snr 11 -> 40`. The branching kind is `"circ_taylor_moving"`,
@@ -38,14 +32,12 @@ statistics -- a single pruning run can lose the signal -- and dropping to `n_run
 removes that protection. Raising `snr` restores it: **10/10 clean at `snr=40`**, scores
 38.2-39.6.
 
-**Measured worst case over those 10 realisations** (reported uncertainty in brackets):
-crackle 0.0149 [0.0484], snap 0.260 [0.345], jerk 3.29 [2.45], accel 70.3 [39.3],
-freq 3.39e-4 [1.84e-4]. Every one is within 0.2% of the injected value. Tolerances
-below are ~3x those worst cases.
-
-Cost: ~28 s locally on a cold numba cache, ~16 s warm -- the most expensive of the three
-example tests by an order of magnitude, because `poly_order=5` over 64 stages is simply
-a big search.
+**Measured error over the reported uncertainty**, worst over 20 seeded realisations:
+crackle 0.24, snap 0.77, jerk 1.34, accel 1.79, freq 2.10. The first four are checked
+by the shared `k = 2` rule (`tests/_pipelines.py`); accel's 1.79 is the tightest margin.
+Frequency is the exception, as in the jerk example: `dfreq` is optimistic here, so it
+keeps an absolute tolerance. This is the most expensive of the three EP examples,
+because `poly_order=5` over 64 stages is simply a big search.
 """
 
 from __future__ import annotations
@@ -60,7 +52,8 @@ from pyloki.simulation.pulse import PulseSignalConfig
 from tests._pipelines import (
     EpSearch,
     check_candidates,
-    check_clears_final_threshold,
+    check_detection_strength,
+    check_recovered,
     check_stage_count,
     run_ep,
 )
@@ -68,17 +61,14 @@ from tests._pipelines import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-# Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
-# threshold ladder were drawn from unseeded generators inside pyloki and this file
-# had no way to reach them; see tests/test_rng_seeding.py.
-SEED = 42
+SEED = 42  # Pinned so CI is reproducible.
 
-# Measured over 20 seeded realisations. Every parameter passed at every seed, with
-# error/tolerance peaking at 0.386 (freq). These three seeds are the worst observed
-# case for different parameters, so between them they exercise all five:
-#   1  -> worst crackle (0.234), jerk (0.329) and freq (0.386)
-#   14 -> worst snap (0.330)
-#   7  -> worst accel (0.319)
+# Measured over 20 seeded realisations. These three seeds are the worst observed
+# case (error / d<param>) for different parameters, so between them they exercise
+# all five:
+#   1  -> worst crackle (0.24), jerk (1.34) and freq (2.10)
+#   14 -> worst snap (0.77)
+#   7  -> worst accel (1.79)
 SEED_SWEEP = (1, 14, 7)
 
 # --- The notebook's physical setup ------------------------------------------------
@@ -102,16 +92,18 @@ SNR = 40.0
 MAX_SUGG = 2**18
 BRANCH_MAX = 32
 
-# --- Tolerances: ~3x the measured worst case over 10 realisations -------------------
-# param: (absolute tolerance, max uncertainty as a fraction of |true| for the guard)
-TOLERANCES = {
-    "crackle": (0.05, 0.05),  # worst err 0.0149, unc 0.0484 (0.7% of 7.12)
-    "snap": (0.8, 0.05),  # worst err 0.260, unc 0.345 (0.2% of 163.6)
-    "jerk": (10.0, 0.05),  # worst err 3.29, unc 2.45 (0.06% of 4058)
-    "accel": (220.0, 0.05),  # worst err 70.3, unc 39.3 (0.04% of 93221)
-    "freq": (1e-3, 1e-4),  # worst err 3.39e-4, unc 1.84e-4
+# --- Recovery: the shared `check_recovered` rule, |err| <= 2 x d<param> -------------
+# param -> max uncertainty as a fraction of |true| (the non-vacuity guard)
+MAX_UNC_FRACTION = {
+    "crackle": 0.05,  # dcrackle is 0.7% of 7.12
+    "snap": 0.05,  # dsnap is 0.2% of 163.6
+    "jerk": 0.05,  # djerk is 0.06% of 4058
+    "accel": 0.05,  # daccel is 0.04% of 93221
+    "freq": 1e-4,  # dfreq is 1.3e-6 of freq
 }
-
+# Exception: dfreq is optimistic (err/dfreq up to 2.10), so freq gets an absolute
+# tolerance; worst measured error 3.9e-4.
+ABS_TOL = {"freq": 1e-3}
 
 TOBS = NSAMPS * DT
 SEARCH = EpSearch(
@@ -164,22 +156,13 @@ def ep_circular_search(tmp_path_factory) -> dict:
 
 def _check_param(result: dict, param: str, seed: object = SEED) -> None:
     """Check one derivative. One source for the predicate, shared by the sweep."""
-    data = result["data"]
-    true = result["truth"][param]
-    tol, max_unc_fraction = TOLERANCES[param]
-    best = data.loc[data["score"].idxmax()]
-
-    uncertainty = float(best[f"d{param}"])
-    assert uncertainty < max_unc_fraction * abs(true), (
-        f"{param} is not actually constrained (seed={seed}): d{param}="
-        f"{uncertainty:.5g} against |{param}|={abs(true):.5g} -- the recovery "
-        f"check below would be vacuous"
-    )
-    error = abs(float(best[param]) - true)
-    assert error < tol, (
-        f"{param} not recovered (seed={seed}): got {float(best[param]):.6g}, "
-        f"want {true:.6g} (error {error:.5g} > {tol:.5g}, d{param}="
-        f"{uncertainty:.5g})"
+    check_recovered(
+        result,
+        param,
+        result["truth"][param],
+        MAX_UNC_FRACTION[param],
+        seed,
+        abs_tol=ABS_TOL.get(param),
     )
 
 
@@ -196,13 +179,14 @@ def test_recovery_does_not_depend_on_the_noise_realisation(
     worst case for each parameter; see `SEED_SWEEP`.
     """
     result = _run_search(seed, tmp_path)
-    for param in TOLERANCES:
+    for param in MAX_UNC_FRACTION:
         _check_param(result, param, seed)
+    check_detection_strength(result, seed)
 
 
 def test_pipeline_produces_candidates(ep_circular_search) -> None:
     check_candidates(
-        ep_circular_search, [c for name in TOLERANCES for c in (name, f"d{name}")]
+        ep_circular_search, [c for name in MAX_UNC_FRACTION for c in (name, f"d{name}")]
     )
 
 
@@ -210,11 +194,11 @@ def test_stage_count_matches_configuration(ep_circular_search) -> None:
     check_stage_count(ep_circular_search, NSEGMENTS)
 
 
-@pytest.mark.parametrize("param", list(TOLERANCES))
+@pytest.mark.parametrize("param", list(MAX_UNC_FRACTION))
 def test_recovers_injected_parameter(ep_circular_search, param: str) -> None:
     """All five kinematic derivatives must come back, each with a non-vacuity guard."""
     _check_param(ep_circular_search, param)
 
 
-def test_best_candidate_clears_the_final_threshold(ep_circular_search) -> None:
-    check_clears_final_threshold(ep_circular_search)
+def test_best_candidate_carries_the_injected_snr(ep_circular_search) -> None:
+    check_detection_strength(ep_circular_search, SEED)

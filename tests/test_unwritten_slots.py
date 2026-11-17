@@ -1,16 +1,15 @@
 """Kernels that build their output with ``np.empty`` write every slot of it.
 
 An unwritten slot in an ``np.empty`` output holds whatever was in memory, so a test
-that compares two calls sees it only when the memory happens to differ (#41 was found
-that way: on #40's CI all three Pythons failed, each with a different value). This
-module fixes the content: each kernel's Python source runs with its module's
+that compares two calls sees it only when the memory happens to differ (#41, #43).
+This module fixes the content: each kernel's Python source runs with its module's
 ``np.empty`` replaced by one that fills float arrays with NaN, signed integers with
 the dtype's minimum and unsigned with its maximum, and the result must equal a
 control run with the real ``numpy``. Both runs do the same arithmetic on the same
 inputs and differ only in unwritten memory, so a failure means an unwritten slot, not a
 numerical difference. Only allocations in the kernel's own source are poisoned: its
 callees run compiled, with the real ``numpy``, so a case speaks for that kernel's slots
-and nothing else. The same check found #43.
+and nothing else.
 
 Covered here: the kernels that assemble their output field by field (the shape of #41
 and #43), the circular resolvers (their rows are filled per leaf class), and the FFA
@@ -81,6 +80,10 @@ def _copies(args: tuple) -> tuple:
 def _assert_same(control, poisoned) -> None:
     if isinstance(control, np.ndarray):
         np.testing.assert_array_equal(poisoned, control)
+    elif isinstance(control, dict):
+        assert poisoned.keys() == control.keys()
+        for key, value in control.items():
+            _assert_same(value, poisoned[key])
     elif isinstance(control, (tuple, list)):
         assert len(poisoned) == len(control)
         for c, p in zip(control, poisoned, strict=True):
@@ -340,12 +343,8 @@ def test_poly_projection_matrix(monkeypatch) -> None:
 @pytest.mark.parametrize("n", [0, 3, 4, 9])
 def test_to_derivatives_series(monkeypatch, n: int) -> None:
     orbit = modulate.CircularModulating(p_orb=5000.0, psi=0.7, x_orb=0.1)
-    control = orbit.to_derivatives_series(n)
-    monkeypatch.setattr(modulate, "np", poisoned_numpy())
-    poisoned = orbit.to_derivatives_series(n)
-    monkeypatch.undo()
+    control = check(monkeypatch, modulate, orbit.to_derivatives_series, n)
     assert set(control) == {"coeffs"}  # its only output
-    np.testing.assert_array_equal(poisoned["coeffs"], control["coeffs"])
 
 
 # ------------------------------------- core/circular resolvers (filled per leaf class)
@@ -411,20 +410,16 @@ def test_ffa_plan_configure(monkeypatch) -> None:
         bseg_ffa=2**14,
         prune_poly_order=3,
     )
-    control = ffa.FFAPlan(cfg)
-    monkeypatch.setattr(ffa, "np", poisoned_numpy())
-    poisoned = ffa.FFAPlan(cfg)
-    monkeypatch.undo()
-    arrays = {k: v for k, v in vars(control).items() if isinstance(v, np.ndarray)}
+
+    def plan_state(cfg: PulsarSearchConfig) -> tuple[dict, list]:
+        # The array attributes, and the per-level parameter grids (lists of arrays).
+        plan = ffa.FFAPlan(cfg)
+        arrays = {k: v for k, v in vars(plan).items() if isinstance(v, np.ndarray)}
+        return arrays, plan.params
+
+    arrays, params = check(monkeypatch, ffa, plan_state, cfg)
     assert arrays, "the plan holds arrays"
-    for name, value in arrays.items():
-        np.testing.assert_array_equal(getattr(poisoned, name), value)
-    # The per-level parameter grids live in a list of lists of arrays.
-    assert len(poisoned.params) == len(control.params) > 0
-    for level_c, level_p in zip(control.params, poisoned.params, strict=True):
-        assert len(level_p) == len(level_c)
-        for c, p in zip(level_c, level_p, strict=True):
-            np.testing.assert_array_equal(p, c)
+    assert len(params) > 0
 
 
 # ----------------------------------------------------------------- branching

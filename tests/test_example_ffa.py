@@ -47,12 +47,6 @@ must not sit near threshold. Everything else -- `eta`, `ducy`, `ducy_max`, `wtsp
 
 The tolerance is 3 bins, i.e. 1.5x the worst observed. A 1-bin tolerance would have
 failed the jerk case roughly 8% of the time -- worth measuring rather than assuming.
-
-Cost: ~14.7 s locally for all 27 tests, and consistently so -- the numba disk cache
-does not make repeat runs cheap here, because each pytest invocation is a fresh process
-and the time goes on process setup plus simulating ~7.3M samples across the three cases.
-(Within a single process the searches themselves are 0.04-0.3 s once compiled, which is
-what the sizing probes measured; that speed is not what a CI run sees.)
 """
 
 from __future__ import annotations
@@ -67,10 +61,7 @@ from pyloki.search import ffa_search
 from pyloki.simulation.pulse import PulseSignalConfig
 from pyloki.utils import np_utils
 
-# Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
-# threshold ladder were drawn from unseeded generators inside pyloki and this file
-# had no way to reach them; see tests/test_rng_seeding.py.
-SEED = 42
+SEED = 42  # Pinned so CI is reproducible.
 
 # Measured over 40 seeded realisations, as the largest peak offset on any axis of
 # any case, against INDEX_TOL = 3 bins. Observed offsets were 0, 1 or 2 bins -- never

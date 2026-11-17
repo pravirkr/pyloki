@@ -30,26 +30,17 @@ So the jerk check is a genuine recovery assertion rather than a coverage one, an
 guarded: `djerk` must be under half the injected jerk before the recovery tolerance is
 applied, so the assertion cannot pass merely because the uncertainty is huge.
 
-**Measured stability** (5 independent noise realisations at the final configuration):
-5/5 recovered, `jerk` error 0.222 in 4 of 5 and 0.333 in the fifth (`djerk = 0.556`),
-`accel` error 0.0063-0.0082 (`daccel = 8.29`), `freq` error 1.6e-4 to 3.0e-4
-(`dfreq = 9.2e-5`).
+**Measured stability.** The `accel` error is **bimodal**: over 28 seeded realisations,
+26 landed in the right acceleration cell (error ~0.008) and 2 exactly one `daccel` step
+away (8.28); nothing in between. That is why recovery is checked against the reported
+uncertainty (shared `k = 2` rule, `tests/_pipelines.py`) and not an absolute number --
+an absolute `ACCEL_TOL = 1.0` demanded the exact cell and was flaky. Measured
+error/d<param> over the pinned seed and `SEED_SWEEP`: `jerk` 0.40-0.60, `accel`
+0.0007-0.0010 or 1.00 (the one-cell misses, seeds 7 and 11).
 
-That 5-realisation sample missed the failure mode. Over 28 seeded realisations the
-`accel` error is **bimodal**: 26 in 0.0059-0.0082 and 2 at 8.28, i.e. exactly one
-`daccel` step. The best candidate either lands in the right acceleration cell or in an
-adjacent one; there is no continuum between. Each of the three recovery checks is
-therefore sized against one grid step rather than against the observed spread --
-`JERK_TOL = 0.75` already exceeds `djerk = 0.556` and `FREQ_TOL = 2e-3` already exceeds
-`dfreq = 9.2e-5`, so both survive a one-cell miss, but the old absolute
-`ACCEL_TOL = 1.0` did not, and that was the whole of the flake.
-
-Note the frequency error *exceeds* the reported `dfreq` by 1.8-3.2x here, unlike the
-accel example where it stayed below it. The frequency check therefore uses an absolute
-tolerance rather than a multiple of `dfreq`: the reported frequency uncertainty is
-optimistic at this configuration.
-
-Cost: ~11 s locally on a cold numba cache, ~1.5 s warm.
+The exception is frequency: its error *exceeds* the reported `dfreq` by 1.8-4.2x here
+(unlike the accel example), so the reported frequency uncertainty is optimistic at this
+configuration and the frequency check uses an absolute tolerance instead.
 """
 
 from __future__ import annotations
@@ -62,9 +53,9 @@ from pyloki.config import ParamLimits
 from pyloki.simulation.pulse import PulseSignalConfig
 from tests._pipelines import (
     EpSearch,
-    best_candidate,
     check_candidates,
-    check_clears_final_threshold,
+    check_detection_strength,
+    check_recovered,
     check_stage_count,
     run_ep,
 )
@@ -91,32 +82,21 @@ FFA_LEVELS = 16
 SNR = 20.0
 MAX_SUGG = 2**18
 
-# --- Tolerances, well above the measured spread -------------------------------------
-JERK_TOL = 0.75  # measured error <= 0.333, i.e. ~2.3x margin -- and see below
-# Acceleration is checked against the search's OWN reported uncertainty, not an
-# absolute number. The error here is bimodal, not continuous: the best candidate
-# either lands in the correct accel cell (error ~0.008) or one cell away (error
-# ~8.285, which IS `daccel`). Measured over 28 seeded realisations: 26 at
-# 0.0059-0.0082, 2 at 8.2787/8.2915, nothing in between. An absolute `ACCEL_TOL =
-# 1.0` therefore looked like a >100x margin while actually demanding that the peak
-# land in exactly the right cell -- 8x tighter than the uncertainty the search
-# itself quotes -- and that is what made this test flaky.
-ACCEL_TOL_DACCEL = 1.5  # i.e. recovery within ~1 grid step of the reported value
-FREQ_TOL = 2e-3  # measured error <= 3.0e-4; deliberately NOT a multiple of dfreq
-# Guards so the recovery checks cannot pass vacuously.
-MAX_DJERK_FRACTION = 0.50  # djerk 0.556 is 28% of the injected jerk -> passes
-MAX_DACCEL_FRACTION = 0.10  # daccel 8.29 is 1.7% of accel -> passes
+# --- Recovery: the shared `check_recovered` rule, |err| <= 2 x d<param> -------------
+# Non-vacuity guards: each uncertainty must be small relative to the injected value.
+MAX_DJERK_FRACTION = 0.50  # djerk 0.556 is 28% of the injected jerk
+MAX_DACCEL_FRACTION = 0.10  # daccel 8.29 is 1.7% of accel
+MAX_DFREQ_FRACTION = 1e-4  # dfreq 9.2e-5 is 6.4e-7 of freq
+# Exception: dfreq is optimistic here (err/dfreq measured 1.8-4.2), so freq gets an
+# absolute tolerance; measured error <= 3.9e-4.
+FREQ_TOL = 2e-3
 
-# Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
-# threshold ladder were drawn from unseeded generators inside pyloki and this file
-# had no way to reach them; see tests/test_rng_seeding.py.
-SEED = 42
+SEED = 42  # Pinned so CI is reproducible.
 
 # The sweep. Fixed and enumerated, never random -- a random seed would make a
 # failure unreproducible, which is the defect this file exists to not have.
 # 7 and 11 are the measured one-cell-miss realisations; the rest are ordinary.
 SEED_SWEEP = (7, 11, 1, 15, 26)
-
 
 SEARCH = EpSearch(
     nsegments=NSEGMENTS,
@@ -156,46 +136,20 @@ def ep_jerk_search(tmp_path_factory) -> dict:
     return _run_search(SEED, tmp_path_factory.mktemp("ep_jerk"))
 
 
-# One source for each recovery predicate. The pinned tests and the seed sweep both
-# call these, so a sweep cannot quietly assert something weaker than the fast path.
+# One source for the recovery predicates, shared by the pinned tests and the sweep.
 
 
 def _check_accel(result: dict, seed: object = SEED) -> None:
-    best = best_candidate(result)
-    assert best["daccel"] < MAX_DACCEL_FRACTION * ACCEL, (
-        f"acceleration is not actually constrained (seed={seed}): "
-        f"daccel={best['daccel']:.3f} against accel={ACCEL:.1f} -- the recovery "
-        f"check below would be vacuous"
-    )
-    tol = ACCEL_TOL_DACCEL * float(best["daccel"])
-    error = abs(float(best["accel"]) - ACCEL)
-    assert error < tol, (
-        f"acceleration not recovered (seed={seed}): got {best['accel']:.5f}, "
-        f"want {ACCEL:.1f} (error {error:.5f} > {tol:.5f} = "
-        f"{ACCEL_TOL_DACCEL} x daccel {best['daccel']:.3f})"
-    )
+    check_recovered(result, "accel", ACCEL, MAX_DACCEL_FRACTION, seed)
 
 
 def _check_jerk(result: dict, seed: object = SEED) -> None:
-    best = best_candidate(result)
-    assert best["djerk"] < MAX_DJERK_FRACTION * JERK, (
-        f"jerk is not actually constrained (seed={seed}): "
-        f"djerk={best['djerk']:.4f} against jerk={JERK} -- the recovery check "
-        f"below would be vacuous"
-    )
-    error = abs(float(best["jerk"]) - JERK)
-    assert error < JERK_TOL, (
-        f"jerk not recovered (seed={seed}): got {best['jerk']:.4f}, want {JERK} "
-        f"(error {error:.4f} > {JERK_TOL})"
-    )
+    check_recovered(result, "jerk", JERK, MAX_DJERK_FRACTION, seed)
 
 
 def _check_freq(result: dict, seed: object = SEED) -> None:
-    best = best_candidate(result)
-    error = abs(float(best["freq"]) - result["true_freq"])
-    assert error < FREQ_TOL, (
-        f"frequency not recovered (seed={seed}): got {best['freq']:.10f}, "
-        f"want {result['true_freq']:.10f} (error {error:.3e} > {FREQ_TOL:.3e})"
+    check_recovered(
+        result, "freq", result["true_freq"], MAX_DFREQ_FRACTION, seed, abs_tol=FREQ_TOL
     )
 
 
@@ -213,20 +167,20 @@ def test_recovery_does_not_depend_on_the_noise_realisation(
 
     **7 and 11 are in the list on purpose.** They are the two realisations found,
     in a 28-seed sweep, where the best candidate lands one acceleration cell off
-    the truth -- the case that the old absolute `ACCEL_TOL = 1.0` failed. A sweep
+    the truth -- the case that an absolute `ACCEL_TOL = 1.0` once failed. A sweep
     over easy seeds would be weaker evidence than the single pinned run; it is the
     known-hard ones that make it worth the runtime.
 
     What this does and does not establish: passing at every seed here bounds the
     per-realisation failure rate only loosely (0 of 5 is consistent with anything
     under ~45%). It establishes that recovery is not grossly realisation-dependent
-    and that the known-hard cases pass. The measured rate is in
-    `FINDINGS_rng_seeding.md`, from 60 runs, and that is the number to quote.
+    and that the known-hard cases pass.
     """
     result = _run_search(seed, tmp_path)
     _check_accel(result, seed)
     _check_jerk(result, seed)
     _check_freq(result, seed)
+    check_detection_strength(result, seed)
 
 
 def test_pipeline_produces_candidates(ep_jerk_search) -> None:
@@ -256,5 +210,5 @@ def test_recovers_injected_jerk(ep_jerk_search) -> None:
     _check_jerk(ep_jerk_search)
 
 
-def test_best_candidate_clears_the_final_threshold(ep_jerk_search) -> None:
-    check_clears_final_threshold(ep_jerk_search)
+def test_best_candidate_carries_the_injected_snr(ep_jerk_search) -> None:
+    check_detection_strength(ep_jerk_search, SEED)

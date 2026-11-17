@@ -33,12 +33,10 @@ the acceleration is *unconstrained*: the reported `daccel` comes back equal to t
 The accel grid step scales as `1 / tseg_ffa**2`, so `tobs` has to be large enough for
 the accel axis to resolve at all. `2**21` is the first power of two that does.
 
-**Measured stability** (8 independent noise realisations at this configuration): 8/8
-recovered, `accel` error 4.56 m/s^2 every time with `daccel = 46.3`, and `freq` error at
-most `0.67 * dfreq`. The tolerances below sit an order of magnitude above those figures.
-
-Cost: ~14 s locally on a cold numba cache, ~2.5 s warm. CI runners have measured about
-6x slower on this suite, so budget ~90 s there.
+**Measured stability** (pinned seed and `SEED_SWEEP`): error over the reported
+uncertainty is 0.099 for `accel` every time and 0.33-0.67 for `freq`, both well inside
+the shared `k = 2` rule (`tests/_pipelines.py`). Each run is a few seconds once numba
+has compiled.
 """
 
 from __future__ import annotations
@@ -51,9 +49,9 @@ from pyloki.config import ParamLimits
 from pyloki.simulation.pulse import PulseSignalConfig
 from tests._pipelines import (
     EpSearch,
-    best_candidate,
     check_candidates,
-    check_clears_final_threshold,
+    check_detection_strength,
+    check_recovered,
     check_stage_count,
     run_ep,
 )
@@ -62,16 +60,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-# Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
-# threshold ladder were drawn from unseeded generators inside pyloki and this file
-# had no way to reach them; see tests/test_rng_seeding.py.
-SEED = 42
+SEED = 42  # Pinned so CI is reproducible.
 
 # Measured over 40 seeded realisations: this example produced exactly TWO distinct
-# outcomes, differing only in frequency (error/tolerance 0.067 or 0.140), with the
-# acceleration ratio identical at 0.091 every time. Peak margin is ~7x, and a
-# one-cell acceleration miss would land at 0.93 and still pass, because
-# ACCEL_TOL = 50 sits just above daccel = 46.3.
+# outcomes, differing only in frequency (error/dfreq 0.33 or 0.67), with the
+# acceleration error identical every time. A one-cell acceleration miss would still
+# pass, because the tolerance is 2 x daccel.
 #
 # So unlike ep_jerk, this example has no hard realisation to pin -- the sweep below
 # is regression insurance, not coverage of a measured risk. 4 and 16 are from the
@@ -95,14 +89,11 @@ FFA_LEVELS = 16  # bseg_ffa // bseg_brute
 SNR = 20.0
 MAX_SUGG = 2**16
 
-# --- Tolerances, ~10x the measured spread ------------------------------------------
-ACCEL_TOL = 50.0  # measured error 4.56, reported daccel 46.3
-FREQ_TOL = 1e-3  # measured error <= 1.4e-4, reported dfreq 2.07e-4
-# Guards so the assertions above cannot pass vacuously: the search must actually
-# constrain the parameter, not just report a huge uncertainty that swallows any answer.
-MAX_DACCEL_FRACTION = 0.10  # daccel must be < 10% of the injected accel
-MAX_DFREQ_FRACTION = 1e-4  # dfreq must be < 1e-4 of the frequency
-
+# --- Non-vacuity guards for the shared `check_recovered` rule ----------------------
+# The search must actually constrain each parameter, not report an uncertainty that
+# swallows any answer.
+MAX_DACCEL_FRACTION = 0.10  # daccel must be < 10% of the injected accel (it is 3%)
+MAX_DFREQ_FRACTION = 1e-4  # dfreq must be < 1e-4 of the frequency (it is 1.4e-6)
 
 SEARCH = EpSearch(
     nsegments=NSEGMENTS,
@@ -141,35 +132,15 @@ def ep_accel_search(tmp_path_factory) -> dict:
     return _run_search(SEED, tmp_path_factory.mktemp("ep_accel"))
 
 
-# One source for each recovery predicate, shared by the pinned tests and the sweep.
+# One source for the recovery predicates, shared by the pinned tests and the sweep.
 
 
 def _check_freq(result: dict, seed: object = SEED) -> None:
-    best, true_freq = best_candidate(result), result["true_freq"]
-    assert best["dfreq"] / true_freq < MAX_DFREQ_FRACTION, (
-        f"frequency is not actually constrained (seed={seed}): "
-        f"dfreq={best['dfreq']:.3e} on freq={true_freq:.6f}"
-    )
-    error = abs(float(best["freq"]) - true_freq)
-    assert error < FREQ_TOL, (
-        f"frequency not recovered (seed={seed}): got {best['freq']:.10f}, "
-        f"want {true_freq:.10f} (error {error:.3e} > {FREQ_TOL:.3e})"
-    )
+    check_recovered(result, "freq", result["true_freq"], MAX_DFREQ_FRACTION, seed)
 
 
 def _check_accel(result: dict, seed: object = SEED) -> None:
-    best = best_candidate(result)
-    assert best["daccel"] < MAX_DACCEL_FRACTION * ACCEL, (
-        f"acceleration is not actually constrained (seed={seed}): "
-        f"daccel={best['daccel']:.3f} against accel={ACCEL:.1f} -- the recovery "
-        f"check below would be vacuous"
-    )
-    error = abs(float(best["accel"]) - ACCEL)
-    assert error < ACCEL_TOL, (
-        f"acceleration not recovered (seed={seed}): got {best['accel']:.4f}, "
-        f"want {ACCEL:.1f} (error {error:.3f} > {ACCEL_TOL:.1f}, "
-        f"daccel={best['daccel']:.3f})"
-    )
+    check_recovered(result, "accel", ACCEL, MAX_DACCEL_FRACTION, seed)
 
 
 @pytest.mark.slow
@@ -191,6 +162,7 @@ def test_recovery_does_not_depend_on_the_noise_realisation(
     result = _run_search(seed, tmp_path)
     _check_freq(result, seed)
     _check_accel(result, seed)
+    check_detection_strength(result, seed)
 
 
 def test_pipeline_produces_candidates(ep_accel_search) -> None:
@@ -209,5 +181,5 @@ def test_recovers_injected_acceleration(ep_accel_search) -> None:
     _check_accel(ep_accel_search)
 
 
-def test_best_candidate_clears_the_final_threshold(ep_accel_search) -> None:
-    check_clears_final_threshold(ep_accel_search)
+def test_best_candidate_carries_the_injected_snr(ep_accel_search) -> None:
+    check_detection_strength(ep_accel_search, SEED)

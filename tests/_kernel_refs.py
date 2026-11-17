@@ -1,12 +1,16 @@
-"""Grid, timing and phase helpers shared by the Taylor, Chebyshev and circular tests."""
+"""Grid, phase and branching references for the Taylor, Chebyshev, circular tests."""
 
 from __future__ import annotations
 
+import itertools
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pytest
 
+from pyloki.utils import psr_utils
 from pyloki.utils.misc import C_VAL
+from tests.jit_utils import python_impl
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -57,3 +61,64 @@ def instantaneous_cell(
     dcyc = (hi - lo + 0.5) % 1 - 0.5
     f_inst = (dcyc + round(f0 * 2 * eps - dcyc)) / (2 * eps)
     return resolve_at(t_add)[0][1], grid_cell(f_inst, LIMITS[1], COUNTS[1])
+
+
+def expected_children(
+    values: np.ndarray,
+    steps: np.ndarray,
+    dnew: np.ndarray,
+    shift: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Children of each parent, in the kernels' order, from `psr_utils.branch_param`.
+
+    `values`, `steps`, `dnew` and `shift` have shape ``(n_parents, n_params)``. A
+    parameter whose shift is under one bin keeps its value and step; any other is
+    split by the non-padded `branch_param`. Children are the Cartesian product of
+    the per-parameter values, parent by parent.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+        Child values and steps, both ``(n_children, n_params)``, and their origins.
+    """
+    rows, row_steps, origins = [], [], []
+    for i in range(len(values)):
+        axes, dact = [], []
+        for j in range(values.shape[1]):
+            if shift[i, j] < 1.0 - 1e-12:
+                axes.append([values[i, j]])
+                dact.append(steps[i, j])
+            else:
+                vals, d = psr_utils.branch_param(values[i, j], steps[i, j], dnew[i, j])
+                axes.append(list(vals))
+                dact.append(d)
+        for combo in itertools.product(*axes):
+            rows.append(combo)
+            row_steps.append(dact)
+            origins.append(i)
+    return np.array(rows), np.array(row_steps), np.array(origins)
+
+
+def descendant_weighted_mean(singles: np.ndarray) -> np.ndarray:
+    """Branching pattern of a frequency mix, from its single-frequency patterns.
+
+    With single-frequency patterns ``n_i`` (rows of `singles`), level ``l`` of the
+    mix is ``sum_i W_i n_i[l] / sum_i W_i`` with ``W_i = prod_{m < l} n_i[m]``.
+    """
+    weights = np.cumprod(
+        np.hstack([np.ones((len(singles), 1)), singles[:, :-1]]),
+        axis=1,
+    )
+    return (weights * singles).sum(axis=0) / weights.sum(axis=0)
+
+
+def paired_jit_variants(func: Callable, other: Callable) -> list:
+    """Parametrise ``(impl, other_impl)`` over compiled/compiled and py_func/py_func.
+
+    For a test comparing two kernels: crossing a compiled kernel with the other's
+    ``py_func`` covers nothing the matched pairs do not.
+    """
+    return [
+        pytest.param(func, other, id="compiled"),
+        pytest.param(python_impl(func), python_impl(other), id="py_func"),
+    ]

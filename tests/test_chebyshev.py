@@ -24,7 +24,7 @@ The references are these.
 
 from __future__ import annotations
 
-import itertools
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -42,9 +42,12 @@ from tests._kernel_refs import (
     T_ADD,
     T_INIT,
     assert_phase,
+    descendant_weighted_mean,
+    expected_children,
     expected_phase,
     grid_cell,
     instantaneous_cell,
+    paired_jit_variants,
 )
 from tests.jit_utils import jit_variants
 
@@ -175,9 +178,8 @@ class TestResolve:
     ) -> None:
         """The moving-grid resolver picks the cell of its own phase's derivative (#30).
 
-        Before #30 was fixed, it computed ``f0 (1 - (v(t_add) - v(t_init)) / c)`` while
-        its phase included ``v(t_init)``, so at ``v(t_init) = -0.5`` cell it picked cell
-        31 when the derivative of its own phase lay in cell 32.
+        The frequency must come from the absolute ``v(t_add)``, which the phase also
+        carries, so a nonzero ``v(t_init)`` must not move the picked cell.
         """
         state = _state_with_offset(5.0, frac * CELL_DV, T_INIT, t_cur)
         leaf = _cheby_leaf(state, 100.0)
@@ -227,6 +229,14 @@ class TestResolve:
 
 class TestBranch:
     COORD_PREV, COORD_CUR = (18.0, 6.0), (20.0, 12.0)
+    # Parent steps in units of the new step. The domain shift maps them to
+    # [8 m0, 4 m1, 2 m2] (aggressive), and with "conservative" to
+    # [8 m0, 8 m0 + 4 m1, 20.7 m0 + 2.7 m1 + 2 m2], so there a branching jerk forces
+    # velocity to branch: there jerk is the parameter that passes through.
+    MULTIPLIERS: ClassVar = {
+        "aggressive": (0.5, 0.6, 0.1),
+        "conservative": (0.02, 0.6, 0.6),
+    }
 
     @pytest.mark.parametrize(
         "impl", jit_variants(chebyshev.poly_chebyshev_branch_batch)
@@ -241,8 +251,7 @@ class TestBranch:
         )
         f0 = leaves[:, -1, 0]
         dnew = psr_utils.poly_cheb_step_vec(3, NBINS, 1.0, f0)
-        # Parent steps a few times the new step once shifted, except the last.
-        leaves[:, :3, 1] = dnew * np.array([2.5, 3.2, 0.1])
+        leaves[:, :3, 1] = dnew * np.array(self.MULTIPLIERS[strategy])
         out, origins = impl(
             leaves, self.COORD_CUR, self.COORD_PREV, NBINS, 1.0, 3, 64, strategy
         )
@@ -253,31 +262,18 @@ class TestBranch:
             strategy,
         )
         shift = psr_utils.poly_cheb_shift_vec(shifted[:, :-1, 1], dnew, NBINS, f0)
-        expected_rows, expected_origins = [], []
-        for i in range(2):
-            axes, steps = [], []
-            for j in range(3):
-                if shift[i, j] < 1.0 - 1e-12:
-                    axes.append([shifted[i, j, 0]])
-                    steps.append(shifted[i, j, 1])
-                else:
-                    vals, dact = psr_utils.branch_param(
-                        shifted[i, j, 0],
-                        shifted[i, j, 1],
-                        dnew[i, j],
-                    )
-                    axes.append(list(vals))
-                    steps.append(dact)
-            for combo in itertools.product(*axes):
-                expected_rows.append((combo, steps))
-                expected_origins.append(i)
-        np.testing.assert_array_equal(origins, expected_origins)
-        assert len(out) == len(expected_rows) > 2
-        for leaf, (combo, steps), i in zip(out, expected_rows, origins, strict=True):
-            np.testing.assert_allclose(leaf[:3, 0], combo, rtol=1e-12, atol=1e-12)
-            np.testing.assert_allclose(leaf[:3, 1], steps, rtol=1e-12)
-            assert leaf[3, 0] == pytest.approx(shifted[i, 3, 0], rel=1e-12)
-            np.testing.assert_array_equal(leaf[-1], leaves[i, -1])
+        # Both the branching and the pass-through path are exercised.
+        assert (shift < 1).any()
+        assert (shift >= 1).any()
+        values, steps, want_origins = expected_children(
+            shifted[:, :3, 0], shifted[:, :3, 1], dnew, shift
+        )
+        np.testing.assert_array_equal(origins, want_origins)
+        assert 2 < len(out) == len(values) <= 50
+        np.testing.assert_allclose(out[:, :3, 0], values, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(out[:, :3, 1], steps, rtol=1e-12)
+        np.testing.assert_allclose(out[:, 3, 0], shifted[origins, 3, 0], rtol=1e-12)
+        np.testing.assert_array_equal(out[:, -1], leaves[origins, -1])
 
 
 class TestTransformAndReport:
@@ -332,10 +328,12 @@ class TestBranchingPattern:
     ARGS = (10.0, 16, NBINS, 1.0, 8)
     DPARAMS_F0 = np.array([1e-2, 200.0, 0.05])
 
-    @pytest.mark.parametrize("impl", jit_variants(chebyshev.generate_bp_poly_chebyshev))
     @pytest.mark.parametrize(
-        "approx_impl",
-        jit_variants(chebyshev.generate_bp_poly_chebyshev_approx),
+        ("impl", "approx_impl"),
+        paired_jit_variants(
+            chebyshev.generate_bp_poly_chebyshev,
+            chebyshev.generate_bp_poly_chebyshev_approx,
+        ),
     )
     @pytest.mark.parametrize("moving", [True, False])
     @pytest.mark.parametrize("strategy", ["aggressive", "conservative"])
@@ -369,10 +367,7 @@ class TestBranchingPattern:
 
     @pytest.mark.parametrize("impl", jit_variants(chebyshev.generate_bp_poly_chebyshev))
     def test_exact_averages_over_frequencies(self, impl) -> None:
-        """Each level is the descendant-weighted mean branching factor.
-
-        Level ``l`` is ``sum_i W_i n_i[l] / sum_i W_i``, ``W_i = prod_{m<l} n_i[m]``.
-        """
+        """Each level is the descendant-weighted mean branching factor."""
         freqs = np.array([20.0, 100.0, 400.0])
         kwargs = {"use_moving_grid": True, "tiling_strategy": "aggressive"}
         mixed = impl(
@@ -393,12 +388,7 @@ class TestBranchingPattern:
             ]
         )
         assert not np.allclose(singles[0], singles[-1])
-        weights = np.cumprod(
-            np.hstack([np.ones((len(freqs), 1)), singles[:, :-1]]),
-            axis=1,
-        )
-        expected = (weights * singles).sum(axis=0) / weights.sum(axis=0)
-        np.testing.assert_allclose(mixed, expected, rtol=1e-12)
+        np.testing.assert_allclose(mixed, descendant_weighted_mean(singles), rtol=1e-12)
 
     @pytest.mark.parametrize(
         "impl",

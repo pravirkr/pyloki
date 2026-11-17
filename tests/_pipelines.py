@@ -122,6 +122,7 @@ def run_ep(
         "nsegments": dyp.nsegments,
         "thresholds": thresholds,
         "branching_pattern": branching_pattern,
+        "snr": signal.snr,
     }
 
 
@@ -146,10 +147,52 @@ def check_stage_count(result: dict, nsegments: int) -> None:
     assert len(result["thresholds"]) == len(result["branching_pattern"])
 
 
-def check_clears_final_threshold(result: dict) -> None:
+# Recovery tolerances are in units of the best candidate's own reported uncertainty
+# d<param>: k = 2 allows the peak to land one grid cell off (measured: it sometimes
+# does), but not two.
+RECOVERY_K = 2.0
+# The best candidate's score against the injected S/N. Measured 0.92-1.00 over the
+# pinned and sweep seeds of all three EP examples.
+MIN_SCORE_FRACTION = 0.8
+
+
+def check_recovered(
+    result: dict,
+    name: str,
+    truth: float,
+    max_unc_fraction: float,
+    seed: object,
+    *,
+    k: float = RECOVERY_K,
+    abs_tol: float | None = None,
+) -> None:
+    """Assert `|best[name] - truth| <= k * d<name>`, guarded against vacuity.
+
+    The guard requires `d<name> < max_unc_fraction * |truth|`, so the recovery check
+    cannot pass merely because the search left the parameter unconstrained.
+    `abs_tol` replaces `k * d<name>` where the reported uncertainty is known to be
+    optimistic; callers must say why.
+    """
+    best = best_candidate(result)
+    unc = float(best[f"d{name}"])
+    assert unc < max_unc_fraction * abs(truth), (
+        f"{name} is not actually constrained (seed={seed}): d{name}={unc:.5g} "
+        f"against |{name}|={abs(truth):.5g} -- the recovery check would be vacuous"
+    )
+    tol = k * unc if abs_tol is None else abs_tol
+    got = float(best[name])
+    error = abs(got - truth)
+    assert error <= tol, (
+        f"{name} not recovered (seed={seed}): got {got:.10g}, want {truth:.10g} "
+        f"(error {error:.5g} = {error / unc:.2f} x d{name} > tolerance {tol:.5g})"
+    )
+
+
+def check_detection_strength(result: dict, seed: object) -> None:
+    """Assert the best candidate carries most of the injected S/N, not just survives."""
     best_score = float(result["data"]["score"].max())
-    final_threshold = float(result["thresholds"][-1])
-    assert best_score > final_threshold, (
-        f"best score {best_score:.3f} does not clear the final threshold "
-        f"{final_threshold:.3f}"
+    floor = MIN_SCORE_FRACTION * result["snr"]
+    assert best_score >= floor, (
+        f"best score {best_score:.3f} is below {MIN_SCORE_FRACTION} x injected "
+        f"snr {result['snr']} (seed={seed})"
     )

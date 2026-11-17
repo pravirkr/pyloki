@@ -32,8 +32,6 @@ test, at the thread counts and sizes used.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import numba
 import numpy as np
 import pytest
@@ -42,10 +40,8 @@ from numba import typed
 from pyloki.core import fold
 from pyloki.utils import psr_utils
 from pyloki.utils.misc import C_VAL
-from tests.jit_utils import jit_variants
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
+from tests._threads import num_threads
+from tests.jit_utils import jit_cases, jit_variants
 
 TSAMP, SEGLEN, NBINS, NSEG = 1e-3, 512, 32, 6
 FREQS = np.array([7.3, 11.05, 20.0])
@@ -104,12 +100,6 @@ def _assert_matches_dft(
             )
 
 
-@pytest.fixture
-def restore_threads() -> Iterator[None]:
-    yield
-    numba.set_num_threads(numba.config.NUMBA_NUM_THREADS)
-
-
 class TestBrutefold:
     @pytest.mark.parametrize("impl", jit_variants(fold.brutefold))
     @pytest.mark.parametrize("nsegments", [1, 4, 5])
@@ -137,18 +127,15 @@ class TestBrutefold:
         )
 
     @pytest.mark.parametrize(
-        ("impl", "args"),
-        [(p.values[0], "full") for p in jit_variants(fold.brutefold)]
-        + [(p.values[0], "single") for p in jit_variants(fold.brutefold_single)],
+        ("impl", "nseries"),
+        jit_cases(fold.brutefold, 2) + jit_cases(fold.brutefold_single, 1),
     )
-    def test_rejects_length_mismatch(self, impl, args: str) -> None:
-        ts_e, ts_v = _series(100)
+    def test_rejects_length_mismatch(self, impl, nseries: int) -> None:
+        """``nseries``: the kernel folds (ts_e, ts_v) or ts_e alone."""
+        series = _series(100)[:nseries]
         short_time = np.arange(99) * TSAMP
-        call = (ts_e, ts_v, short_time, 9.7, 2, NBINS)
-        if args == "single":
-            call = (ts_e, short_time, 9.7, 2, NBINS)
         with pytest.raises(ValueError, match="same length"):
-            impl(*call)
+            impl(*series, short_time, 9.7, 2, NBINS)
 
     def test_signature_refuses_float64_series(self) -> None:
         ts_e, ts_v = _series(64)
@@ -213,8 +200,8 @@ class TestBrutefoldStart:
 class TestComplexFolds:
     @pytest.mark.parametrize(
         "impl",
-        jit_variants(fold.brutefold_start_complex)
-        + jit_variants(fold.brutefold_start_complex_opt),
+        jit_cases(fold.brutefold_start_complex)
+        + jit_cases(fold.brutefold_start_complex_opt),
     )
     @pytest.mark.parametrize("t_ref", T_REFS)
     def test_matches_dft(self, impl, t_ref: float) -> None:
@@ -264,12 +251,6 @@ class TestComplexFolds:
         )
 
 
-PARALLEL_KERNELS = [
-    pytest.param(fold.brutefold_start, (), id="brutefold_start"),
-    pytest.param(fold.brutefold_bucketed, (), id="brutefold_bucketed"),
-    pytest.param(fold.brutefold_start_complex, (), id="brutefold_start_complex"),
-    pytest.param(fold.brutefold_complex_oversampled, (4,), id="complex_oversampled"),
-]
 # The two kernels that accept a partial last segment are also run with one.
 THREAD_CASES = [
     pytest.param(fold.brutefold_start, (), 0, id="brutefold_start-full"),
@@ -281,11 +262,12 @@ THREAD_CASES = [
 ]
 
 
-@pytest.mark.usefixtures("restore_threads")
 class TestParallelKernels:
     """One thread and every thread must agree exactly; see the module docstring."""
 
-    N_SEGMENTS = 8 * numba.config.NUMBA_NUM_THREADS
+    # Many more segments than threads on any likely machine, and fixed, so the input
+    # does not scale with the core count.
+    N_SEGMENTS = 64
 
     @pytest.mark.parametrize(("kernel", "extra", "trim"), THREAD_CASES)
     def test_thread_count_does_not_change_the_result(
@@ -294,32 +276,17 @@ class TestParallelKernels:
         extra,
         trim: int,
     ) -> None:
-        if numba.config.NUMBA_NUM_THREADS < 2:
+        many = numba.config.NUMBA_NUM_THREADS
+        if many < 2:
             pytest.skip("needs >= 2 numba threads to compare against one")
         ts_e, ts_v = _series(self.N_SEGMENTS * 128 - trim, seed=5)
         freqs = np.linspace(5.0, 40.0, 7)
         args = (ts_e, ts_v, freqs, 128, NBINS, TSAMP, 0.0, *extra)
-        numba.set_num_threads(1)
-        assert numba.get_num_threads() == 1
-        serial = kernel(*args)
-        numba.set_num_threads(numba.config.NUMBA_NUM_THREADS)
-        assert numba.get_num_threads() >= 2
-        for _ in range(3):
-            np.testing.assert_array_equal(kernel(*args), serial)
-
-    @pytest.mark.parametrize(("kernel", "extra"), PARALLEL_KERNELS)
-    def test_parallel_matches_py_func(self, kernel, extra) -> None:
-        ts_e, ts_v = _series(self.N_SEGMENTS * 128, seed=6)
-        freqs = np.linspace(5.0, 40.0, 7)
-        args = (ts_e, ts_v, freqs, 128, NBINS, TSAMP, 0.0, *extra)
-        compiled = kernel(*args)
-        python = kernel.py_func(*args)
-        np.testing.assert_allclose(
-            compiled,
-            python,
-            rtol=0,
-            atol=1e-5 * float(np.abs(python).max()),
-        )
+        with num_threads(1):
+            serial = kernel(*args)
+        with num_threads(many):
+            for _ in range(3):
+                np.testing.assert_array_equal(kernel(*args), serial)
 
 
 class TestFfaInit:

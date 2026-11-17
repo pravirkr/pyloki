@@ -33,12 +33,7 @@ import pytest
 from numba.core.errors import TypingError
 
 from pyloki.utils import np_utils
-from tests.jit_utils import jit_variants
-
-
-def _brute_nearest(array: np.ndarray, value: float) -> int:
-    """Index of the closest entry; the first (smallest) index on an exact tie."""
-    return int(np.argmin(np.abs(array - value)))
+from tests.jit_utils import jit_cases, jit_variants
 
 
 class TestFindNearestSortedIdx:
@@ -82,12 +77,11 @@ class TestFindNearestSortedIdx:
             assert impl(array, value) == 0
 
     @pytest.mark.parametrize(
-        "impl",
-        jit_variants(np_utils.find_nearest_sorted_idx)
-        + jit_variants(np_utils.find_nearest_sorted_idx_vect),
+        ("impl", "value"),
+        jit_cases(np_utils.find_nearest_sorted_idx, 1.0)
+        + jit_cases(np_utils.find_nearest_sorted_idx_vect, np.array([1.0])),
     )
-    def test_empty_array_raises(self, impl) -> None:
-        value = np.array([1.0]) if "vect" in impl.__name__ else 1.0
+    def test_empty_array_raises(self, impl, value) -> None:
         with pytest.raises(ValueError, match="must not be empty"):
             impl(np.array([], dtype=np.float64), value)
 
@@ -361,11 +355,6 @@ class TestInterpolateMissing:
 class TestLstsqWeighted:
     """Contracts run on both the compiled kernel and its ``.py_func`` (#23)."""
 
-    def test_compiled_kernel_compiles(self) -> None:
-        design = np.vstack([np.ones(5), np.arange(5.0)]).T
-        x_hat, _, _ = np_utils.lstsq_weighted(design, np.arange(5.0), np.ones(5))
-        np.testing.assert_allclose(x_hat, [0.0, 1.0], atol=1e-12)
-
     @pytest.mark.parametrize("impl", jit_variants(np_utils.lstsq_weighted))
     def test_recovers_exact_solution(self, impl) -> None:
         rng = np.random.default_rng(61)
@@ -451,11 +440,3 @@ class TestDetermineRefSegs:
             for n_runs in range(1, nsegments + 1):
                 segs = np_utils.determine_ref_segs_pareto(nsegments, n_runs)
                 assert len(set(segs)) == n_runs, (nsegments, n_runs, segs)
-
-    @pytest.mark.parametrize("nsegments", [3, 4, 16, 64])
-    def test_pareto_anchors_distinct_at_nsegments_minus_one(
-        self, nsegments: int
-    ) -> None:
-        """Ensure ``n_runs == nsegments - 1`` gives distinct anchors."""
-        segs = np_utils.determine_ref_segs_pareto(nsegments, nsegments - 1)
-        assert len(set(segs)) == nsegments - 1, segs

@@ -8,7 +8,7 @@ discarded them all at the next stage (`np.digitize(0.0, probs) - 1 == -1`), leav
 nothing to backtrack and making the whole optimiser silently useless.
 
 The cause is a numba miscompilation of whole-record assignment when the record comes
-from an array returned by another jitted function; `test_record_assignment_*` below pins
+from an array returned by another jitted function; `TestRecordAssignment` below pins
 the construct itself, and the scheme tests pin the consequence.
 """
 
@@ -84,12 +84,20 @@ def _small_scheme(mode: str, seed: int = SEED) -> DynamicThresholdScheme:
     )
 
 
-@pytest.mark.parametrize("mode", ["legacy", "improved"])
+@pytest.fixture(scope="class", params=["legacy", "improved"])
+def ran_scheme(request: pytest.FixtureRequest) -> DynamicThresholdScheme:
+    """Run the seeded scheme once per mode; the tests below only read its states."""
+    scheme = _small_scheme(request.param)
+    scheme.run(thres_neigh=5)
+    return scheme
+
+
 class TestDynamicThresholdScheme:
-    def test_states_survive_past_the_first_stage(self, mode: str) -> None:
+    def test_states_survive_past_the_first_stage(
+        self, ran_scheme: DynamicThresholdScheme
+    ) -> None:
         """The headline symptom: everything vanished from stage 2 onward."""
-        scheme = _small_scheme(mode)
-        scheme.run(thres_neigh=5)
+        scheme = ran_scheme
         populated = [
             int((~scheme.states[i]["is_empty"]).sum()) for i in range(scheme.nstages)
         ]
@@ -97,15 +105,16 @@ class TestDynamicThresholdScheme:
             f"states emptied partway through: non-empty per stage = {populated}"
         )
 
-    def test_stored_states_are_not_zero_filled(self, mode: str) -> None:
+    def test_stored_states_are_not_zero_filled(
+        self, ran_scheme: DynamicThresholdScheme
+    ) -> None:
         """The cause, distinct from the symptom.
 
         A zeroed record reads as `is_empty == False`, so counting non-empty states is
         not enough -- the numbers inside have to be real. Every stored state must carry
         the threshold it was built with, and no threshold in the grid is 0.
         """
-        scheme = _small_scheme(mode)
-        scheme.run(thres_neigh=5)
+        scheme = ran_scheme
         for istage in range(scheme.nstages):
             stage = scheme.states[istage]
             stored = stage[~stage["is_empty"]]
@@ -120,10 +129,11 @@ class TestDynamicThresholdScheme:
             assert np.all(stored["complexity_cumul"] > 0.0)
             assert np.all(stored["nbranches"] > 0.0)
 
-    def test_survival_decreases_monotonically(self, mode: str) -> None:
+    def test_survival_decreases_monotonically(
+        self, ran_scheme: DynamicThresholdScheme
+    ) -> None:
         """Cumulative survival is a product of probabilities, so it cannot grow."""
-        scheme = _small_scheme(mode)
-        scheme.run(thres_neigh=5)
+        scheme = ran_scheme
         best = []
         for istage in range(scheme.nstages):
             stage = scheme.states[istage]

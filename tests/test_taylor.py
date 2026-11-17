@@ -18,11 +18,10 @@ The references are these.
   must agree.
 
 On the moving grid, `poly_taylor_resolve_batch` takes the added segment's frequency
-from the absolute velocity at ``t_add`` (matching the fixed-grid and ascend
-resolvers). A test independent of either convention verifies this: the frequency cell a
-resolver picks must contain the instantaneous frequency of its own phase model at
-``t_add``, i.e. the time derivative of the phase it returns
-(`TestResolve.test_moving_grid_cell_follows_its_own_phase`).
+from the absolute velocity at ``t_add``, as the fixed-grid and ascend resolvers do. The
+frequency cell a resolver picks must contain the instantaneous frequency of its own
+phase model at ``t_add``, i.e. the time derivative of the phase it returns
+(`TestResolve.test_moving_grid_cell_follows_its_own_phase`, #30).
 """
 
 from __future__ import annotations
@@ -45,9 +44,12 @@ from tests._kernel_refs import (
     T_ADD,
     T_INIT,
     assert_phase,
+    descendant_weighted_mean,
+    expected_children,
     expected_phase,
     grid_cell,
     instantaneous_cell,
+    paired_jit_variants,
 )
 from tests.jit_utils import jit_variants
 
@@ -121,8 +123,8 @@ class TestResolve:
     def test_moving_grid(self, impl, t_cur: float, x_init: float) -> None:
         """Phase and accel cell in general; freq cell where ``v(t_init) = 0``.
 
-        The leaf is built so that its velocity vanishes at ``t_init``, which is where
-        the moving- and fixed-grid frequency conventions agree (module docstring).
+        The leaf is built so that its velocity vanishes at ``t_init``, which makes the
+        frequency cell independent of the velocity's reference time.
         """
         jerk, accel_init = 2e-3, 5.0
         dt = t_cur - T_INIT
@@ -242,8 +244,8 @@ class TestBranch:
         leaves = np.concatenate(
             [_leaf(0.0, 1.0, 0.0, 0.0, 100.0), _leaf(1e-4, -2.0, 50.0, 3.0, 100.7)],
         )
-        # Parent steps a few times the new step, so that every parameter branches
-        # except the last, which is kept just under it so it does not.
+        # Parent steps a few times the new step for jerk and accel, so they branch,
+        # and just under it for velocity, so it does not.
         dnew = psr_utils.poly_taylor_step_d_vec(
             3,
             self.COORD[1],
@@ -270,31 +272,18 @@ class TestBranch:
             f0,
             t_ref=0,
         )
-        expected_rows, expected_origins = [], []
-        for i in range(2):
-            axes, steps = [], []
-            for j in range(3):
-                if shift[i, j] < 1.0 - 1e-12:
-                    axes.append([leaves[i, j, 0]])
-                    steps.append(leaves[i, j, 1])
-                else:
-                    vals, dact = psr_utils.branch_param(
-                        leaves[i, j, 0],
-                        leaves[i, j, 1],
-                        dnew[i, j],
-                    )
-                    axes.append(list(vals))
-                    steps.append(dact)
-            for combo in itertools.product(*axes):
-                expected_rows.append((combo, steps))
-                expected_origins.append(i)
-        np.testing.assert_array_equal(origins, expected_origins)
-        assert len(out) == len(expected_rows) > 2
-        for leaf, (combo, steps), i in zip(out, expected_rows, origins, strict=True):
-            np.testing.assert_allclose(leaf[:3, 0], combo, rtol=1e-12)
-            np.testing.assert_allclose(leaf[:3, 1], steps, rtol=1e-12)
-            assert leaf[3, 0] == leaves[i, 3, 0]
-            np.testing.assert_array_equal(leaf[-1], leaves[i, -1])
+        # Both the branching and the pass-through path are exercised.
+        assert (shift[:, :2] >= 1).all()
+        assert (shift[:, 2] < 1).all()
+        values, steps, want_origins = expected_children(
+            leaves[:, :3, 0], leaves[:, :3, 1], dnew, shift
+        )
+        np.testing.assert_array_equal(origins, want_origins)
+        assert len(out) == len(values) > 2
+        np.testing.assert_allclose(out[:, :3, 0], values, rtol=1e-12)
+        np.testing.assert_allclose(out[:, :3, 1], steps, rtol=1e-12)
+        np.testing.assert_array_equal(out[:, 3, 0], leaves[origins, 3, 0])
+        np.testing.assert_array_equal(out[:, -1], leaves[origins, -1])
 
 
 class TestTransformAndReport:
@@ -342,10 +331,11 @@ class TestBranchingPattern:
     # frequency weighting of `generate_bp_poly_taylor` is observable.
     DPARAMS_F0 = np.array([1e-2, 200.0, 0.05])
 
-    @pytest.mark.parametrize("impl", jit_variants(taylor.generate_bp_poly_taylor))
     @pytest.mark.parametrize(
-        "approx_impl",
-        jit_variants(taylor.generate_bp_poly_taylor_approx),
+        ("impl", "approx_impl"),
+        paired_jit_variants(
+            taylor.generate_bp_poly_taylor, taylor.generate_bp_poly_taylor_approx
+        ),
     )
     @pytest.mark.parametrize("moving", [True, False])
     @pytest.mark.parametrize("strategy", ["aggressive", "conservative"])
@@ -380,11 +370,7 @@ class TestBranchingPattern:
 
     @pytest.mark.parametrize("impl", jit_variants(taylor.generate_bp_poly_taylor))
     def test_exact_averages_over_frequencies(self, impl) -> None:
-        """Each level is the mean branching factor, weighted by descendants.
-
-        With single-frequency patterns ``n_i``, level ``l`` of the mix is
-        ``sum_i W_i n_i[l] / sum_i W_i`` with ``W_i = prod_{m < l} n_i[m]``.
-        """
+        """Each level is the mean branching factor, weighted by descendants."""
         freqs = np.array([20.0, 100.0, 400.0])
         mixed = impl(
             typed.List([np.array([0.0]), np.array([0.0]), freqs]),
@@ -407,13 +393,8 @@ class TestBranchingPattern:
                 for f in freqs
             ]
         )
-        weights = np.cumprod(
-            np.hstack([np.ones((len(freqs), 1)), singles[:, :-1]]),
-            axis=1,
-        )
-        expected = (weights * singles).sum(axis=0) / weights.sum(axis=0)
-        np.testing.assert_allclose(mixed, expected, rtol=1e-12)
         assert not np.allclose(singles[0], singles[-1])
+        np.testing.assert_allclose(mixed, descendant_weighted_mean(singles), rtol=1e-12)
 
     @pytest.mark.parametrize(
         "impl",
