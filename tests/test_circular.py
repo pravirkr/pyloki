@@ -33,10 +33,6 @@ from pyloki.utils.misc import C_VAL
 from pyloki.utils.snail import MiddleOutScheme
 from tests.jit_utils import jit_variants
 
-# Library defects found while writing these tests. Each is pinned with a strict xfail
-# so that the fix, when it lands, turns the pin into a failure and forces its removal.
-UNUSED_ISSUE = "#36: two unused circular kernels do not work"
-
 NBINS = 64
 LIMITS = np.array([[-20.0, 20.0], [99.0, 101.0]])  # [accel, freq]
 COUNTS = np.array([16, 64])
@@ -591,14 +587,12 @@ class TestUnusedKernels:
         _assert_phase(phase[0], _phase(T_ADD - T_INIT, delay, f))
         assert idx[0, 0] == _cell(-C_VAL * w**2 * x * np.sin(nu_new), LIMITS[0], 16)
 
-    @pytest.mark.xfail(strict=True, reason=UNUSED_ISSUE, raises=AssertionError)
     @pytest.mark.parametrize("impl", jit_variants(circular.poly_circular_resolve_batch))
     def test_physical_resolve_cell_follows_its_own_phase(self, impl) -> None:
-        """Pin the frequency sign: ``f (1 + v)`` where its phase gives ``f (1 - v)``.
+        """Frequency cell matches the derivative of the returned phase (#36).
 
         Its delay is ``x sin(nu)``, so the instantaneous frequency of its own phase
-        is ``f (1 - omega x cos(nu))``; the kernel uses ``f (1 + ...)``, the opposite
-        of every other resolver here. On this leaf it picks cell 34 against 29.
+        is ``f (1 - omega x cos(nu))``.
         """
         # x = 0.1 light-seconds keeps both frequencies on the grid (no clamping).
         w, x, nu, f = OMEGA, 0.1, 0.7, 100.0
@@ -611,20 +605,6 @@ class TestUnusedKernels:
 
         picked, expected = TestResolve._instantaneous_cell(resolve)  # noqa: SLF001
         assert picked == expected
-
-    @pytest.mark.xfail(strict=True, reason=UNUSED_ISSUE, raises=ValueError)
-    @pytest.mark.parametrize("impl", jit_variants(circular.cir_physical_branch_batch))
-    def test_physical_branch_runs(self, impl) -> None:
-        """Pin a shape error that makes it fail on any input.
-
-        ``psr_utils.poly_taylor_step_d_vec(2, ...)`` returns shape ``(n_batch, 2)``,
-        which the kernel assigns into the single column ``dparam_opt_batch[:, 0]``.
-        """
-        leaves = np.zeros((2, 7, 2))
-        leaves[:, :4, 0] = 1.0
-        leaves[:, :4, 1] = 0.1
-        leaves[:, -2, 0] = 100.0
-        impl(leaves, (20.0, 12.0), NBINS, 1.0, 5, 16)
 
 
 class TestBranchingPattern:

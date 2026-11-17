@@ -376,7 +376,8 @@ def lstsq_weighted(
     a_w = design_matrix * w_sqrt[:, np.newaxis]
     b_w = data * w_sqrt
 
-    x_hat, _, rank, _ = np.linalg.lstsq(a_w, b_w, rcond=None)
+    rcond = float(np.finfo(a_w.dtype).eps) * max(a_w.shape[0], a_w.shape[1])
+    x_hat, _, rank, _ = np.linalg.lstsq(a_w, b_w, rcond=rcond)
 
     # Calculate the covariance matrix
     if rank == design_matrix.shape[1]:  # Full rank
@@ -435,7 +436,8 @@ def determine_ref_segs_pareto(nsegments: int, n_runs: int) -> list[int]:
     # Special case: single anchor → center
     if n_runs == 1:
         return [nsegments // 2]
-    margin = _round_div(nsegments - 1, 2 * n_runs)
+    # Cap margin so hi - lo >= n_runs - 1, ensuring all n_runs anchors are distinct
+    margin = min(_round_div(nsegments - 1, 2 * n_runs), (nsegments - n_runs) // 2)
     lo = margin
     hi = nsegments - 1 - margin
     denom = n_runs - 1

@@ -574,8 +574,10 @@ def trim_empty_func_complex(self: WorldTreeComplex) -> WorldTreeComplex:
 
 @njit(cache=True, fastmath=True)
 def trim_repeats_func(self: WorldTree | WorldTreeComplex) -> None:
+    if self.valid_size == 0:
+        return
     idx = get_unique_indices_scores(
-        self.leaves[: self.valid_size, : self.nparams, 0],
+        self.leaves[: self.valid_size],
         self.scores[: self.valid_size],
     )
     idx_bool = np.zeros(self.valid_size, dtype=np.bool_)
@@ -585,9 +587,11 @@ def trim_repeats_func(self: WorldTree | WorldTreeComplex) -> None:
 
 @njit(cache=True, fastmath=True)
 def trim_repeats_threshold_func(self: WorldTree | WorldTreeComplex) -> float:
+    if self.valid_size == 0:
+        return 0.0
     threshold = np.median(self.scores[: self.valid_size])
     idx = get_unique_indices_scores(
-        self.leaves[: self.valid_size, : self.nparams, 0],
+        self.leaves[: self.valid_size],
         self.scores[: self.valid_size],
     )
     idx_bool = np.zeros(self.valid_size, dtype=np.bool_)
@@ -928,23 +932,31 @@ def get_unique_indices(leaves: np.ndarray) -> np.ndarray:
 
 @njit(cache=True, fastmath=True)
 def get_unique_indices_scores(leaves: np.ndarray, scores: np.ndarray) -> np.ndarray:
-    nparams = leaves.shape[0]
-    unique_dict: dict[int, bool] = {}
+    n_leaves = leaves.shape[0]
+    n_rows = leaves.shape[1]
+    pos_dict: dict[int, int] = {}
     scores_dict: dict[int, float] = {}
-    count_dict: dict[int, int] = {}
-    unique_indices = np.empty(nparams, dtype=np.int64)
+    unique_indices = np.empty(n_leaves, dtype=np.int64)
     count = 0
-    for ii in range(nparams):
-        key = int(np.sum(leaves[ii][-2:, 0] * 10**9) + 0.5)
-        if unique_dict.get(key, False):
+    mask31 = 0x7FFFFFFF
+    mask62 = 0x3FFFFFFFFFFFFFFF
+    for ii in range(n_leaves):
+        # Mix each quantized row value across two 31-bit chunks so all products
+        # stay below 2^62 (exact and overflow-free in both int64 and Python int).
+        key = 0
+        for jj in range(n_rows):
+            quant = int(np.round(leaves[ii, jj, 0] * 1e9))
+            lo = quant & mask31
+            hi = (quant >> 31) & mask31
+            key = (((key & mask31) * 2654435761) ^ (key >> 31) ^ lo) & mask62
+            key = (((key & mask31) * 2654435761) ^ (key >> 31) ^ hi) & mask62
+        if key in pos_dict:
             if scores[ii] > scores_dict[key]:
                 scores_dict[key] = scores[ii]
-                count = count_dict[key]
-                unique_indices[count] = ii
+                unique_indices[pos_dict[key]] = ii
         else:
-            unique_dict[key] = True
+            pos_dict[key] = count
             scores_dict[key] = scores[ii]
-            count_dict[key] = count
             unique_indices[count] = ii
             count += 1
     return unique_indices[:count]

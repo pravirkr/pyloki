@@ -35,9 +35,6 @@ from pyloki.utils import maths, transforms
 from pyloki.utils.misc import C_VAL
 from tests.jit_utils import jit_variants
 
-# Library defects found while writing these tests. Each is pinned with a strict xfail
-# so that the fix, when it lands, turns the pin into a failure and forces its removal.
-
 STRATEGIES = ("conservative", "quadrature", "aggressive")
 
 
@@ -325,24 +322,17 @@ class TestShiftTaylorCircularErrors:
             worst = self._worst_accel_jerk(sig3, sig2, delta_t)[index]
             np.testing.assert_allclose(out[row], worst, rtol=1e-6)
 
-    @pytest.mark.xfail(strict=True, reason="#27", raises=AssertionError)
     @pytest.mark.parametrize(
         "impl",
         jit_variants(transforms.shift_taylor_circular_errors),
     )
-    @pytest.mark.parametrize("delta_t", [2.0, 5.0])
+    @pytest.mark.parametrize("delta_t", [0.5, 2.0, 5.0])
     def test_quadrature_velocity_bounds_the_transport(
         self,
         impl,
         delta_t: float,
     ) -> None:
-        """Pin the velocity term scaling as ``dt`` instead of ``dt**2``.
-
-        ``d1_j = d1 + d3 (1 - cos) / w**2 + d2 sin / w``, so a jerk error reaches the
-        velocity with coefficient up to ``dt**2 / 2``. The kernel uses
-        ``delta_t * sig_d3 / 2``, which has units of acceleration, and so falls
-        short of the transport for ``dt > 1`` (in whatever time unit is used).
-        """
+        """Velocity error bounds ``d1`` transport as ``dt**2 / 2`` for jerk (#27)."""
         sig_jerk_only = np.array([[0.0, 0.0, 1.0, 0.0, 0.0, 0.0]])
         out = impl(
             sig_jerk_only,
@@ -374,7 +364,7 @@ class TestShiftTaylorCircularErrors:
 
 
 class TestTaylorToCircular:
-    """``[snap, jerk, accel, freq] -> [omega, freq, x_cos_phi, x_sin_phi]``."""
+    """``[snap, jerk, accel, freq] -> [omega, freq, x_sin_phi, x_cos_phi]``."""
 
     AMP_LS, OMEGA, PHASE, FREQ = 2.0, 2 * np.pi / 3600.0, 0.9, 200.0
 
@@ -440,21 +430,19 @@ class TestTaylorToCircular:
         )
 
     @pytest.mark.parametrize("impl", jit_variants(transforms.taylor_to_circular_full))
-    @pytest.mark.parametrize("row", [0, 1, 3], ids=["omega", "freq", "x_sin_phi"])
+    @pytest.mark.parametrize("row", [0, 1, 3], ids=["omega", "freq", "x_cos_phi"])
     def test_errors_are_first_order(self, impl, row: int) -> None:
         values, errors = self._inputs()
         out = impl(np.stack([values, errors], axis=-1)[None])[0]
         np.testing.assert_allclose(out[row, 1], self._linear_errors()[row], rtol=1e-5)
 
-    @pytest.mark.xfail(strict=True, reason="#28", raises=AssertionError)
     @pytest.mark.parametrize("impl", jit_variants(transforms.taylor_to_circular_full))
-    def test_x_cos_phi_error_is_first_order(self, impl) -> None:
-        """Pin the accel/omega correlation dropped from ``dx_cos_phi``.
+    def test_x_sin_phi_error_is_first_order(self, impl) -> None:
+        """``dx_sin_phi`` accounts for ``accel`` entering twice via ``omega**2`` (#28).
 
-        ``x_cos_phi = -accel / (omega**2 C)`` with ``omega**2 = -snap / accel``, so it
-        is ``accel**2 / (snap C)``, and accel enters twice. The kernel adds the two
-        routes in quadrature as if independent; at equal relative errors on snap and
-        accel it reports sqrt(3/5) = 0.775 of the first-order error.
+        ``x_sin_phi = accel**2 / (snap * C)``, so relative ``accel`` error enters
+        with weight 2 rather than as independent quadrature terms ``accel`` and
+        ``omega**2``.
         """
         values, errors = self._inputs()
         out = impl(np.stack([values, errors], -1)[None])
@@ -714,20 +702,13 @@ class TestChebyshevLimits:
         generic = transforms.taylor_to_chebyshev_limits_generic(limits, self.TS)
         np.testing.assert_allclose(impl(limits[0, :-1], self.TS), generic[0, :-1])
 
-    @pytest.mark.xfail(strict=True, reason="#26", raises=AssertionError)
     @pytest.mark.parametrize(
         "impl",
         jit_variants(transforms.taylor_to_chebyshev_limits_upto_d2),
     )
     @pytest.mark.parametrize("n_higher", [2, 3, 4])
     def test_upto_d2_unrolls_generic(self, impl, n_higher: int) -> None:
-        """Pin the unrolled branches disagreeing with the docstring and each other.
-
-        The docstring orders the output ``[alpha_kmax, ..., alpha_2]``. The 2- and
-        3-parameter branches return it ascending, and the 4-parameter branch returns
-        it descending but writes ``alpha_2`` to row 0 and then overwrites that row
-        with ``alpha_5``, so ``alpha_2`` is lost and row 3 stays zero.
-        """
+        """Unrolled branches match ``generic`` in descending order (#26)."""
         limits = self._limits(n_higher + 1, n_batch=1)
         generic = transforms.taylor_to_chebyshev_limits_generic(limits, self.TS)
         np.testing.assert_allclose(

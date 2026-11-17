@@ -35,9 +35,6 @@ from numba.core.errors import TypingError
 from pyloki.utils import np_utils
 from tests.jit_utils import jit_variants
 
-# Library defects found while writing these tests. Each is pinned with a strict xfail
-# so that the fix, when it lands, turns the pin into a failure and forces its removal.
-
 
 def _brute_nearest(array: np.ndarray, value: float) -> int:
     """Index of the closest entry; the first (smallest) index on an exact tie."""
@@ -362,18 +359,14 @@ class TestInterpolateMissing:
 
 
 class TestLstsqWeighted:
-    """Contracts run on ``.py_func`` only: the compiled kernel does not compile.
+    """Contracts run on both the compiled kernel and its ``.py_func`` (#23)."""
 
-    It passes ``rcond=None`` to `np.linalg.lstsq`, which numba's overload rejects for
-    every input (`TypingError`); nothing in the library calls it, so nothing noticed.
-    """
-
-    @pytest.mark.xfail(strict=True, reason="#23", raises=TypingError)
     def test_compiled_kernel_compiles(self) -> None:
         design = np.vstack([np.ones(5), np.arange(5.0)]).T
-        np_utils.lstsq_weighted(design, np.arange(5.0), np.ones(5))
+        x_hat, _, _ = np_utils.lstsq_weighted(design, np.arange(5.0), np.ones(5))
+        np.testing.assert_allclose(x_hat, [0.0, 1.0], atol=1e-12)
 
-    @pytest.mark.parametrize("impl", [np_utils.lstsq_weighted.py_func])
+    @pytest.mark.parametrize("impl", jit_variants(np_utils.lstsq_weighted))
     def test_recovers_exact_solution(self, impl) -> None:
         rng = np.random.default_rng(61)
         t = np.linspace(-1, 1, 30)
@@ -388,7 +381,7 @@ class TestLstsqWeighted:
             cov, np.linalg.inv(design.T @ w @ design), rtol=1e-10
         )
 
-    @pytest.mark.parametrize("impl", [np_utils.lstsq_weighted.py_func])
+    @pytest.mark.parametrize("impl", jit_variants(np_utils.lstsq_weighted))
     def test_weights_downweight_outlier(self, impl) -> None:
         t = np.linspace(0, 1, 11)
         design = np.vstack([np.ones_like(t), t]).T
@@ -399,7 +392,7 @@ class TestLstsqWeighted:
         x_hat, _, _ = impl(design, data, errors)
         np.testing.assert_allclose(x_hat, [2.0, 3.0], atol=1e-9)
 
-    @pytest.mark.parametrize("impl", [np_utils.lstsq_weighted.py_func])
+    @pytest.mark.parametrize("impl", jit_variants(np_utils.lstsq_weighted))
     def test_rank_deficient_uses_pinv(self, impl) -> None:
         t = np.linspace(-1, 1, 20)
         design = np.vstack([t, 2 * t]).T  # rank 1
@@ -452,26 +445,17 @@ class TestDetermineRefSegs:
                 assert segs[-1] <= nsegments - 1
                 assert np.all(np.diff(segs) >= 0)
 
-    def test_pareto_anchors_distinct_below_nsegments_minus_one(self) -> None:
-        """No two runs share a reference segment.
-
-        Holds for every ``n_runs`` except ``nsegments - 1``; that case is pinned below.
-        """
+    def test_pareto_anchors_distinct(self) -> None:
+        """No two runs share a reference segment for any valid ``n_runs``."""
         for nsegments in range(1, 200):
-            for n_runs in range(1, nsegments - 1):
+            for n_runs in range(1, nsegments + 1):
                 segs = np_utils.determine_ref_segs_pareto(nsegments, n_runs)
                 assert len(set(segs)) == n_runs, (nsegments, n_runs, segs)
 
-    @pytest.mark.xfail(strict=True, reason="#25", raises=AssertionError)
     @pytest.mark.parametrize("nsegments", [3, 4, 16, 64])
     def test_pareto_anchors_distinct_at_nsegments_minus_one(
         self, nsegments: int
     ) -> None:
-        """Pin two runs landing on one segment at ``n_runs == nsegments - 1``.
-
-        ``margin = round((M - 1) / (2 (M - 1)))`` rounds 1/2 up to 1, so the anchors
-        are squeezed into ``M - 2`` slots: e.g. ``(3, 2) -> [1, 1]``,
-        ``(4, 3) -> [1, 2, 2]``. `prune.py` feeds a user's ``n_runs`` straight in.
-        """
+        """Ensure ``n_runs == nsegments - 1`` gives distinct anchors."""
         segs = np_utils.determine_ref_segs_pareto(nsegments, nsegments - 1)
         assert len(set(segs)) == nsegments - 1, segs

@@ -386,7 +386,7 @@ def get_valid_func(self: MiddleOutScheme, prune_level: int) -> tuple[float, floa
 
 @njit(cache=True, fastmath=True)
 def get_delta_func(self: MiddleOutScheme, level: int) -> float:
-    return self.get_coord(level)[0] - self.ref_time
+    return self.get_coord(level)[0] - (self.ref_idx + 0.5) * self.tsegment
 
 
 @overload(MiddleOutScheme)
