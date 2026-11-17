@@ -92,7 +92,7 @@ class Timer(ContextDecorator):
 
         if self.logger:
             if callable(self.text):
-                text = self.text(self.last)  # ty:ignore[call-top-callable]
+                text = self.text(self.last)
             elif isinstance(self.text, str):
                 text = self.text.format(self.last)
             else:

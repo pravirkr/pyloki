@@ -440,7 +440,8 @@ def get_best_func(
 
 @njit(cache=True, fastmath=True)
 def get_best_k_func(
-    self: WorldTree | WorldTreeComplex, k: int,
+    self: WorldTree | WorldTreeComplex,
+    k: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     valid_size = self.valid_size
     k_take = min(k, valid_size)

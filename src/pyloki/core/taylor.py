@@ -327,7 +327,7 @@ def poly_taylor_transform_batch(
     coord_cur: tuple[float, float],
     tiling_strategy: str,
 ) -> np.ndarray:
-    """Re-center (in-place) the leaves to the next segment reference time."""
+    """Return the leaves re-centred to the next segment reference time (a copy)."""
     delta_t = coord_next[0] - coord_cur[0]
     leaves_batch_trans = np.zeros_like(leaves_batch)
     leaves_batch_trans[:, :-1] = transforms.shift_taylor_full(
@@ -434,7 +434,7 @@ def generate_bp_poly_taylor(
 
     dparam_cur_batch = np.empty((n_freqs, n_params), dtype=np.float64)
     dparam_cur_next = np.empty((n_freqs, n_params), dtype=np.float64)
-    dparam_d_vec = np.empty((n_freqs, n_params + 1), dtype=np.float64)
+    dparam_d_vec = np.zeros((n_freqs, n_params + 1), dtype=np.float64)
     for i in range(n_freqs):
         dparam_cur_batch[i, :n_params] = dparams_act
     # f = f0(1 - v / C) => dv = -(C/f0) * df

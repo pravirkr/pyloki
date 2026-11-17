@@ -116,9 +116,7 @@ def _run_search(seed: int, outdir: Path) -> dict:
     )
     tim_data = cfg.generate(shape="gaussian")
 
-    limits = ParamLimits.from_upper(
-        FREQ_RANGE, [ACCEL], ACCEL_SEARCH_RANGE, cfg.tobs
-    )
+    limits = ParamLimits.from_upper(FREQ_RANGE, [ACCEL], ACCEL_SEARCH_RANGE, cfg.tobs)
     bseg_ffa = NSAMPS // NSEGMENTS
     search_cfg = PulsarSearchConfig(
         nsamps=cfg.nsamps,
