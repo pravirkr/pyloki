@@ -403,7 +403,7 @@ def generalized_cheb_pols(poly_order: int, t0: float, scale: float) -> np.ndarra
     shifted_pols = np.zeros_like(scaled_pols)
     for iorder in range(poly_order + 1):
         for iterm in range(iorder + 1):
-            shifted = nbinom(iorder, iterm) * (-t0 / scale) ** (iorder - iterm)
+            shifted = nbinom(iorder, iterm) * (-t0) ** (iorder - iterm)
             shifted_pols[iorder, iterm] = shifted
     return np.dot(scaled_pols, shifted_pols)
 

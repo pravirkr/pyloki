@@ -453,15 +453,10 @@ class TestChebyshevPolysTable:
         """Correct whenever ``t0 == 0`` or ``scale == 1``; see the xfail below."""
         self._check_generalized(impl, t0, scale)
 
-    @pytest.mark.xfail(strict=True, reason="#24", raises=AssertionError)
-    def test_generalized_shifted_and_scaled(self) -> None:
-        """Pin the shift being divided by ``scale`` twice.
-
-        The docstring defines row n as ``T_n((x - t0) / scale)``. The kernel returns
-        ``T_n((x - t0 / scale) / scale)``: the shift is applied after scaling. The
-        two agree only at ``t0 = 0`` or ``scale = 1``.
-        """
-        self._check_generalized(maths.generalized_cheb_pols, 0.3, 1.7)
+    @pytest.mark.parametrize("impl", jit_variants(maths.generalized_cheb_pols))
+    def test_generalized_shifted_and_scaled(self, impl) -> None:
+        """Generalized Chebyshev polynomials match ``T_n((x - t0) / scale)``."""
+        self._check_generalized(impl, 0.3, 1.7)
 
     @staticmethod
     def _check_generalized(impl, t0: float, scale: float) -> None:
