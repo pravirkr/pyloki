@@ -65,6 +65,7 @@ tests = [
     "pytest-sugar",
     "pytest-benchmark",
     "pytest-mock",
+    "pytest-xdist",
     "sympy",
 ]
 dev = ["pre-commit", "ruff", "ty"]

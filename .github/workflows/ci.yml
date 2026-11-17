@@ -81,11 +81,14 @@ jobs:
           path: ${{ runner.temp }}/numba-cache
           key: numba-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-nb${{ steps.numba-version.outputs.version }}-${{ hashFiles('src/**/*.py') }}
 
+      # Most of the run is Numba compiling, one core per process, so xdist spreads
+      # the compiling across workers as well as the tests. `loadfile` keeps each
+      # file on one worker so module-scoped pipeline fixtures are built once.
       - name: Run pytest
         env:
           NUMBA_CACHE_DIR: ${{ runner.temp }}/numba-cache
         run: >-
-          uv run --no-sync pytest -p no:sugar
+          uv run --no-sync pytest -p no:sugar -n auto --dist loadfile
           --cov=src --cov-report=xml --durations=25
 
       # Saved even when tests fail: the compiled kernels are still valid.
