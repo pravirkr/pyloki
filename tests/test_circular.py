@@ -35,7 +35,6 @@ from tests.jit_utils import jit_variants
 
 # Library defects found while writing these tests. Each is pinned with a strict xfail
 # so that the fix, when it lands, turns the pin into a failure and forces its removal.
-FLAG_ISSUE = "#31: the basis flag is written to the wrong leaves"
 UNUSED_ISSUE = "#36: two unused circular kernels do not work"
 
 NBINS = 64
@@ -392,15 +391,13 @@ class TestResolve:
         )
         assert leaves[0, -1, 1] == 1
 
-    @pytest.mark.xfail(strict=True, reason=FLAG_ISSUE, raises=AssertionError)
     @pytest.mark.parametrize("impl", jit_variants(circular.circ_taylor_resolve_batch))
     def test_moving_grid_flags_every_class(self, impl) -> None:
-        """Pin the Taylor branch writing the flag to the crackle indices.
+        """Each class writes its basis flag to its own leaves (#31).
 
-        Inside ``if idx_taylor.size > 0`` the kernel sets
-        ``leaves_batch[idx_circ_crackle, -1, 1] = 0``: the crackle leaves lose their
-        flag (2) whenever a Taylor leaf is present, and the Taylor leaves keep
-        whatever flag they had. The flags reach the result file through the report.
+        Before #31 was fixed, ``if idx_taylor.size > 0`` wrote
+        ``leaves_batch[idx_circ_crackle, -1, 1] = 0``, overwriting the crackle flag (2)
+        whenever a Taylor leaf was present and leaving Taylor leaves unchanged.
         """
         leaves = np.concatenate([_snap_leaf(), _hole_leaf(), _taylor_leaf()])
         leaves[:, -1, 1] = 9.0
