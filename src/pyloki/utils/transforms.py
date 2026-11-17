@@ -196,14 +196,14 @@ def taylor_to_circular_full(param_sets: np.ndarray) -> np.ndarray:
     Parameters
     ----------
     param_sets : np.ndarray
-        The Taylor parameters to convert. Shape is (nparams, 2).
+        The Taylor parameters to convert. Shape is (n_batch, 4, 2).
         params: [snap, jerk, accel, freq]
         dparams: [dsnap, djerk, daccel, dfreq]
 
     Returns
     -------
     np.ndarray
-        The circular parameters. Shape is (nparams, 2).
+        The circular parameters. Shape is (n_batch, 4, 2).
         params: [omega, freq, x_cos_phi, x_sin_phi]
         dparams: [domega, dfreq, dx_cos_phi, dx_sin_phi]
     """
@@ -234,9 +234,8 @@ def taylor_to_circular_full(param_sets: np.ndarray) -> np.ndarray:
         + ((freq / (omega_sq * C_VAL)) * djerk) ** 2
         + ((freq * jerk / (omega_sq**2 * C_VAL)) * d_omega_sq) ** 2,
     )
-    out[:, 2, 1] = np.sqrt(
-        (daccel / (omega_sq * C_VAL)) ** 2
-        + ((accel * d_omega_sq) / (omega_sq**2 * C_VAL)) ** 2,
+    out[:, 2, 1] = np.abs(out[:, 2, 0]) * np.sqrt(
+        (2 * daccel / accel) ** 2 + (dsnap / snap) ** 2,
     )
     out[:, 3, 1] = np.sqrt(
         (djerk / (omega_sq * np.sqrt(omega_sq) * C_VAL)) ** 2

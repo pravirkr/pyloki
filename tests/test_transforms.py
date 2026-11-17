@@ -446,15 +446,13 @@ class TestTaylorToCircular:
         out = impl(np.stack([values, errors], axis=-1)[None])[0]
         np.testing.assert_allclose(out[row, 1], self._linear_errors()[row], rtol=1e-5)
 
-    @pytest.mark.xfail(strict=True, reason="#28", raises=AssertionError)
     @pytest.mark.parametrize("impl", jit_variants(transforms.taylor_to_circular_full))
     def test_x_cos_phi_error_is_first_order(self, impl) -> None:
-        """Pin the accel/omega correlation dropped from ``dx_cos_phi``.
+        """``dx_cos_phi`` accounts for ``accel`` entering twice via ``omega**2`` (#28).
 
-        ``x_cos_phi = -accel / (omega**2 C)`` with ``omega**2 = -snap / accel``, so it
-        is ``accel**2 / (snap C)``, and accel enters twice. The kernel adds the two
-        routes in quadrature as if independent; at equal relative errors on snap and
-        accel it reports sqrt(3/5) = 0.775 of the first-order error.
+        ``x_cos_phi = accel**2 / (snap * C)``, so relative ``accel`` error enters
+        with weight 2 rather than as independent quadrature terms ``accel`` and
+        ``omega**2``.
         """
         values, errors = self._inputs()
         out = impl(np.stack([values, errors], -1)[None])
