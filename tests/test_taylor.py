@@ -412,3 +412,17 @@ class TestBranchingPattern:
                 **kwargs,
                 branch_max=int(full.max()),
             )
+
+    @pytest.mark.parametrize(
+        "impl",
+        jit_variants(taylor.generate_bp_poly_taylor_approx),
+    )
+    def test_approx_flags_a_pattern_above_branch_max(self, impl) -> None:
+        param_arr = typed.List([np.array([0.0]), np.array([100.0])])
+        dparams = np.array([5000.0, 0.005])
+        args = (10.0, 2, NBINS, 1.0, 0)
+        kwargs = {"use_moving_grid": True, "tiling_strategy": "aggressive", "itree": 0}
+        full = impl(param_arr, dparams, *args, **kwargs, branch_max=64)
+        assert full[0] > 8
+        with pytest.raises(ValueError, match="truncated due to branch_max"):
+            impl(param_arr, dparams, *args, **kwargs, branch_max=8)

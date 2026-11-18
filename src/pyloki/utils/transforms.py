@@ -222,7 +222,8 @@ def taylor_to_circular_full(param_sets: np.ndarray) -> np.ndarray:
     omega_sq = -snap / accel
     out = np.empty_like(param_sets)
     out[:, 0, 0] = np.sqrt(omega_sq)
-    out[:, 1, 0] = freq * (1 - (-jerk / (omega_sq)) / C_VAL)
+    # Invert f_obs = f0 * (1 - v_orb / c) with v_orb = -jerk / omega_sq
+    out[:, 1, 0] = freq * (1 - jerk / (omega_sq * C_VAL))
     out[:, 2, 0] = -accel / (omega_sq * C_VAL)
     out[:, 3, 0] = -jerk / (omega_sq * np.sqrt(omega_sq) * C_VAL)
     d_omega_sq = np.sqrt(
@@ -230,7 +231,7 @@ def taylor_to_circular_full(param_sets: np.ndarray) -> np.ndarray:
     )
     out[:, 0, 1] = 0.5 * d_omega_sq / np.sqrt(omega_sq)
     out[:, 1, 1] = np.sqrt(
-        ((1 + jerk / (omega_sq * C_VAL)) * dfreq) ** 2
+        ((1 - jerk / (omega_sq * C_VAL)) * dfreq) ** 2
         + ((freq / (omega_sq * C_VAL)) * djerk) ** 2
         + ((freq * jerk / (omega_sq**2 * C_VAL)) * d_omega_sq) ** 2,
     )
@@ -805,6 +806,13 @@ def taylor_to_chebyshev_limits_full(taylor_limits: np.ndarray, ts: float) -> np.
         Order is [alpha_kmax, ..., alpha_2, alpha_1].
     """
     n_batch, n_params, _ = taylor_limits.shape
+
+    if n_params == 1:
+        # d1 -> alpha_1
+        result = np.zeros((n_batch, 1, 2), dtype=np.float64)
+        result[:, 0, 0] = taylor_limits[:, 0, 0] * ts
+        result[:, 0, 1] = taylor_limits[:, 0, 1] * ts
+        return result
 
     if n_params == 2:
         # d2, d1 -> alpha_2, alpha_1

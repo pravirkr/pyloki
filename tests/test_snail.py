@@ -23,10 +23,12 @@ compiled-only.
 
 from __future__ import annotations
 
+import pickle
+
 import numpy as np
 import pytest
 
-from pyloki.utils import snail
+from pyloki.utils import misc, snail
 from tests.jit_utils import jit_cases, jit_variants
 
 SCHEMES = [
@@ -264,6 +266,7 @@ class TestStride:
     @pytest.mark.parametrize("impl", jit_variants(snail.get_anchor_level_func))
     def test_anchor_with_unit_stride_is_previous_level(self, impl) -> None:
         s = _scheme((7, 2, 0.5, 1))
+        assert impl(s, 0) == 0
         assert [impl(s, level) for level in range(1, 7)] == list(range(6))
 
     @pytest.mark.parametrize("impl", jit_variants(snail.do_transform_func))
@@ -323,3 +326,17 @@ class TestValidAndMethods:
         for impl in (method, method.py_func):
             seg_idx, _ = impl(s, 3)
             np.testing.assert_array_equal(seg_idx, s.data[:4])
+
+
+class TestPicklableStructRefWrapper:
+    def test_round_trips_positional_and_keyword_args(self) -> None:
+        wrapper = misc.PicklableStructRefWrapper(
+            snail.MiddleOutScheme, 7, 2, tsegment=0.5, stride=3
+        )
+        restored = pickle.loads(pickle.dumps(wrapper))  # noqa: S301 -- in-memory round-trip
+        assert (
+            restored.nsegments,
+            restored.ref_idx,
+            restored.tsegment,
+            restored.stride,
+        ) == (7, 2, 0.5, 3)

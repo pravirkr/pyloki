@@ -277,6 +277,34 @@ class TestOverflow:
         assert impl(tree, np.zeros(0, np.float32), 1.25) == 1.25
         assert tree.valid_size == 5
 
+    @pytest.mark.parametrize("impl", jit_variants(wt.prune_on_overload_func))
+    def test_prune_on_overload_not_overloaded_is_noop(self, cls, dtype, impl) -> None:
+        tree = _tree(cls, dtype, self.SIZE, 3)
+        incoming = np.linspace(-1.0, 1.0, 4, dtype=np.float32)
+        assert impl(tree, incoming, 0.75) == 0.75
+        assert tree.valid_size == 3
+
+    @pytest.mark.parametrize("impl", jit_variants(wt.add_batch_func))
+    def test_add_batch_tie_at_current_threshold_never_exceeds_capacity(
+        self, cls, dtype, impl
+    ) -> None:
+        tree = _tree(cls, dtype, self.SIZE, 6)
+        tree.scores[:6] = np.full(6, 10.0, dtype=np.float32)
+        tree.scores_ep[:6] = tree.scores[:6]
+        batch = _rows(6, dtype, seed=55)
+        batch[2][:] = np.full(6, 5.0, dtype=np.float32)
+        threshold = impl(tree, *batch, -np.inf)
+        assert threshold == math.nextafter(5.0, math.inf)
+        assert tree.valid_size <= self.SIZE
+
+        tree2 = _tree(cls, dtype, 4, 3)
+        tree2.scores[:3] = np.full(3, np.inf, dtype=np.float32)
+        tree2.scores_ep[:3] = np.full(3, np.inf, dtype=np.float32)
+        batch2 = _rows(3, dtype, seed=56)
+        batch2[2][:] = np.full(3, np.inf, dtype=np.float32)
+        impl(tree2, *batch2, -np.inf)
+        assert tree2.valid_size == 4
+
 
 @pytest.mark.parametrize(("cls", "dtype"), TREES)
 class TestSelection:
@@ -418,6 +446,20 @@ class TestUniqueIndices:
         leaves = np.zeros((5, 4, 2))
         leaves[:, -1, 0] = [100.0, 101.0, 100.0 + 1e-12, 102.0, 101.0]
         np.testing.assert_array_equal(impl(leaves), [0, 1, 3])
+
+    @pytest.mark.parametrize("impl", jit_variants(wt.get_unique_indices_scores))
+    def test_scores_large_d0_values_do_not_collide(self, impl) -> None:
+        leaves = self._leaves(
+            [
+                (1.5e10, 100.0),
+                (1.5e10 + 1.0, 100.0),
+                (1.5e10 + 2.0, 100.0),
+                (-1.5e10, 100.0),
+                (1.5e10, 100.0),
+            ]
+        )
+        scores = np.array([1.0, 2.0, 3.0, 4.0, 10.0], dtype=np.float32)
+        np.testing.assert_array_equal(np.sort(impl(leaves, scores)), [1, 2, 3, 4])
 
     @staticmethod
     def _leaves(pairs: list[tuple[float, float]]) -> np.ndarray:

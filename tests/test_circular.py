@@ -236,6 +236,24 @@ class TestResolve:
         assert idx[0, 0] == grid_cell(state[-3], LIMITS[0], 16)
         assert idx[0, 1] == grid_cell(100.0 * (1 - state[-2] / C_VAL), LIMITS[1], 64)
 
+    @pytest.mark.parametrize(
+        "impl", jit_variants(circular.circ_taylor_fixed_resolve_batch)
+    )
+    def test_fixed_grid_flags_every_class(self, impl) -> None:
+        leaves = np.concatenate([_snap_leaf(), _hole_leaf(), _taylor_leaf()])
+        leaves[:, -1, 1] = 9.0
+        impl(
+            leaves,
+            (T_ADD, 1.0),
+            (T_INIT, 1.0),
+            (T_INIT, 1.0),
+            COUNTS,
+            LIMITS,
+            NBINS,
+            SIG,
+        )
+        np.testing.assert_array_equal(leaves[:, -1, 1], [1, 2, 0])
+
     def test_circular_propagator_matches_the_analytic_orbit(self) -> None:
         """Guard the reference: the propagator reproduces the orbit it models."""
         np.testing.assert_allclose(
@@ -419,12 +437,12 @@ class TestBranch:
         needs = shift >= 1.0 - 1e-12
         first = []  # (params, steps, origin)
         for i, leaf in enumerate(leaves):
-            axes, steps = [[leaf[0, 0]]], []
-            steps.append(
+            c_step = (
                 psr_utils.branch_dparam_crackle(leaf[0, 1], dnew[i, 0], branch_max)
                 if needs[i, 0]
-                else leaf[0, 1],
+                else leaf[0, 1]
             )
+            axes, steps = [[leaf[0, 0]]], [c_step]
             for j in range(1, 5):
                 if needs[i, j]:
                     vals, dact = psr_utils.branch_param(
@@ -513,13 +531,35 @@ class TestUnusedKernels:
         for g, w in zip(got, want, strict=True):
             np.testing.assert_array_equal(g, w)
 
+    @pytest.mark.parametrize("impl", jit_variants(circular.get_circ_chebyshev_mask))
+    def test_chebyshev_mask_propagates_dalpha4(self, impl) -> None:
+        # Unbranched dalpha_5 must not inflate djerk and suppress a hole leaf.
+        hole = _hole_leaf()
+        cheb_hole = hole.copy()
+        cheb_hole[:, :-1] = transforms.taylor_to_cheby_full(hole[:, :-1], 100.0)
+        cheb_hole[0, 0, 1] = 1e6
+        snap_h, crackle_h, tay_h = impl(cheb_hole, 100.0, SIG)
+        assert list(snap_h) == []
+        assert list(crackle_h) == [0]
+        assert list(tay_h) == []
+
+        # dalpha_4 -> daccel: inflating dalpha_4 alone makes daccel exceed |accel|/SIG
+        # even while |snap|/dsnap > SIG stays physical, demoting the leaf to Taylor.
+        cheb = np.zeros((1, 7, 2))
+        cheb[0, 1, :] = [100.0, 10.0]  # snap = 1200, dsnap = 120 (|snap|/dsnap = 10)
+        cheb[0, 3, :] = [390.0, 1.0]  # accel = -10, daccel = hypot(1, 40) > 40
+        snap_s, crackle_s, tay_s = impl(cheb, 2.0, SIG)
+        assert list(snap_s) == []
+        assert list(crackle_s) == []
+        assert list(tay_s) == [0]
+
     @pytest.mark.parametrize("impl", jit_variants(circular.poly_circular_resolve_batch))
     def test_physical_resolve_phase_and_accel(self, impl) -> None:
-        """``[omega, x cos nu, x sin nu, f]`` with ``x`` in light-seconds."""
+        """``[omega, freq, x sin phi, x cos phi]`` with ``x`` in light-seconds."""
         # x = 0.1 light-seconds keeps both frequencies on the grid (no clamping).
         w, x, nu, f = OMEGA, 0.1, 0.7, 100.0
         leaf = np.zeros((1, 6, 2))
-        leaf[0, :4, 0] = [w, x * np.cos(nu), x * np.sin(nu), f]
+        leaf[0, :4, 0] = [w, f, x * np.sin(nu), x * np.cos(nu)]
         idx, phase = impl(leaf, (T_ADD, 1.0), (T_INIT, 1.0), COUNTS, LIMITS, NBINS)
         nu_new = nu + w * (T_ADD - T_INIT)
         delay = x * np.sin(nu_new) - x * np.sin(nu)
@@ -536,7 +576,7 @@ class TestUnusedKernels:
         # x = 0.1 light-seconds keeps both frequencies on the grid (no clamping).
         w, x, nu, f = OMEGA, 0.1, 0.7, 100.0
         leaf = np.zeros((1, 6, 2))
-        leaf[0, :4, 0] = [w, x * np.cos(nu), x * np.sin(nu), f]
+        leaf[0, :4, 0] = [w, f, x * np.sin(nu), x * np.cos(nu)]
 
         def resolve(t: float) -> tuple[np.ndarray, float]:
             idx, ph = impl(leaf, (t, 1.0), (T_INIT, 1.0), COUNTS, LIMITS, NBINS)
@@ -544,6 +584,38 @@ class TestUnusedKernels:
 
         picked, expected = instantaneous_cell(resolve, T_ADD, 100.0)
         assert picked == expected
+
+    @pytest.mark.parametrize("impl", jit_variants(circular.poly_circular_resolve_batch))
+    def test_taylor_to_circular_round_trips_into_physical_resolve(self, impl) -> None:
+        w, x, nu, f0 = OMEGA, 0.1, 0.7, 100.0
+        snap = C_VAL * x * w**4 * np.sin(nu)
+        jerk = -C_VAL * x * w**3 * np.cos(nu)
+        accel = -C_VAL * x * w**2 * np.sin(nu)
+        vel = C_VAL * x * w * np.cos(nu)
+        freq_obs = f0 * (1.0 - vel / C_VAL)
+        taylor_leaf = np.zeros((1, 4, 2))
+        taylor_leaf[0, :, 0] = [snap, jerk, accel, freq_obs]
+        taylor_leaf[0, :, 1] = np.abs(taylor_leaf[0, :, 0]) * 1e-3 + 1e-12
+
+        circ = transforms.taylor_to_circular_full(taylor_leaf)
+        leaf = np.zeros((1, 6, 2))
+        leaf[0, :4] = circ[0]
+        f_rest = float(circ[0, 1, 0])
+        assert f_rest == pytest.approx(f0, rel=1e-5)
+
+        idx0, phase0 = impl(leaf, (T_INIT, 1.0), (T_INIT, 1.0), COUNTS, LIMITS, NBINS)
+        assert_phase(phase0[0], 0.0)
+        assert idx0[0, 0] == grid_cell(accel, LIMITS[0], 16)
+        assert idx0[0, 1] == grid_cell(freq_obs, LIMITS[1], 64)
+
+        idx1, phase1 = impl(leaf, (T_ADD, 1.0), (T_INIT, 1.0), COUNTS, LIMITS, NBINS)
+        nu_new = nu + w * (T_ADD - T_INIT)
+        delay = x * np.sin(nu_new) - x * np.sin(nu)
+        accel_new = -C_VAL * x * w**2 * np.sin(nu_new)
+        freq_new = f_rest * (1.0 - w * x * np.cos(nu_new))
+        assert_phase(phase1[0], expected_phase(T_ADD - T_INIT, delay, f_rest))
+        assert idx1[0, 0] == grid_cell(accel_new, LIMITS[0], 16)
+        assert idx1[0, 1] == grid_cell(freq_new, LIMITS[1], 64)
 
 
 class TestBranchingPattern:

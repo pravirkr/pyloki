@@ -418,16 +418,18 @@ class TestCircularRouting:
         )
 
     def test_report_fixed_grid_recentres(self) -> None:
-        """The fixed-grid report must re-centre, as for `dyn_poly_taylor` (#34)."""
+        """The fixed-grid report must re-centre circularly before reporting."""
         leaves = _circ_leaves()
         got = _circ(moving=False).report(leaves.copy(), (T_ADD, 20.0), (T_INIT, 5.0))
-        recentred = taylor.poly_taylor_transform_batch(
+        recentred = circular.circ_taylor_transform_batch(
             leaves,
             (T_ADD, 20.0),
             (T_INIT, 5.0),
             "aggressive",
+            2.0,
         )
         np.testing.assert_allclose(got, taylor.poly_taylor_report_batch(recentred))
+        assert not np.allclose(got, taylor.poly_taylor_report_batch(leaves))
 
 
 PRUNE_BUNDLES = [

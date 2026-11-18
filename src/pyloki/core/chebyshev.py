@@ -23,7 +23,7 @@ def poly_chebyshev_seed(
     Parameters
     ----------
     param_arr : list[np.ndarray]
-        Parameter array for each dimension; only (acceleration, frequency).
+        Parameter array for each dimension, ordered [..., acc, freq].
     dparams : np.ndarray
         Parameter step (grid) sizes for each dimension. Shape is (poly_order,).
         Order is reversed [..., acc, freq].
@@ -282,10 +282,16 @@ def poly_chebyshev_fixed_resolve_batch(
         scale_cur_fixed,
         t0_add,
     )
+    n_poly = param_vec_batch.shape[1]
+    d0_init = np.zeros(len(param_vec_batch), dtype=np.float64)
+    sign = 1.0
+    for idx in range(n_poly - 1, -1, -2):
+        d0_init += sign * param_vec_batch[:, idx]
+        sign = -sign
     accel_new_batch = dvec_t_add[:, -3]
     vel_new_batch = dvec_t_add[:, -2]
     freq_new_batch = f0_batch * (1 - vel_new_batch / C_VAL)
-    delay_batch = dvec_t_add[:, -1] / C_VAL
+    delay_batch = (dvec_t_add[:, -1] - d0_init) / C_VAL
     relative_phase_batch = psr_utils.get_phase_idx(
         t0_add - t0_init,
         f0_batch,
@@ -449,7 +455,7 @@ def generate_bp_poly_chebyshev_approx(
             )
         leaf = leaves_arr[0:1]  # shape: (1, total_size)
     # Check if any branches is truncated due to branch_max
-    if np.any(branching_pattern == branch_max):
+    if np.any(branching_pattern >= branch_max):
         msg = "Branching pattern is truncated due to branch_max. Increase branch_max."
         raise ValueError(msg)
     return branching_pattern

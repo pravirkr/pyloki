@@ -559,6 +559,7 @@ def circ_taylor_fixed_resolve_batch(
             t0_add - t0_init,
         )
         dvec_t_add[idx_circ_snap] = dvec_t_add_circ_snap
+        leaves_batch[idx_circ_snap, -1, 1] = 1
 
     if idx_circ_crackle.size > 0:
         dvec_t_add_circ_crackle = transforms.shift_taylor_circular_params(
@@ -567,6 +568,7 @@ def circ_taylor_fixed_resolve_batch(
             in_hole=True,
         )
         dvec_t_add[idx_circ_crackle] = dvec_t_add_circ_crackle
+        leaves_batch[idx_circ_crackle, -1, 1] = 2
 
     if idx_taylor.size > 0:
         dvec_t_add_norm = transforms.shift_taylor_params(
@@ -574,6 +576,7 @@ def circ_taylor_fixed_resolve_batch(
             t0_add - t0_init,
         )
         dvec_t_add[idx_taylor] = dvec_t_add_norm
+        leaves_batch[idx_taylor, -1, 1] = 0
 
     accel_new_batch = dvec_t_add[:, -3]
     vel_new_batch = dvec_t_add[:, -2]
@@ -743,7 +746,7 @@ def get_circ_chebyshev_mask(
     jerk = (24 / t_s**3) * (alpha_3 - 5 * alpha_5)
     djerk = (24 / t_s**3) * dalpha_3
     accel = (4 / t_s**2) * (alpha_2 - 4 * alpha_4)
-    daccel = (4 / t_s**2) * dalpha_2
+    daccel = (4 / t_s**2) * np.hypot(dalpha_2, 4.0 * dalpha_4)
 
     return get_circ_mask(
         crackle,
@@ -770,11 +773,11 @@ def poly_circular_resolve_batch(
     _, _, _ = leaf_batch.shape
     delta_t = coord_add[0] - coord_init[0]
 
-    # Extract parameters leaf_batch[:, :-2]
+    # Extract parameters [omega, freq, x_sin_phi, x_cos_phi]
     omega_orb_batch = leaf_batch[:, 0, 0]
-    x_cos_nu_batch = leaf_batch[:, 1, 0]
+    f_cur_batch = leaf_batch[:, 1, 0]
     x_sin_nu_batch = leaf_batch[:, 2, 0]
-    f_cur_batch = leaf_batch[:, 3, 0]
+    x_cos_nu_batch = leaf_batch[:, 3, 0]
 
     # x is already in light seconds (no division by C_VAL)
     # Evolve the phase to the new time t_j = t_i + delta_t

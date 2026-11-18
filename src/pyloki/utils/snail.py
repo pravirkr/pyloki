@@ -272,13 +272,13 @@ def get_anchor_level_func(self: MiddleOutScheme, level: int) -> int:
     if level < 0 or level >= self.nsegments:
         msg = f"level must be in [0, {self.nsegments - 1}], got {level}."
         raise ValueError(msg)
+    if level == 0:
+        return 0
     if self.stride == 1:
         return level - 1
     # We are at 'level'. The grid state was last updated at 'last_transform'
     # If we are processing level L, the grid was prepared after L-1.
     # We find the largest multiple of stride <= L-1.
-    if level == 0:
-        return 0
     return ((level - 1) // self.stride) * self.stride
 
 

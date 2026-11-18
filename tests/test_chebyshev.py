@@ -117,6 +117,37 @@ class TestResolve:
         assert idx[0, 1] == grid_cell(freq, LIMITS[1], 64)
 
     @pytest.mark.parametrize(
+        "impl",
+        jit_variants(chebyshev.poly_chebyshev_fixed_resolve_batch),
+    )
+    def test_fixed_grid_subtracts_reference_position_offset(self, impl) -> None:
+        """Nonzero initial offset P(t_init) is subtracted from P(t_add)."""
+        leaf = _cheby_leaf([2e-3, 5.0, 0.0, 1.3e5], 100.0)
+        idx_fix, phase_fix = impl(
+            leaf,
+            (T_ADD, 1.0),
+            (0.0, SCALE),
+            (T_INIT, 1.0),
+            COUNTS,
+            LIMITS,
+            NBINS,
+        )
+        p = _series(leaf[0, :4, 0], T_INIT, SCALE)
+        delay = (p(T_ADD) - p(T_INIT)) / C_VAL
+        assert_phase(phase_fix[0], expected_phase(T_ADD - T_INIT, delay, 100.0))
+        idx_mov, phase_mov = chebyshev.poly_chebyshev_resolve_batch(
+            leaf,
+            (T_ADD, 1.0),
+            (T_INIT, SCALE),
+            (T_INIT, 1.0),
+            COUNTS,
+            LIMITS,
+            NBINS,
+        )
+        np.testing.assert_array_equal(idx_fix, idx_mov)
+        assert_phase(phase_fix[0], phase_mov[0])
+
+    @pytest.mark.parametrize(
         "impl", jit_variants(chebyshev.poly_chebyshev_resolve_batch)
     )
     @pytest.mark.parametrize("t_cur", [10.0, 18.3719])
@@ -405,3 +436,17 @@ class TestBranchingPattern:
                 **kwargs,
                 branch_max=int(full.max()),
             )
+
+    @pytest.mark.parametrize(
+        "impl",
+        jit_variants(chebyshev.generate_bp_poly_chebyshev_approx),
+    )
+    def test_approx_flags_a_pattern_above_branch_max(self, impl) -> None:
+        param_arr = typed.List([np.array([0.0]), np.array([100.0])])
+        dparams = np.array([5000.0, 0.005])
+        args = (10.0, 2, NBINS, 1.0, 0)
+        kwargs = {"use_moving_grid": True, "tiling_strategy": "aggressive", "itree": 0}
+        full = impl(param_arr, dparams, *args, **kwargs, branch_max=64)
+        assert full[0] > 8
+        with pytest.raises(ValueError, match="truncated due to branch_max"):
+            impl(param_arr, dparams, *args, **kwargs, branch_max=8)

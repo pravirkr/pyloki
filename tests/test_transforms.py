@@ -395,7 +395,7 @@ class TestTaylorToCircular:
         return np.array(
             [
                 np.sqrt(w_sq),
-                freq * (1 + jerk / (w_sq * C_VAL)),
+                freq * (1 - jerk / (w_sq * C_VAL)),
                 -accel / (w_sq * C_VAL),
                 -jerk / (w_sq**1.5 * C_VAL),
             ]
@@ -420,7 +420,7 @@ class TestTaylorToCircular:
         np.testing.assert_allclose(out[0, 0], self.OMEGA, rtol=1e-12)
         np.testing.assert_allclose(
             out[1, 0],
-            self.FREQ * (1 - velocity / C_VAL),
+            self.FREQ * (1 + velocity / C_VAL),
             rtol=1e-12,
         )
         np.testing.assert_allclose(
@@ -693,7 +693,7 @@ class TestChebyshevLimits:
         "impl",
         jit_variants(transforms.taylor_to_chebyshev_limits_full),
     )
-    @pytest.mark.parametrize("n_params", [2, 3, 4, 5])
+    @pytest.mark.parametrize("n_params", [1, 2, 3, 4, 5])
     def test_full_unrolls_generic(self, impl, n_params: int) -> None:
         limits = self._limits(n_params)
         np.testing.assert_allclose(
