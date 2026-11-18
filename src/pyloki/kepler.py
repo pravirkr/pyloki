@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import attrs
@@ -35,29 +36,78 @@ def semi_major_axis(mass: float, p_orb: float) -> float:
     return float(a.value)
 
 
-def mass_function(radial_velocity_ratio: float, p_orb: float) -> float:
+def mass_function(
+    radial_velocity_ratio: float,
+    p_orb: float,
+    ecc: float = 0.0,
+) -> float:
     r"""
     Calculate the mass function of a binary system.
 
     .. math::
-        f = \frac{(M_2 \sin(i))^3}{(M_1 + M_2)^2} = \frac{K^3 P}{2 \pi G}
+        f = \frac{(M_2 \sin(i))^3}{(M_1 + M_2)^2}
+          = \frac{K^3 P (1 - e^2)^{3/2}}{2 \pi G M_\odot}
 
     Parameters
     ----------
     radial_velocity_ratio : float
-        The ratio of the radial velocity semi-amplitude of \( K \) to c.
+        The ratio of the radial velocity semi-amplitude :math:`K` to :math:`c`.
     p_orb : float
         Orbital period in seconds.
+    ecc : float, optional
+        Orbital eccentricity (``0 <= ecc < 1``), by default 0.0.
 
     Returns
     -------
     float
         Mass function of the system in solar masses.
     """
-    av = radial_velocity_ratio * constants.c / 2
-    omega = 2 * np.pi / p_orb
-    f = av**3 / (omega * constants.G)
+    if p_orb <= 0.0:
+        msg = "p_orb must be positive."
+        raise ValueError(msg)
+    if not (0.0 <= ecc < 1.0):
+        msg = "ecc must satisfy 0 <= ecc < 1."
+        raise ValueError(msg)
+    av = radial_velocity_ratio * constants.c
+    omega = 2.0 * np.pi / p_orb
+    f = (av**3 / (omega * constants.G)) * ((1.0 - ecc**2) ** 1.5) / constants.M_sun
     return float(f.value)
+
+
+@njit(cache=True, fastmath=True)
+def keplerian_ecc_anomaly(
+    t_arr: np.ndarray,
+    p_orb: float,
+    ecc: float,
+    phi: float,
+    n_iters: int = 8,
+) -> np.ndarray:
+    """Solve Kepler's equation for the eccentric anomaly E at given times.
+
+    Parameters
+    ----------
+    t_arr : np.ndarray
+        Array of time values for the Keplerian orbit to be evaluated.
+    p_orb : float
+        Orbital period, in the same units as t_arr.
+    ecc : float
+        Orbital eccentricity (0 <= ecc < 1).
+    phi : float
+        Orbital phase (mean anomaly at t=0), in radians.
+    n_iters : int, optional
+        Number of Newton iterations to solve Kepler's equation, by default 8.
+
+    Returns
+    -------
+    np.ndarray
+        Array of eccentric anomalies E, in radians.
+    """
+    t_norm = (t_arr % p_orb) / p_orb
+    m_arr = 2.0 * np.pi * t_norm + phi
+    e_arr = m_arr + ecc * np.sin(m_arr)
+    for _ in range(n_iters):
+        e_arr += (m_arr + ecc * np.sin(e_arr) - e_arr) / (1.0 - ecc * np.cos(e_arr))
+    return e_arr
 
 
 @njit(cache=True, fastmath=True)
@@ -79,7 +129,7 @@ def keplerian_nu(
     ecc : float
         Orbital eccentricity (0 <= ecc < 1).
     phi : float
-        Orbital phase (mean anomaly at t=0), in the same units as t_arr.
+        Orbital phase (mean anomaly at t=0), in radians.
     n_iters : int, optional
         Number of iterations for Newton's method to solve Kepler's equation,
         by default 8.
@@ -89,15 +139,11 @@ def keplerian_nu(
     np.ndarray
         Array of the Keplerian true anomaly Nu, in radians at the given times.
     """
-    t_norm = (t_arr % p_orb) / p_orb
-    # mean anomaly
-    m_arr = 2 * np.pi * t_norm + phi
-    # Solve Kepler's Equation: M = E - e*sin(E) for E (eccentric anomaly)
-    # Initial guess for E is M (A better guess could be M + e*sin(M))
-    e_arr = m_arr.copy()
-    for _ in range(n_iters):
-        e_arr += (m_arr + ecc * np.sin(e_arr) - e_arr) / (1 - ecc * np.cos(e_arr))
-    return 2 * np.arctan(np.sqrt((1 + ecc) / (1 - ecc)) * np.tan(e_arr / 2))
+    e_arr = keplerian_ecc_anomaly(t_arr, p_orb, ecc, phi, n_iters=n_iters)
+    return 2.0 * np.arctan2(
+        np.sqrt(1.0 + ecc) * np.sin(0.5 * e_arr),
+        np.sqrt(1.0 - ecc) * np.cos(0.5 * e_arr),
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -121,7 +167,7 @@ def keplerian_z(
     ecc : float
         Orbital eccentricity (0 <= ecc < 1).
     phi : float
-        Orbital phase (mean anomaly at t=0), in the same units as t_arr.
+        Orbital phase (mean anomaly at t=0), in radians.
     a : float
         Semi-major axis, in arbitrary units; determines the output length units.
     aop : float
@@ -161,7 +207,7 @@ def keplerian_z_derivatives(
     ecc : float
         Orbital eccentricity, between 0 and 1.
     phi : float
-        Orbital Phase, in the same units as t_arr.
+        Orbital phase (mean anomaly at t=0), in radians.
     a : float
         Semi-major axis, in arbitrary units.
     aop : float
@@ -186,17 +232,22 @@ def keplerian_z_derivatives(
 
 
 @njit(cache=True, fastmath=True)
-def compute_nu_derivatives(e_arr: np.ndarray, ecc: float, p_orb: float) -> tuple:
+def compute_nu_derivatives(
+    e_arr: np.ndarray,
+    ecc: float,
+    p_orb: float,
+) -> tuple[np.ndarray, np.ndarray]:
     n = 2.0 * np.pi / p_orb
     one_minus_e_cos_e_arr = 1.0 - ecc * np.cos(e_arr)
     sqrt_factor = np.sqrt(1.0 - ecc**2)
     dnu_dt = n * sqrt_factor / (one_minus_e_cos_e_arr**2)
-    d2nu_dt2 = (2.0 * n**2 * sqrt_factor * ecc * np.sin(e_arr)) / (
+    d2nu_dt2 = -(2.0 * n**2 * sqrt_factor * ecc * np.sin(e_arr)) / (
         one_minus_e_cos_e_arr**4
     )
     return dnu_dt, d2nu_dt2
 
 
+@njit(cache=True, fastmath=True)
 def keplerian_z_derivatives_exact(
     t_arr: np.ndarray,
     p_orb: float,
@@ -206,7 +257,7 @@ def keplerian_z_derivatives_exact(
     aop: float,
     inc: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Exact analytical computation of z-coordinate and its derivatives..
+    """Exact analytical computation of z-coordinate and its derivatives.
 
     Parameters
     ----------
@@ -217,7 +268,7 @@ def keplerian_z_derivatives_exact(
     ecc : float
         Orbital eccentricity, between 0 and 1.
     phi : float
-        Orbital Phase, in the same units as t_arr.
+        Orbital phase (mean anomaly at t=0), in radians.
     a : float
         Semi-major axis, in arbitrary units.
     aop : float
@@ -228,12 +279,14 @@ def keplerian_z_derivatives_exact(
     Returns
     -------
     tuple[np.ndarray, np.ndarray, np.ndarray]
-        Array of the position, velocity and acceleration of the orbiting body.
+        Tuple of position, velocity and acceleration arrays of the orbiting body.
     """
     ecc = abs(ecc)
-    nu = keplerian_nu(t_arr, p_orb, ecc, phi)
-    # TODO: Need to finish this part.
-    e_arr = nu  # Use a attr class for this.
+    e_arr = keplerian_ecc_anomaly(t_arr, p_orb, ecc, phi)
+    nu = 2.0 * np.arctan2(
+        np.sqrt(1.0 + ecc) * np.sin(0.5 * e_arr),
+        np.sqrt(1.0 - ecc) * np.cos(0.5 * e_arr),
+    )
     dnu_dt, d2nu_dt2 = compute_nu_derivatives(e_arr, ecc, p_orb)
     one_plus_e_cos_nu = 1.0 + ecc * np.cos(nu)
     r = a * (1.0 - ecc**2) / one_plus_e_cos_nu
@@ -336,21 +389,23 @@ def find_derivative_connections(
 
     Parameters
     ----------
-    a : float
-        Semi-major axis of the orbit.
+    a_sin_i_orb : float
+        Projected semi-major axis of the orbit.
     n_rad : float
         Number of radians to sample the orbit over.
-    ecc : float
+    ecc_max : float
         Orbital eccentricity.
-    deg : int
+    poly_order : int
         Degree of the polynomial fit.
+    n_samples : int, optional
+        Number of orbit samples used for the fit, by default 100.
     res : float, optional
-        Resolution of the grid search, by default 0.05
+        Resolution of the grid search, by default 0.05.
 
     Returns
     -------
-    list[np.ndarray]
-        List of polynomial coefficients for the fits.
+    tuple[np.ndarray, np.ndarray]
+        Polynomial coefficient fits and corresponding sum-of-squared residuals.
     """
     t_arr = np.linspace(-n_rad / 2, n_rad / 2, n_samples)
     p_orb = 2 * np.pi  # Assumed period for normalized time axis
@@ -449,7 +504,7 @@ def keplerian_derivative_bounds(
     omega_max: float,
     ecc_max: float,
 ) -> float:
-    """
+    r"""
     Calculate the maximum bounds for a specific derivative of a keplerian orbit.
 
     Parameters
@@ -458,11 +513,11 @@ def keplerian_derivative_bounds(
         Index (order) of the derivative.
         0 for position, 1 for velocity, 2 for acceleration, etc.
     a_max : float
-        Maximum semi-major axis of the orbit.
+        Maximum projected semi-major axis of the orbit (in light-seconds).
     omega_max : float
         Maximum angular frequency of the orbit in radians per second.
     ecc_max : float
-        Maximum eccentricity of the orbit.
+        Maximum eccentricity of the orbit (``0 <= ecc_max < 1``).
 
     Returns
     -------
@@ -471,16 +526,34 @@ def keplerian_derivative_bounds(
 
     Notes
     -----
-    The function uses a series approximation that converges for all valid
-    eccentricities (0 <= ecc < 1). The series is truncated at 100 terms, which
-    should provide sufficient accuracy for most applications.
+    Evaluates the exact closed-form infinite series
+    :math:`\\sum_{k=0}^{\\infty} (k + 1)^m e^k` via Eulerian polynomials for
+    ``0 <= ecc_max < 1`` without truncation error. For exact high-eccentricity
+    bounds above the Laplace limit (:math:`e \\approx 0.6627`), prefer
+    :func:`find_max_deriv_bounds`.
     """
-    return (
-        a_max
-        * omega_max**ideriv
-        * sum([ecc_max**k * (k + 1) ** ideriv for k in range(100)])
-        * C_VAL
-    )
+    if ideriv < 0:
+        msg = "ideriv must be non-negative."
+        raise ValueError(msg)
+    if not (0.0 <= ecc_max < 1.0):
+        msg = "ecc_max must satisfy 0 <= ecc_max < 1."
+        raise ValueError(msg)
+    if ideriv == 0:
+        series_sum = 1.0 / (1.0 - ecc_max)
+    else:
+        eulerian = np.ones(1, dtype=np.float64)
+        for r in range(2, ideriv + 1):
+            nxt = np.empty(r, dtype=np.float64)
+            nxt[0] = 1.0
+            nxt[-1] = 1.0
+            for j in range(1, r - 1):
+                nxt[j] = (r - j) * eulerian[j - 1] + (j + 1) * eulerian[j]
+            eulerian = nxt
+        poly_val = 0.0
+        for j in range(eulerian.size - 1, -1, -1):
+            poly_val = poly_val * ecc_max + eulerian[j]
+        series_sum = poly_val / ((1.0 - ecc_max) ** (ideriv + 1))
+    return float(a_max * (omega_max**ideriv) * series_sum * C_VAL)
 
 
 def simulate_keplerian_orbit(
@@ -510,7 +583,7 @@ def simulate_keplerian_orbit(
     p_pul_min : float
         Minimum pulsar period.
     delta_p : float
-        Maximum pulsar period derivative.
+        Period grid step (in seconds).
     p_dot_pul_max : float
         Maximum pulsar period derivative.
     p_orb_range : tuple[float, float]
@@ -518,11 +591,12 @@ def simulate_keplerian_orbit(
     ecc_range : tuple[float, float]
         Range of eccentricity values (min, max).
     a_range : tuple[float, float]
-        Range of semi-major axis values (min, max).
+        Range of projected semi-major axis values (min, max) in light-seconds.
     phi_range : tuple[float, float], optional
-        Range of orbital phase values (min, max), by default (0, 2 * np.pi).
+        Range of orbital phase values (min, max) in radians, by default (0, 2 * np.pi).
     om_range : tuple[float, float], optional
-        Range of longitude of the ascending node (min, max), by default (0, 2 * np.pi).
+        Range of argument of periastron values (min, max) in radians,
+        by default (0, 2 * np.pi).
     eps : float, optional
         Finite difference step size for the derivatives, by default 1e-5.
 
@@ -537,11 +611,11 @@ def simulate_keplerian_orbit(
     p_orb = rng.uniform(*p_orb_range, n_orbits)
     ecc = rng.uniform(*ecc_range, n_orbits)
     phi = rng.uniform(*phi_range, n_orbits)
-    a = rng.uniform(*a_range, n_orbits) * C_VAL
+    a_orb = rng.uniform(*a_range, n_orbits) * C_VAL
     om = rng.uniform(*om_range, n_orbits)
     inc = np.pi / 2
     v = rng.uniform(-0.5, 0.5, n_orbits) * (delta_p / p_pul_min) * C_VAL
-    a = rng.uniform(-0.5, 0.5, n_orbits) * (p_dot_pul_max / p_pul_min) * C_VAL
+    a_spin = rng.uniform(-0.5, 0.5, n_orbits) * (p_dot_pul_max / p_pul_min) * C_VAL
 
     # Pre-compute common terms
     t_diff = t_arr - t_middle
@@ -551,22 +625,22 @@ def simulate_keplerian_orbit(
         # linear part responsible for the dp inside a single period bin.
         lin_part_phase = t_diff * v[i]
         # spin down part is responsible for the overall p_dot of the pulsar
-        spin_down_phase = a[i] * t_diff**2 / 2
-        spin_down_vel = a[i] * t_diff
+        spin_down_phase = a_spin[i] * t_diff**2 / 2
+        spin_down_vel = a_spin[i] * t_diff
         # Calculate the orbital part
         orbital_part = keplerian_z_derivatives(
             t_arr,
             p_orb[i],
             ecc[i],
             phi[i],
-            a[i],
+            a_orb[i],
             om[i],
             inc,
             eps=eps,
         )
         orbital_part[0] += lin_part_phase + spin_down_phase
         orbital_part[1] += v[i] + spin_down_vel
-        orbital_part[2] += a[i]
+        orbital_part[2] += a_spin[i]
         examples.append(orbital_part)
     return np.array(examples)
 
@@ -584,43 +658,93 @@ class KeplerianOrbit:
         self,
         t_arr: np.ndarray,
         recovered_phases: np.ndarray,
-        initial_guess: str = "default",
+        initial_guess: np.ndarray | list[float] | str = "default",
+        fit_mask: np.ndarray | slice | None = None,
     ) -> optimize.OptimizeResult:
-        def log_likelihood_fun(
-            all_params: np.ndarray,
-            t_arr: np.ndarray,
-            recovered_phases: np.ndarray,
-            *,
-            ret_model_phases: bool = False,
-        ) -> float:
+        t_arr = np.asarray(t_arr, dtype=np.float64)
+        recovered_phases = np.asarray(recovered_phases, dtype=np.float64)
+        if t_arr.ndim != 1 or t_arr.shape != recovered_phases.shape or t_arr.size == 0:
+            msg = (
+                "t_arr and recovered_phases must be non-empty 1D arrays "
+                "of equal length."
+            )
+            raise ValueError(msg)
+
+        mask = slice(None) if fit_mask is None else fit_mask
+        if recovered_phases[mask].size == 0:
+            msg = "fit_mask selects zero samples."
+            raise ValueError(msg)
+
+        t_centered = t_arr - np.mean(t_arr)
+
+        def eval_model_phases(all_params: np.ndarray) -> np.ndarray:
             phi_orb, p_orb, x_orb, ecc_orb, aop_orb, const, lin = all_params
             kep_phases = (
-                np.array(
-                    keplerian_z(
-                        t_arr,
-                        phi_orb,
-                        p_orb,
-                        ecc_orb,
-                        x_orb * C_VAL,
-                        aop_orb,
-                        self.inc,
-                    ),
+                keplerian_z(
+                    t_arr,
+                    p_orb,
+                    ecc_orb,
+                    phi_orb,
+                    x_orb * C_VAL,
+                    aop_orb,
+                    np.pi / 2,
                 )
                 / C_VAL
             )
-            model_phases = kep_phases + const + lin * t_arr
-            if ret_model_phases:
-                return model_phases
-            return np.sqrt(
-                np.mean(np.abs(model_phases - recovered_phases)[25:220] ** 2),
-            )
+            return kep_phases + const + lin * t_centered
 
         def fun_to_opt(all_params: np.ndarray) -> float:
-            return log_likelihood_fun(all_params, t_arr, recovered_phases)
+            _, p_orb, x_orb, ecc_orb, _, _, _ = all_params
+            if p_orb <= 0.0 or x_orb < 0.0 or not (0.0 <= ecc_orb < 1.0):
+                return float(np.inf)
+            model_phases = eval_model_phases(all_params)
+            residuals = (model_phases - recovered_phases)[mask]
+            return float(np.sqrt(np.mean(residuals * residuals)))
+
+        if isinstance(initial_guess, str):
+            if initial_guess != "default":
+                msg = f"Unsupported initial_guess: {initial_guess!r}"
+                raise ValueError(msg)
+            x_init = self.semi_major_axis * float(np.sin(self.inc))
+            kep_init = (
+                keplerian_z(
+                    t_arr,
+                    self.p_orb,
+                    self.eccentricity,
+                    self.phi,
+                    x_init * C_VAL,
+                    self.omega_ecc,
+                    np.pi / 2,
+                )
+                / C_VAL
+            )
+            design = np.column_stack([np.ones_like(t_centered), t_centered])
+            const_init, lin_init = np.linalg.lstsq(
+                design[mask],
+                (recovered_phases - kep_init)[mask],
+                rcond=None,
+            )[0]
+            x0 = np.array(
+                [
+                    self.phi,
+                    self.p_orb,
+                    x_init,
+                    self.eccentricity,
+                    self.omega_ecc,
+                    const_init,
+                    lin_init,
+                ],
+                dtype=np.float64,
+            )
+        else:
+            x0 = np.asarray(initial_guess, dtype=np.float64)
+            if x0.shape != (7,):
+                msg = f"initial_guess must have shape (7,), got {x0.shape}."
+                raise ValueError(msg)
 
         return optimize.minimize(
             fun_to_opt,
-            initial_guess,
+            x0,
             method="Nelder-Mead",
             options={"maxfev": 10000},
         )
@@ -659,13 +783,16 @@ class PredictionTableGenerator:
     ) -> tuple[dict[tuple, list[tuple]], Callable[[np.ndarray], tuple]]:
         """Generate a lookup table (dictionary) for all coefficients."""
         coord_function = self.get_table_coords_function(d_arr, key_indices)
-        dic: dict[tuple, list[tuple]] = {}
+        buckets: dict[tuple, list[np.ndarray]] = {}
         for d in self.data:
-            dic[coord_function(d)] = [*dic.get(coord_function(d), []), tuple(d)]
+            buckets.setdefault(coord_function(d), []).append(d)
 
-        for key, value in dic.items():
-            ar = np.array(value)
-            dic[key] = list(map(tuple, zip(np.min(ar, 0), np.max(ar, 0), strict=False)))
+        dic: dict[tuple, list[tuple]] = {}
+        for key, rows in buckets.items():
+            ar = np.asarray(rows)
+            dic[key] = list(
+                map(tuple, zip(np.min(ar, axis=0), np.max(ar, axis=0), strict=True)),
+            )
 
         return dic, coord_function
 
@@ -692,26 +819,43 @@ class PredictionTableGenerator:
         if len(discretization_bins) != len(key_indices):
             msg = "Length of discretization_bins must match length of key_indices."
             raise ValueError(msg)
+        if not all(0 <= idx <= self.poly_deg for idx in key_indices):
+            msg = f"key_indices must be in [0, {self.poly_deg}], got {key_indices}."
+            raise ValueError(msg)
 
-        effective_bins = np.max(
-            [discretization_bins, self.std_vals[: len(discretization_bins)] / 30],
-            0,
+        bins_arr = np.asarray(discretization_bins, dtype=np.float64)
+        key_idx_arr = np.asarray(key_indices, dtype=np.intp)
+        effective_bins = np.maximum(
+            bins_arr,
+            self.std_vals[key_idx_arr] / 30.0,
         )
+        if np.any(effective_bins <= 0.0):
+            msg = "Effective discretization bin sizes must be positive."
+            raise ValueError(msg)
 
         if key_indices == (2, 3, 4):
+            b0 = float(effective_bins[0])
+            b1 = float(effective_bins[1])
+            b2 = float(effective_bins[2])
 
             @njit
-            def coord_function_fixed(derivatives: np.ndarray) -> tuple:
+            def coord_function_fixed(derivatives: np.ndarray) -> tuple[int, int, int]:
                 return (
-                    int(derivatives[2] / effective_bins[0]),
-                    int(derivatives[3] / effective_bins[1]),
-                    int(derivatives[4] / effective_bins[2]),
+                    math.floor(derivatives[2] / b0),
+                    math.floor(derivatives[3] / b1),
+                    math.floor(derivatives[4] / b2),
                 )
 
             return coord_function_fixed
 
-        def coord_function_generic(derivatives: np.ndarray) -> tuple:
-            return tuple(int(derivatives[i] / effective_bins[i]) for i in key_indices)
+        key_idx_tuple = tuple(int(k) for k in key_indices)
+        eff_bins_tuple = tuple(float(b) for b in effective_bins)
+
+        def coord_function_generic(derivatives: np.ndarray) -> tuple[int, ...]:
+            return tuple(
+                math.floor(derivatives[idx] / eff_bins_tuple[pos])
+                for pos, idx in enumerate(key_idx_tuple)
+            )
 
         return coord_function_generic
 
@@ -726,30 +870,59 @@ class PredictionTableGenerator:
         x_ratio_min: float = 0.7,
         ecc_res: float = 0.05,
     ) -> np.ndarray:
-        """Build a dataset of polynomial coefficients from various Keplerian orbits."""
-        ecc_vals = np.arange(0, ecc_max, ecc_res)
-        base_coeffs = [
-            find_derivative_connections(1, n_rad, float(ecc), poly_deg)
-            for ecc in ecc_vals
-        ]
+        """Build a dataset of kinematic Taylor derivatives from Keplerian orbits."""
+        if x_orb_max <= 0.0 or omega_max <= 0.0:
+            msg = "x_orb_max and omega_max must be positive."
+            raise ValueError(msg)
+        if not (0.0 <= ecc_max < 1.0):
+            msg = "ecc_max must satisfy 0 <= ecc_max < 1."
+            raise ValueError(msg)
+        if ecc_res <= 0.0:
+            msg = "ecc_res must be positive."
+            raise ValueError(msg)
+
+        if ecc_max == 0.0:
+            ecc_vals = np.array([0.0], dtype=np.float64)
+        else:
+            grid_ecc = np.arange(0.0, ecc_max, ecc_res, dtype=np.float64)
+            if grid_ecc.size == 0 or grid_ecc[-1] < ecc_max - 1e-12:
+                ecc_vals = np.append(grid_ecc, ecc_max)
+            else:
+                ecc_vals = grid_ecc
+
         base_coeffs_arr = np.vstack(
-            [np.array(f) for sublist in base_coeffs for f in sublist],
+            [
+                find_derivative_connections(1.0, n_rad, float(ecc), poly_deg)[0]
+                for ecc in ecc_vals
+            ],
         )
-        # Apply omega scaling
-        omega_powers = omega_max ** np.arange(poly_deg + 1)
-        fits = x_orb_max * base_coeffs_arr * omega_powers  # shape: (n_fits, poly_deg+1)
+        # Scale polynomial coeffs c_k to Taylor derivatives d_k = k! c x w^k c_k
+        deriv_factors = np.array(
+            [(omega_max**i) * maths.fact(i) for i in range(poly_deg + 1)],
+            dtype=np.float64,
+        )
+        fits = x_orb_max * C_VAL * base_coeffs_arr * deriv_factors
         # Expand to different omegas (frequency) scaling
         om_ratios = np.linspace(om_ratio_min, 1, 10)
         om_factors = om_ratios[:, None] ** np.arange(poly_deg + 1)
-        # \Shape (10, n_fits, poly_deg+1)
         fits = fits[None, :, :] * om_factors[:, None, :]
         fits = fits.reshape(-1, poly_deg + 1)
 
         # Expand to different x's (amplitude) scaling
         x_ratios = np.linspace(x_ratio_min, 1, 10)
-        # \Shape: (10, n_fits*10, poly_deg+1)
         fits = fits[None, :, :] * x_ratios[:, None, None]
         return fits.reshape(-1, poly_deg + 1)
+
+
+def _grid_axis(bounds: tuple[float, float], step: float) -> np.ndarray:
+    """Build a non-empty 1D grid over [min, max] allowing equal-bound pins."""
+    vmin, vmax = bounds
+    if vmin > vmax:
+        msg = f"Invalid bounds: min ({vmin}) exceeds max ({vmax})."
+        raise ValueError(msg)
+    if vmin == vmax:
+        return np.array([vmin], dtype=np.float64)
+    return np.arange(vmin, vmax, step, dtype=np.float64)
 
 
 @attrs.frozen(auto_attribs=True, kw_only=True)
@@ -766,19 +939,40 @@ class KeplerianParamLimits:
         return 2 * np.pi / self.p_orb[1], 2 * np.pi / self.p_orb[0]
 
     def generate_grid(self, tol: float, tsamp: float, tobs: float) -> np.ndarray:
+        if tol <= 0.0 or tsamp <= 0.0 or tobs <= 0.0:
+            msg = "tol, tsamp, and tobs must be positive."
+            raise ValueError(msg)
+        if self.p_pul[0] <= 0.0 or self.p_orb[0] <= 0.0 or self.x_orb[1] <= 0.0:
+            msg = "p_pul[0], p_orb[0], and x_orb[1] must be positive."
+            raise ValueError(msg)
+        if self.ecc[0] < 0.0 or self.ecc[1] >= 1.0:
+            msg = "ecc bounds must satisfy 0 <= ecc_min <= ecc_max < 1."
+            raise ValueError(msg)
+
         tol_time = tol * tsamp
         d_p_pul = 0.5 * tol_time / (tobs / self.p_pul[0])
         d_e = tol_time / self.x_orb[1]
-        d_x = tol_time / (1 + self.ecc[1])
-        d_phi_plus_om_ecc = 1.0 / (self.x_orb[1] / tol_time)
+        d_x = tol_time / (1.0 + self.ecc[1])
+        d_phi_plus_om_ecc = tol_time / self.x_orb[1]
         d_omega_orb = d_phi_plus_om_ecc / tobs
-        d_phi_minus_om_ecc = tol_time / self.x_orb[1] / self.ecc[1]
-        periods = np.arange(*self.p_pul, d_p_pul)
-        eccs = np.arange(*self.ecc, d_e)
-        x_orbs = np.arange(*self.x_orb, d_x)
-        omega_orbs = np.arange(*self.omega_orb, d_omega_orb)
-        phi_plus_oms = np.arange(*self.phi_plus_om, d_phi_plus_om_ecc)
-        phi_minus_oms = np.arange(*self.phi_minus_om, d_phi_minus_om_ecc)
+
+        periods = _grid_axis(self.p_pul, d_p_pul)
+        eccs = _grid_axis(self.ecc, d_e)
+        x_orbs = _grid_axis(self.x_orb, d_x)
+        omega_orbs = _grid_axis(self.omega_orb, d_omega_orb)
+        phi_plus_oms = _grid_axis(self.phi_plus_om, d_phi_plus_om_ecc)
+        if self.ecc[1] == 0.0:
+            if self.phi_minus_om[0] > self.phi_minus_om[1]:
+                msg = (
+                    f"Invalid bounds: min ({self.phi_minus_om[0]}) exceeds "
+                    f"max ({self.phi_minus_om[1]})."
+                )
+                raise ValueError(msg)
+            phi_minus_oms = np.array([self.phi_minus_om[0]], dtype=np.float64)
+        else:
+            d_phi_minus_om_ecc = tol_time / self.x_orb[1] / self.ecc[1]
+            phi_minus_oms = _grid_axis(self.phi_minus_om, d_phi_minus_om_ecc)
+
         grid = np.meshgrid(
             periods,
             eccs,
