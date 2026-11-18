@@ -4,7 +4,7 @@ import numpy as np
 import numpy.typing as npt
 from numba import njit, prange, types
 
-from pyloki.utils import maths, np_utils
+from pyloki.utils import maths
 
 
 @njit(cache=True, fastmath=True)
@@ -29,7 +29,10 @@ def generate_box_width_trials(
     np.ndarray
         Width trials for matched filtering.
     """
-    wmax = int(max(1, ducy_max * nbins))
+    if nbins < 2:
+        msg = "nbins must be at least 2."
+        raise ValueError(msg)
+    wmax = min(nbins - 1, int(max(1, ducy_max * nbins)))
     widths = [1]
     while widths[-1] <= wmax:
         next_width = int(max(widths[-1] + 1, int(wtsp * widths[-1])))
@@ -125,13 +128,18 @@ def boxcar_snr_1d(
     """
     size = len(norm_data)
     n_widths = len(widths)
-    max_width = np.max(widths)
+    if size == 0 or n_widths == 0:
+        return np.zeros(n_widths, dtype=np.float32)
+    max_width = max(0, int(np.max(widths)))
     prefix_sum = np.empty(size + max_width, dtype=np.float32)
     circular_prefix_sum(norm_data, prefix_sum)
     total_sum = prefix_sum[size - 1]
     snr = np.empty(n_widths, dtype=np.float32)
     inv_stdnoise = 1.0 / stdnoise
     for iw, width in enumerate(widths):
+        if width <= 0 or width >= size:
+            snr[iw] = 0.0
+            continue
         size_w = size - width
         height = np.sqrt(size_w / (size * width))
         b = width * height / size_w
@@ -215,7 +223,9 @@ def boxcar_snr_beta_1d(
     """
     size = len(ts_e)
     n_widths = len(widths)
-    max_width = np.max(widths)
+    if size == 0 or n_widths == 0:
+        return np.zeros(n_widths, dtype=np.float32)
+    max_width = max(0, int(np.max(widths)))
 
     # Allocate and compute prefix sums for BOTH arrays
     prefix_w = np.empty(size + max_width, dtype=np.float32)
@@ -227,6 +237,9 @@ def boxcar_snr_beta_1d(
     total_s = prefix_s[size - 1]
     snr = np.empty(n_widths, dtype=np.float32)
     for iw, width in enumerate(widths):
+        if width <= 0 or width >= size:
+            snr[iw] = 0.0
+            continue
         size_w = size - width
         # Zero-mean template coefficients
         height = np.sqrt(size_w / (size * width))
@@ -275,7 +288,9 @@ def snr_score_batch_func(
     """Compute the SNR score for a batched folded suggestion."""
     batch_size, _, nbins = combined_res_batch.shape
     n_widths = len(widths)
-    max_width = np.max(widths)
+    if batch_size == 0 or nbins == 0 or n_widths == 0:
+        return np.zeros(batch_size, dtype=np.float32)
+    max_width = max(0, int(np.max(widths)))
     prefix_sum = np.empty(nbins + max_width, dtype=np.float32)
     scores = np.empty(batch_size, dtype=np.float32)
     fold_norm = np.empty(nbins, dtype=np.float32)
@@ -293,11 +308,14 @@ def snr_score_batch_func(
         max_snr = -np.finfo(np.float32).max
         for iw in range(n_widths):
             width = widths[iw]
-            size_w = nbins - width
-            height = np.sqrt(size_w / (nbins * width))
-            b = width * height / size_w
-            dmax = diff_max(prefix_sum[width : width + nbins], prefix_sum[:nbins])
-            snr = (height + b) * dmax - (b * total_sum)
+            if width <= 0 or width >= nbins:
+                snr = np.float32(0.0)
+            else:
+                size_w = nbins - width
+                height = np.sqrt(size_w / (nbins * width))
+                b = width * height / size_w
+                dmax = diff_max(prefix_sum[width : width + nbins], prefix_sum[:nbins])
+                snr = (height + b) * dmax - (b * total_sum)
             max_snr = max(max_snr, snr)
         scores[i] = max_snr
     return scores
@@ -357,7 +375,13 @@ class MatchedFilter:
         return _compute_snr_fft(folds, self.templates)
 
     def compute_dot(self, folds: np.ndarray) -> np.ndarray:
-        return np.dot(self.e_mat, folds)
+        folds_arr = np.asarray(folds, dtype=np.float32)
+        if folds_arr.ndim == 0 or folds_arr.shape[-1] != self.nbins:
+            msg = f"Expected trailing axis {self.nbins}, got shape {folds_arr.shape}"
+            raise ValueError(msg)
+        folds_2d = np.ascontiguousarray(folds_arr.reshape(-1, self.nbins))
+        snr_2d = compute_snr_e_mat_2d(folds_2d, self.e_mat, self.shifts, 1.0)
+        return snr_2d.reshape((*folds_arr.shape[:-1], self.ntemp))
 
     def compute_dot_double(self, folds: np.ndarray) -> np.ndarray:
         return _compute_snr_double(folds, self.e_mat)
@@ -373,7 +397,7 @@ class MatchedFilter:
         return templates
 
     def _init_shifts(self, shift: int) -> np.ndarray:
-        if shift == 0:
+        if shift <= 0:
             msg = "Shift must be greater than 0."
             raise ValueError(msg)
         return np.full(self.ntemp, shift, dtype=np.int64)
@@ -420,8 +444,14 @@ def _gen_boxcar_templates(
     NDArray[np.float32]
         Normalised boxcar templates.
     """
+    if nbins < 2:
+        msg = "nbins must be at least 2."
+        raise ValueError(msg)
     templates = np.zeros((len(widths), nbins), dtype=np.float32)
     for iw, width in enumerate(widths):
+        if width <= 0 or width >= nbins:
+            msg = "Boxcar widths must satisfy 0 < width < nbins."
+            raise ValueError(msg)
         templates[iw, :width] = 1
         templates[iw] = _normalise(templates[iw])
     return templates
@@ -446,8 +476,14 @@ def _gen_gaussian_templates(
     NDArray[np.float32]
         Normalised Gaussian templates.
     """
+    if nbins < 1:
+        msg = "nbins must be positive."
+        raise ValueError(msg)
     templates = np.zeros((len(widths), nbins), dtype=np.float32)
     for iw, width in enumerate(widths):
+        if width <= 0:
+            msg = "Template widths must be positive."
+            raise ValueError(msg)
         sigma = width / (2 * np.sqrt(2 * np.log(2)))
         xmax = int(np.ceil(3.5 * sigma))
         xx = np.arange(-xmax, xmax + 1)
@@ -481,8 +517,12 @@ def _get_e_mat(
     NDArray[np.float32]
         2D array of templates (nfilters, nbins).
     """
+    if np.any(shifts <= 0):
+        msg = "shifts must be positive."
+        raise ValueError(msg)
     ntemp, nbins = templates.shape
-    total_shifts = int(np.sum(nbins // shifts))
+    shifts_per_template = (nbins + shifts - 1) // shifts
+    total_shifts = int(np.sum(shifts_per_template))
     temp_bank = np.empty((total_shifts, nbins), dtype=np.float32)
     row_idx = 0
     for itemp in range(ntemp):
@@ -501,7 +541,7 @@ def compute_snr_e_mat(
 ) -> np.ndarray:
     projections = np.dot(e_mat, norm_data)
     _, nbins = e_mat.shape
-    shifts_per_template = nbins // shifts
+    shifts_per_template = (nbins + shifts - 1) // shifts
     # Extract maximum projection per template
     snr = np.empty(len(shifts_per_template), dtype=np.float32)
     start = 0
@@ -526,7 +566,7 @@ def compute_snr_e_mat_2d(
     projections = np.dot(norm_data, e_mat.T)
 
     # Compute cumulative shift indices
-    shifts_per_template = nbins // shifts
+    shifts_per_template = (nbins + shifts - 1) // shifts
     shift_indices = np.zeros(n_templates + 1, dtype=np.int64)
     for i, n_shifts in enumerate(shifts_per_template):
         shift_indices[i + 1] = shift_indices[i] + n_shifts
@@ -548,7 +588,7 @@ def compute_snr_e_mat_2d(
 @njit(cache=True, fastmath=True)
 def _compute_snr_fft(data: np.ndarray, templates: np.ndarray) -> np.ndarray:
     """
-    Compute the SNR using FFT (convolution theorem).
+    Compute the SNR using FFT circular cross-correlation.
 
     Parameters
     ----------
@@ -565,17 +605,18 @@ def _compute_snr_fft(data: np.ndarray, templates: np.ndarray) -> np.ndarray:
     folds = data.reshape(-1, data.shape[-1]).astype(np.float32)
     nprof, nbins = folds.shape
     ntemp, _ = templates.shape
+    if nprof == 0:
+        return np.empty((*data.shape[:-1], ntemp), dtype=np.float32)
+    templates_f32 = templates.astype(np.float32)
 
-    xx = np_utils.cpadpow2(folds)
-    yy = np_utils.cpad2len(templates, xx.shape[-1])
-    fx = np.fft.rfft(xx)
-    fy = np.fft.rfft(yy)
+    fx = np.fft.rfft(folds, n=nbins)
+    fy_conj = np.conj(np.fft.rfft(templates_f32, n=nbins))
 
     result = np.empty((nprof, ntemp), dtype=np.float32)
     for iprof in range(nprof):
+        corr = np.fft.irfft(fx[iprof] * fy_conj, n=nbins)
         for jtemp in range(ntemp):
-            snr = np.fft.irfft(fx[iprof] * fy[jtemp])
-            result[iprof, jtemp] = np.max(snr[:nbins])
+            result[iprof, jtemp] = np.max(corr[jtemp])
     return result.reshape((*data.shape[:-1], ntemp))
 
 
@@ -612,62 +653,93 @@ def _compute_snr_double(
     places is similar (i.e., only O(n) changes matter, and cause only
     slightly reduced sensitivity, no false positives!)
     """
-    folds = data.reshape(-1, data.shape[-1])
+    if e_mat.shape[0] < 1:
+        msg = "e_mat must contain at least one template."
+        raise ValueError(msg)
+    if n_corr < 1:
+        msg = "n_corr must be at least 1."
+        raise ValueError(msg)
+    folds = data.reshape(-1, data.shape[-1]).astype(np.float32)
     nprof, _ = folds.shape
-    n_filters, _ = e_mat.shape
+    if nprof == 0:
+        return np.empty(data.shape[:-1], dtype=np.float32)
+    e_mat_f32 = e_mat.astype(np.float32)
+    n_filters, _ = e_mat_f32.shape
+    k_corr = min(n_corr, n_filters)
 
-    lee_penalty_double = np.log2((n_filters * n_filters - 1) / 2)
-    lee_penalty_single = np.log2(n_filters)
-    inner_product_matrix = np.dot(e_mat, e_mat.T)
+    lee_penalty_single = np.log(n_filters)
+    n_pairs = (n_filters * (n_filters - 1)) // 2
+    lee_penalty_double = np.log(n_pairs) if n_pairs > 0 else 0.0
+    inner_product_matrix = np.dot(e_mat_f32, e_mat_f32.T)
 
     results = np.empty(nprof, dtype=np.float32)
     for iprof in prange(nprof):
-        scores = np.dot(e_mat, folds[iprof])
-        scores_max_single = np.max(scores) ** 2
+        scores = np.dot(e_mat_f32, folds[iprof])
+        max_single = max(0.0, float(np.max(scores)))
+        scores_max_single = max_single * max_single
 
         # good indices are the indices of the top scores
-        # not considering the negative maxima as relevant
-        good_indices = np.argsort(scores)[-n_corr:]
-        scores_max_double = scores_max_single
-        s = 0
-        for i in range(n_corr - 1):
-            for j in range(i + 1, n_corr):
+        # Require positive solved component amplitudes (a_i > 0, a_j > 0) so a
+        # single bright pulse plus an adjacent negative trough is rejected while
+        # disjoint positive pulses with negative baseline correlation are kept.
+        good_indices = np.argsort(scores)[-k_corr:]
+        scores_max_double = 0.0
+        has_double = False
+        for i in range(k_corr - 1):
+            for j in range(i + 1, k_corr):
                 idx_i, idx_j = good_indices[i], good_indices[j]
-                gamma_ij = inner_product_matrix[idx_i, idx_j]
+                si, sj = float(scores[idx_i]), float(scores[idx_j])
+                gamma_ij = float(inner_product_matrix[idx_i, idx_j])
                 if abs(gamma_ij) < 0.99:
-                    s = (
-                        scores[idx_i] ** 2
-                        + scores[idx_j] ** 2
-                        - 2 * gamma_ij * scores[idx_i] * scores[idx_j]
-                    ) / (1 - gamma_ij**2)
-                scores_max_double = max(s, scores_max_double)
-        # comparing scores should be on the basis of log-prob measure
-        # score that uses 2 filters must have a look elsewhere effect
-        # penalty of the ratio of amount of trials.
-        # subtract - look_elsewhere_effect_penalty_single
+                    num_i = si - gamma_ij * sj
+                    num_j = sj - gamma_ij * si
+                    if num_i > 0.0 and num_j > 0.0:
+                        denom = 1.0 - gamma_ij * gamma_ij
+                        s = (si * num_i + sj * num_j) / denom
+                        scores_max_double = max(scores_max_double, s)
+                        has_double = True
+        # Compare hypotheses via minus log survival probability with natural-log
+        # look-elsewhere penalties (exact 2-DOF survival: -ln exp(-s/2) = s / 2).
         x_single = (
             maths.chi_sq_minus_logsf_func(scores_max_single, 1) - lee_penalty_single
         )
-        x_double = (
-            maths.chi_sq_minus_logsf_func(scores_max_double, 2) - lee_penalty_double
-        )
-        results[iprof] = maths.norm_isf_func(max(x_single, x_double))
+        if has_double:
+            x_double = 0.5 * scores_max_double - lee_penalty_double
+            best_x = max(x_single, x_double)
+        else:
+            best_x = x_single
+        results[iprof] = maths.norm_isf_func(best_x)
     return results.reshape(data.shape[:-1])
 
 
 @njit(cache=True, fastmath=True)
 def harmonic_summing_score_func(combined_res: np.ndarray, n_harmonics: int) -> float:
+    """Compute trial-penalized Gaussian significance via harmonic summing.
+
+    Harmonics are clamped at ``min(n_harmonics, (nbins - 1) // 2, 32)`` to
+    exclude Nyquist/Hermitian-mirror bins and stay within the 64-DOF chi-square
+    lookup table, and a conservative ``-ln(max_h)`` union-bound trials penalty
+    is subtracted across the harmonic cutoffs.
+    """
     ts_e, ts_v = combined_res
     fold = ts_e / np.sqrt(ts_v)
-    fold_ft = np.fft.fft(fold) / np.sqrt(len(fold))
+    nbins = len(fold)
+    max_h = min(n_harmonics, (nbins - 1) // 2, 32)
+    if max_h < 1:
+        msg = (
+            "n_harmonics and profile length must allow at least 1 independent harmonic."
+        )
+        raise ValueError(msg)
+    fold_ft = np.fft.rfft(fold) / np.sqrt(nbins)
+    lee_penalty = np.log(max_h)
 
     best_score = -np.inf
-    raw_score = 0
-    for i in range(1, n_harmonics + 1):
+    raw_score = 0.0
+    for i in range(1, max_h + 1):
         raw_score += np.abs(fold_ft[i]) ** 2
-        score = maths.chi_sq_minus_logsf_func(raw_score * 2, 2 * i)
+        score = maths.chi_sq_minus_logsf_func(raw_score * 2.0, 2 * i)
         best_score = max(score, best_score)
-    return maths.norm_isf_func(best_score)
+    return maths.norm_isf_func(best_score - lee_penalty)
 
 
 @njit(

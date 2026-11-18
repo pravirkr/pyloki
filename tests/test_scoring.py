@@ -3,6 +3,7 @@ import pytest
 
 from pyloki.detection import scoring
 from pyloki.detection.scoring import MatchedFilter
+from pyloki.utils import maths
 from tests.jit_utils import jit_variants
 
 NBINS = 64
@@ -46,6 +47,17 @@ class TestBoxWidthTrials:
         assert widths[-1] <= wmax
         next_width = max(widths[-1] + 1, int(wtsp * widths[-1]))
         assert next_width > wmax, "the ladder stopped before reaching wmax"
+
+    @pytest.mark.parametrize("impl", jit_variants(scoring.generate_box_width_trials))
+    @pytest.mark.parametrize("ducy_max", [1.0, 1.5])
+    def test_caps_below_nbins(self, impl, ducy_max: float) -> None:
+        widths = impl(16, ducy_max, 1.5)
+        assert widths[-1] < 16
+
+    @pytest.mark.parametrize("impl", jit_variants(scoring.generate_box_width_trials))
+    def test_rejects_nbins_below_two(self, impl) -> None:
+        with pytest.raises(ValueError, match="nbins"):
+            impl(1, 0.2, 1.5)
 
 
 class TestCircularPrefixSum:
@@ -135,6 +147,27 @@ class TestBoxcarSnr:
             atol=1e-5,
         )
 
+    @pytest.mark.parametrize("impl", jit_variants(scoring.boxcar_snr_1d))
+    def test_1d_full_width_returns_zero_instead_of_nan(self, impl) -> None:
+        profile = _profiles(1, seed=10)[0]
+        bad_widths = np.array([NBINS, NBINS + 1], dtype=np.int64)
+        np.testing.assert_array_equal(impl(profile, bad_widths, 1.0), [0.0, 0.0])
+
+    @pytest.mark.parametrize("impl", jit_variants(scoring.boxcar_snr_beta_1d))
+    def test_beta_full_width_returns_zero_instead_of_nan(self, impl) -> None:
+        profile = _profiles(1, seed=10)[0]
+        ones = np.ones(NBINS, dtype=np.float32)
+        bad_widths = np.array([NBINS, NBINS + 1], dtype=np.int64)
+        np.testing.assert_array_equal(impl(profile, ones, bad_widths), [0.0, 0.0])
+
+    @pytest.mark.parametrize("impl", jit_variants(scoring.snr_score_batch_func))
+    def test_batch_full_width_returns_zero_instead_of_nan(self, impl) -> None:
+        profile = _profiles(1, seed=10)[0]
+        ones = np.ones(NBINS, dtype=np.float32)
+        bad_widths = np.array([NBINS, NBINS + 1], dtype=np.int64)
+        batch = np.stack([profile, ones])[None, :, :]
+        np.testing.assert_array_equal(impl(batch, bad_widths), [0.0])
+
 
 class TestSnrScoreBatch:
     @staticmethod
@@ -195,3 +228,183 @@ class TestMatchedFilterNoise:
             f"{int((scores > 6).sum())}/200 pure-noise profiles scored above "
             f"6 sigma, max {scores.max():.2f}"
         )
+
+
+class TestMatchedFilterAndFFT:
+    @pytest.mark.parametrize("shift", [0, -1])
+    def test_rejects_non_positive_shift(self, shift: int) -> None:
+        with pytest.raises(ValueError, match="Shift"):
+            MatchedFilter(widths=WIDTHS, nbins=NBINS, shift=shift)
+
+    @pytest.mark.parametrize(("nbins", "shift"), [(64, 3), (50, 3), (51, 4)])
+    def test_non_divisible_shift_e_mat_and_compute_dot(
+        self, nbins: int, shift: int
+    ) -> None:
+        widths = np.array([1, 2, 5], dtype=np.int64)
+        mf = MatchedFilter(widths=widths, nbins=nbins, shift=shift)
+        expected_rows = int(np.sum((nbins + mf.shifts - 1) // mf.shifts))
+        assert mf.e_mat.shape == (expected_rows, nbins)
+
+        rng = np.random.default_rng(11)
+        x_3d = rng.standard_normal((2, 3, nbins)).astype(np.float32)
+        want_3d = np.empty((2, 3, len(widths)), dtype=np.float32)
+        for i in range(2):
+            for j in range(3):
+                for k in range(len(widths)):
+                    want_3d[i, j, k] = max(
+                        float(np.dot(x_3d[i, j], np.roll(mf.templates[k], s)))
+                        for s in range(0, nbins, shift)
+                    )
+
+        np.testing.assert_allclose(mf.compute_dot(x_3d), want_3d, rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(
+            mf.compute_dot(x_3d[0]), want_3d[0], rtol=1e-5, atol=1e-5
+        )
+        np.testing.assert_allclose(
+            mf.compute_dot(x_3d[0, 0]), want_3d[0, 0], rtol=1e-5, atol=1e-5
+        )
+        np.testing.assert_allclose(
+            scoring.compute_snr_e_mat(x_3d[0, 0], mf.e_mat, mf.shifts, 1.5),
+            want_3d[0, 0] / 1.5,
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
+    @pytest.mark.parametrize("nbins", [64, 50, 51])
+    def test_fft_matches_dot_across_lengths(self, nbins: int) -> None:
+        widths = np.array([1, 3, 7], dtype=np.int64)
+        mf = MatchedFilter(widths=widths, nbins=nbins, shift=1)
+        rng = np.random.default_rng(12)
+        for shape in [(nbins,), (4, nbins), (2, 3, nbins)]:
+            data = rng.standard_normal(shape).astype(np.float32)
+            np.testing.assert_allclose(
+                mf.compute_fft(data),
+                mf.compute_dot(data),
+                rtol=1e-4,
+                atol=1e-4,
+            )
+
+    @pytest.mark.parametrize(
+        "impl",
+        jit_variants(scoring._compute_snr_fft),  # noqa: SLF001
+    )
+    @pytest.mark.parametrize("nbins", [64, 50, 51])
+    def test_fft_asymmetric_template_circular_cross_correlation(
+        self, impl, nbins: int
+    ) -> None:
+        rng = np.random.default_rng(13)
+        data = rng.standard_normal((3, nbins)).astype(np.float32)
+        asym = np.zeros((2, nbins), dtype=np.float32)
+        asym[0, :5] = np.array([3.0, 1.5, 0.2, -1.0, -2.5], dtype=np.float32)
+        asym[1, :4] = np.array([-2.0, 4.0, -0.5, 1.0], dtype=np.float32)
+        for idx in range(2):
+            asym[idx] = scoring._normalise(asym[idx])  # noqa: SLF001
+
+        got = impl(data, asym)
+        want = np.empty((3, 2), dtype=np.float32)
+        for i in range(3):
+            for j in range(2):
+                want[i, j] = max(
+                    float(np.dot(data[i], np.roll(asym[j], shift)))
+                    for shift in range(nbins)
+                )
+        np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-4)
+
+    @pytest.mark.parametrize(
+        "impl",
+        jit_variants(scoring._compute_snr_double),  # noqa: SLF001
+    )
+    def test_double_handles_float64_and_small_filter_bank(self, impl) -> None:
+        rng = np.random.default_rng(14)
+        data_f64 = rng.standard_normal((5, NBINS))
+        for n_filters in [1, 3]:
+            e_mat = np.zeros((n_filters, NBINS), dtype=np.float32)
+            for k in range(n_filters):
+                e_mat[k, k * 8 : k * 8 + 2] = 1.0
+                e_mat[k] = scoring._normalise(e_mat[k])  # noqa: SLF001
+            scores = impl(data_f64, e_mat, n_corr=10)
+            assert scores.shape == (5,)
+            assert np.isfinite(scores).all()
+
+    @pytest.mark.parametrize(
+        "impl",
+        jit_variants(scoring._compute_snr_double),  # noqa: SLF001
+    )
+    def test_double_peak_uses_natural_log_lee(self, impl) -> None:
+        mf = MatchedFilter(widths=np.array([1]), nbins=NBINS, shift=8)
+        t0, t32 = mf.e_mat[0], mf.e_mat[4]
+        profile = (5.0 * t0 + 5.0 * t32).astype(np.float32)
+        got = float(impl(profile[None, :], mf.e_mat, n_corr=10)[0])
+
+        scores = mf.e_mat @ profile
+        gamma = float(mf.e_mat[0] @ mf.e_mat[4])
+        s2 = (scores[0] ** 2 + scores[4] ** 2 - 2 * gamma * scores[0] * scores[4]) / (
+            1.0 - gamma**2
+        )
+        n_filters = len(mf.e_mat)
+        x_double = 0.5 * s2 - np.log(n_filters * (n_filters - 1) // 2)
+        want = float(maths.norm_isf_func(x_double))
+        assert got == pytest.approx(want, rel=1e-4, abs=1e-3)
+
+    @pytest.mark.parametrize(
+        "impl",
+        jit_variants(scoring._compute_snr_double),  # noqa: SLF001
+    )
+    def test_double_solved_amplitude_positivity_guard(self, impl) -> None:
+        base = scoring._gen_boxcar_templates(np.array([4], dtype=np.int64), NBINS)[0]  # noqa: SLF001
+        e_ovl = np.stack([base, np.roll(base, 1)])
+        prof_trough = (8.0 * e_ovl[0] - 3.0 * e_ovl[1]).astype(np.float32)
+        scores_ovl = e_ovl @ prof_trough
+        assert scores_ovl[0] > 0.0
+        assert scores_ovl[1] > 0.0
+        want_single = float(
+            maths.norm_isf_func(
+                maths.chi_sq_minus_logsf_func(float(scores_ovl.max() ** 2), 1)
+                - np.log(2)
+            )
+        )
+        got_trough = float(impl(prof_trough[None, :], e_ovl, n_corr=10)[0])
+        assert got_trough == pytest.approx(want_single, rel=1e-4, abs=1e-3)
+
+        wide = scoring._gen_boxcar_templates(np.array([16], dtype=np.int64), NBINS)[0]  # noqa: SLF001
+        e_disjoint = np.stack([wide, np.roll(wide, 32)])
+        prof_pos = (10.0 * e_disjoint[0] + 2.0 * e_disjoint[1]).astype(np.float32)
+        scores_disj = e_disjoint @ prof_pos
+        gamma = float(e_disjoint[0] @ e_disjoint[1])
+        assert gamma < 0.0
+        assert scores_disj[1] < 0.0  # negative raw projection despite +2 amplitude
+        s2 = (
+            scores_disj[0] ** 2
+            + scores_disj[1] ** 2
+            - 2.0 * gamma * scores_disj[0] * scores_disj[1]
+        ) / (1.0 - gamma**2)
+        want_double = float(maths.norm_isf_func(0.5 * s2 - np.log(1)))
+        got_pos = float(impl(prof_pos[None, :], e_disjoint, n_corr=10)[0])
+        assert got_pos == pytest.approx(want_double, rel=1e-4, abs=1e-3)
+
+
+class TestHarmonicSumming:
+    @pytest.mark.parametrize("impl", jit_variants(scoring.harmonic_summing_score_func))
+    def test_pure_noise_does_not_false_trigger(self, impl) -> None:
+        rng = np.random.default_rng(15)
+        profiles = rng.standard_normal((200, NBINS)).astype(np.float32)
+        ones = np.ones(NBINS, dtype=np.float32)
+        scores = np.array([impl(np.stack([p, ones]), 8) for p in profiles], dtype=float)
+        assert np.isfinite(scores).all()
+        assert scores.max() < 6.0
+
+    @pytest.mark.parametrize("impl", jit_variants(scoring.harmonic_summing_score_func))
+    def test_clamps_nyquist_and_validates_bounds(self, impl) -> None:
+        rng = np.random.default_rng(16)
+        combined = np.stack([rng.standard_normal(NBINS), np.ones(NBINS)]).astype(
+            np.float32
+        )
+        # n_harmonics > (nbins - 1) // 2 and > 32 clamps cleanly without crashing.
+        res = impl(combined, 100)
+        assert np.isfinite(res)
+
+        with pytest.raises(ValueError, match="harmonic"):
+            impl(combined, 0)
+        small = np.stack([np.ones(2), np.ones(2)]).astype(np.float32)
+        with pytest.raises(ValueError, match="harmonic"):
+            impl(small, 4)
