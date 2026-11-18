@@ -1,30 +1,27 @@
 """Every RNG in the library must be steerable from its caller.
 
-The library used to call `np.random.default_rng()` with no argument in eight
-places and expose no way to seed any of them, so a run could not be repeated.
-`np.random.seed` does not help: `default_rng` ignores the legacy global seed,
-which is what made the defect easy to miss -- the usual reflex appears to work
-and changes nothing.
+Each public entry point that draws randomness takes `seed`, accepting an int, a
+`np.random.Generator`, or `None`:
 
-Each public entry point now takes `seed`, accepting an int, a
-`np.random.Generator`, or `None`. **`None` is still the default and still draws
-fresh entropy**, so these tests also pin that the fix did not quietly make the
-library deterministic for callers who never asked for it.
-
-`test_no_bare_default_rng_in_library` enumerates the call sites from the source
-rather than from a list typed here, so a new unseeded generator fails this file
-instead of going unnoticed.
+- the same seed reproduces the output, and different seeds change it;
+- **`None` is the default and draws fresh entropy**, so a caller who never asked for
+  determinism does not get it;
+- `np.random.seed` is no substitute: `default_rng` ignores the legacy global seed, so
+  the library must never draw from an unseeded or global generator.
+  `test_no_unseeded_rng_in_library` enumerates the call sites from the source rather
+  than from a list typed here, so a new unseeded generator fails this file.
 
 Reproducibility holds under parallel execution too. The two kernels that draw
 inside a `prange` take one generator per iteration rather than sharing one, so
 their output does not depend on numba's thread count -- see
-`TestThresholding.test_run_reproduces_under_parallelism`.
+`TestThresholding.test_run_is_independent_of_thread_count`.
 """
 
 from __future__ import annotations
 
 import ast
 import pathlib
+import textwrap
 from typing import TYPE_CHECKING
 
 import numba
@@ -33,10 +30,9 @@ import pytest
 
 import pyloki
 from pyloki.detection import thresholding
-
-# aliased: pytest would otherwise try to collect the library's `Test*` class
-from pyloki.sensitivity.sim_ffa import TestFFASensitivity as FFASensitivitySim
+from pyloki.sensitivity import sim_ffa
 from pyloki.simulation.pulse import PulseSignalConfig
+from tests._threads import num_threads
 
 if TYPE_CHECKING:
     from pyloki.detection.schemes import StatesInfo
@@ -181,118 +177,205 @@ class TestThresholding:
         second = thresholding.evaluate_scheme(ladder, seed=3, **SCHEME_KW)
         np.testing.assert_array_equal(_survival(first), _survival(second))
 
-    def test_dynamic_threshold_scheme_seeds_its_generator(self) -> None:
-        """The seed reaches `self.rng`. That is NOT the same as `run()` reproducing."""
+    @pytest.mark.parametrize("mode", ["legacy", "improved"])
+    def test_dynamic_threshold_scheme_init_reproduces(self, mode: str) -> None:
+        """The constructor simulates the first stage's folds from `seed`."""
 
-        def draws(seed: int | None) -> np.ndarray:
+        def first_stage(seed: int | None) -> np.ndarray:
             scheme = thresholding.DynamicThresholdScheme(
                 nthresholds=20,
+                mode=mode,
                 seed=seed,
                 **SCHEME_KW,
             )
-            return scheme.rng.standard_normal(8)
+            folds = [f.folds_h0 for f in scheme.folds_in if f.folds_h0.size]
+            assert folds, "the first stage holds no simulated folds"
+            return np.concatenate(folds)
 
-        np.testing.assert_array_equal(draws(5), draws(5))
-        assert not np.array_equal(draws(None), draws(None))
+        np.testing.assert_array_equal(first_stage(5), first_stage(5))
+        assert not np.array_equal(first_stage(5), first_stage(6))
+        assert not np.array_equal(first_stage(None), first_stage(None))
+
+    @staticmethod
+    def _success_h0(mode: str, seed: int | None) -> np.ndarray:
+        """Return `run()`'s `success_h0`, which depends on every draw the run makes.
+
+        Not `threshold`: thresholds come off a fixed `np.linspace` and are identical
+        even unseeded, so comparing them would pass vacuously. Nor the backtracked
+        ladder: it is a quantised summary, and two genuinely different states can
+        produce the same one.
+        """
+        scheme = thresholding.DynamicThresholdScheme(
+            np.array([2.0] * 6),
+            ref_ducy=0.1,
+            nbins=32,
+            ntrials=256,
+            nprobs=8,
+            nthresholds=20,
+            snr_final=8.0,
+            mode=mode,
+            seed=seed,
+        )
+        scheme.run(thres_neigh=5)
+        return np.asarray(scheme.states["success_h0"]).copy()
 
     @pytest.mark.parametrize("mode", ["legacy", "improved"])
-    def test_run_reproduces_under_parallelism(self, mode: str) -> None:
-        """`run()` reproduces from a seed regardless of how many threads numba uses.
-
-        Both kernels that consume randomness (`run_stage_legacy`,
-        `pre_simulate_stage_folds`) draw inside a `prange`. A single shared generator
-        there is not enough: which thread takes which draw depends on scheduling, so a
-        seed would fix the stream and still leave the result varying. Each iteration
-        gets its own generator instead, derived from `(entropy, istage)`, which makes
-        the output independent of thread order.
-
-        Compares `success_h0`, not `threshold`: thresholds come off a fixed
-        `np.linspace` and are identical even unseeded, so comparing them would pass
-        vacuously. The backtracked ladder is no good either -- it is a quantised
-        summary, and two genuinely different states can produce the same one.
-        """
-
-        def success_h0(seed: int | None, nthreads: int) -> np.ndarray:
-            original = numba.get_num_threads()
-            numba.set_num_threads(nthreads)
-            try:
-                scheme = thresholding.DynamicThresholdScheme(
-                    np.array([2.0] * 6),
-                    ref_ducy=0.1,
-                    nbins=32,
-                    ntrials=256,
-                    nprobs=8,
-                    nthresholds=20,
-                    snr_final=8.0,
-                    mode=mode,
-                    seed=seed,
-                )
-                scheme.run(thres_neigh=5)
-                return np.asarray(scheme.states["success_h0"]).copy()
-            finally:
-                numba.set_num_threads(original)
-
-        many = numba.get_num_threads()
+    def test_run_reproduces(self, mode: str) -> None:
+        seeded = self._success_h0(mode, 11)
         np.testing.assert_array_equal(
-            success_h0(11, many),
-            success_h0(11, many),
+            self._success_h0(mode, 11),
+            seeded,
             err_msg="seeded run() is not reproducible on repeated runs",
         )
-        if many > 1:
-            np.testing.assert_array_equal(
-                success_h0(11, many),
-                success_h0(11, 1),
-                err_msg=(
-                    "seeded run() depends on the thread count -- a shared generator "
-                    "is being consumed inside a prange"
-                ),
-            )
-        # Negative controls, so the assertions above cannot pass vacuously.
-        assert not np.array_equal(success_h0(11, many), success_h0(12, many)), (
+        # Negative controls, so the assertion above cannot pass vacuously.
+        assert not np.array_equal(self._success_h0(mode, 12), seeded), (
             "run() ignores the seed entirely"
         )
-        assert not np.array_equal(success_h0(None, many), success_h0(None, many)), (
-            "run() is deterministic without a seed; default behaviour changed"
+        assert not np.array_equal(
+            self._success_h0(mode, None), self._success_h0(mode, None)
+        ), "run() is deterministic without a seed; default behaviour changed"
+
+    @pytest.mark.parametrize("mode", ["legacy", "improved"])
+    def test_run_is_independent_of_thread_count(self, mode: str) -> None:
+        """Both kernels that consume randomness draw inside a `prange`.
+
+        `run_stage_legacy` and `pre_simulate_stage_folds`. A single shared generator
+        there is not enough: which thread takes which draw depends on scheduling, so a
+        seed would fix the stream and still leave the result varying. Each iteration
+        gets its own generator, derived from `(entropy, istage)`.
+        """
+        many = numba.config.NUMBA_NUM_THREADS
+        if many < 2:
+            pytest.skip("needs >= 2 numba threads to compare against one")
+        with num_threads(many):
+            parallel = self._success_h0(mode, 11)
+        with num_threads(1):
+            serial = self._success_h0(mode, 11)
+        np.testing.assert_array_equal(
+            parallel,
+            serial,
+            err_msg=(
+                "seeded run() depends on the thread count -- a shared generator "
+                "is being consumed inside a prange"
+            ),
         )
 
 
 class TestSimFFA:
-    """`sensitivity/sim_ffa.py`."""
+    """`sensitivity/sim_ffa.py`: the simulator's own seed jitters the pulse phase."""
 
-    def test_same_seed_reproduces(self) -> None:
-        cfg = PulseSignalConfig(period=0.01, dt=64e-6, nsamps=NSAMPS, snr=20, ducy=0.1)
-        limits = np.array([[100.0, 200.0], [-10.0, 10.0]])
+    def test_same_seed_reproduces(self, monkeypatch) -> None:
+        # The FFA searches are deterministic given the simulated series; the seed
+        # reaches only the series, through phi0. Stub the searches out, so the losses
+        # left to compare are the ones read straight off the series' folds.
+        monkeypatch.setattr(
+            sim_ffa, "test_sensitivity_ffa", lambda *_, **__: (1.0, 1.0, 1.0)
+        )
 
-        def draws(seed: int | None) -> np.ndarray:
-            sim = FFASensitivitySim(cfg=cfg, param_limits=limits, seed=seed)
-            return sim.rng.standard_normal(8)
+        def losses(seed: int | None) -> np.ndarray:
+            # A fresh, fixed-seed config per run: its noise must not differ.
+            cfg = PulseSignalConfig(
+                period=0.01,
+                dt=64e-6,
+                nsamps=NSAMPS,
+                snr=20,
+                ducy=0.1,
+                mod_kwargs={"acc": 5.0},
+                seed=1,
+            )
+            sim = sim_ffa.TestFFASensitivity(
+                cfg=cfg,
+                param_limits=np.array([[-10.0, 10.0], [99.0, 101.0]]),
+                ducy_arr=np.array([0.1]),
+                eta_arr=np.array([1]),
+                ds_arr=np.array([1.0, 1.5]),
+                seed=seed,
+                quiet=True,
+            )
+            # One ducy step of `run()`, without `_save`'s output file.
+            parts = sim._execute(cfg)  # noqa: SLF001
+            return np.concatenate([part.ravel() for part in parts])
 
-        np.testing.assert_array_equal(draws(5), draws(5))
-        assert not np.array_equal(draws(None), draws(None))
+        np.testing.assert_array_equal(losses(5), losses(5))
+        assert not np.array_equal(losses(5), losses(6))
+        assert not np.array_equal(losses(None), losses(None))
 
 
-def test_no_bare_default_rng_in_library() -> None:
-    """No `default_rng()` anywhere in `src/` may be called with no argument.
+# Constructors of seedable generators; any other `*.random.<name>(...)` draws from
+# numpy's legacy global state, which no `seed` argument reaches.
+SEEDABLE = frozenset(
+    {
+        "default_rng",
+        "Generator",
+        "SeedSequence",
+        "BitGenerator",
+        "PCG64",
+        "PCG64DXSM",
+        "MT19937",
+        "Philox",
+        "SFC64",
+    }
+)
 
-    Enumerated from the source so that a newly added unseeded generator fails
-    here rather than reintroducing the defect unnoticed.
-    """
+
+def _unseeded_rng_calls(source: str) -> list[int]:
+    """Line numbers of RNG calls in `source` that the caller cannot seed."""
+    lines = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (
+            func.attr
+            if isinstance(func, ast.Attribute)
+            else func.id
+            if isinstance(func, ast.Name)
+            else None
+        )
+        if name == "default_rng":
+            seed = node.args[0] if node.args else None
+            seed = next((k.value for k in node.keywords if k.arg == "seed"), seed)
+            if seed is None or (isinstance(seed, ast.Constant) and seed.value is None):
+                lines.append(node.lineno)
+        elif (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Attribute)
+            and func.value.attr == "random"
+            and func.attr not in SEEDABLE
+        ):
+            lines.append(node.lineno)
+    return lines
+
+
+@pytest.mark.parametrize(
+    ("source", "flagged"),
+    [
+        ("np.random.default_rng()", True),
+        ("np.random.default_rng(None)", True),
+        ("np.random.default_rng(seed=None)", True),
+        ("from numpy.random import default_rng\ndefault_rng()", True),
+        ("np.random.normal(0.0, 1.0, 5)", True),
+        ("numpy.random.seed(1)", True),
+        ("np.random.default_rng(seed)", False),
+        ("from numpy.random import default_rng\ndefault_rng(7)", False),
+        ("np.random.SeedSequence(seed).entropy", False),
+        ("np.random.Generator(np.random.PCG64(1))", False),
+        ("rng.normal(0.0, 1.0)", False),
+    ],
+)
+def test_unseeded_rng_detector(source: str, flagged: bool) -> None:
+    assert bool(_unseeded_rng_calls(textwrap.dedent(source))) is flagged
+
+
+def test_no_unseeded_rng_in_library() -> None:
+    """No call in `src/` draws from a generator its caller cannot seed."""
     root = pathlib.Path(pyloki.__file__).parent
-    offenders = []
-    for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if (
-                isinstance(func, ast.Attribute)
-                and func.attr == "default_rng"
-                and not node.args
-                and not node.keywords
-            ):
-                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    offenders = [
+        f"{path.relative_to(root)}:{lineno}"
+        for path in sorted(root.rglob("*.py"))
+        for lineno in _unseeded_rng_calls(path.read_text())
+    ]
     assert not offenders, (
-        "unseeded np.random.default_rng() call(s) -- the caller cannot reproduce "
+        "unseeded or global-state numpy RNG call(s) -- the caller cannot reproduce "
         f"this run: {', '.join(offenders)}"
     )

@@ -37,6 +37,9 @@ CONSOLE = Console()
 C_VAL = float(constants.c.value)
 # A safe epsilon to ensure deterministic rounding across C++/Python
 FLOAT_EPSILON = 1e-6
+# Worker processes start with "spawn" on every platform. Forking a process whose
+# Numba thread pool is running can deadlock the child (and Python warns about it).
+MP_CONTEXT = multiprocessing.get_context("spawn")
 
 
 def mkdir_p(dir_path: str | Path, must_not_exist: list[str] | None = None) -> Path:
@@ -348,7 +351,7 @@ class MultiprocessProgressTracker:
 
     def __enter__(self) -> Self:
         # Manager + shared dict + log queue
-        self.manager = multiprocessing.Manager()
+        self.manager = MP_CONTEXT.Manager()
         self.shared_progress = self.manager.dict()
         self.log_queue = self.manager.Queue()
         # Create a handler that uses the same console as the tracker

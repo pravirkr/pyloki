@@ -1,21 +1,20 @@
 """Kernels that build their output with ``np.empty`` write every slot of it.
 
 An unwritten slot in an ``np.empty`` output holds whatever was in memory, so a test
-that compares two calls sees it only when the memory happens to differ (#41 was found
-that way: on #40's CI all three Pythons failed, each with a different value). This
-module fixes the content: each kernel's Python source runs with its module's
+that compares two calls sees it only when the memory happens to differ (#41, #43).
+This module fixes the content: each kernel's Python source runs with its module's
 ``np.empty`` replaced by one that fills float arrays with NaN, signed integers with
 the dtype's minimum and unsigned with its maximum, and the result must equal a
 control run with the real ``numpy``. Both runs do the same arithmetic on the same
 inputs and differ only in unwritten memory, so a failure means an unwritten slot, not a
 numerical difference. Only allocations in the kernel's own source are poisoned: its
 callees run compiled, with the real ``numpy``, so a case speaks for that kernel's slots
-and nothing else. The same check found #43.
+and nothing else.
 
 Covered here: the kernels that assemble their output field by field (the shape of #41
 and #43), the circular resolvers (their rows are filled per leaf class), and the FFA
-plan. ``circ_taylor_branch_batch`` and the branching-pattern generators carry this
-check in their own fix PRs. ``pruning_iteration_batched`` needs a live pruning state
+plan, ``circ_taylor_branch_batch`` (#41) and the branching-pattern generators.
+``pruning_iteration_batched`` needs a live pruning state
 and is not run; by reading, it writes every column of its width-(n+2) backtrack row
 (0, 1..n and n+1).
 """
@@ -30,7 +29,7 @@ from numba import typed
 
 from pyloki import ffa, kepler
 from pyloki.config import ParamLimits, PulsarSearchConfig
-from pyloki.core import circular, common, fold
+from pyloki.core import chebyshev, circular, common, fold, taylor
 from pyloki.simulation import modulate
 from pyloki.utils import np_utils, psr_utils, transforms
 
@@ -81,6 +80,10 @@ def _copies(args: tuple) -> tuple:
 def _assert_same(control, poisoned) -> None:
     if isinstance(control, np.ndarray):
         np.testing.assert_array_equal(poisoned, control)
+    elif isinstance(control, dict):
+        assert poisoned.keys() == control.keys()
+        for key, value in control.items():
+            _assert_same(value, poisoned[key])
     elif isinstance(control, (tuple, list)):
         assert len(poisoned) == len(control)
         for c, p in zip(control, poisoned, strict=True):
@@ -89,13 +92,17 @@ def _assert_same(control, poisoned) -> None:
         assert poisoned == control
 
 
-def check(monkeypatch, module, func, *args, **kwargs) -> None:
-    """Run ``func`` (a kernel ``py_func`` or plain function) both ways and compare."""
+def check(monkeypatch, module, func, *args, **kwargs):
+    """Run ``func`` (a kernel ``py_func`` or plain function) both ways and compare.
+
+    Returns the control result, for checks that the case did real work.
+    """
     control = func(*_copies(args), **kwargs)
     monkeypatch.setattr(module, "np", poisoned_numpy())
     poisoned = func(*_copies(args), **kwargs)
     monkeypatch.undo()
     _assert_same(control, poisoned)
+    return control
 
 
 # ----------------------------------------------------------------- fixtures
@@ -336,12 +343,8 @@ def test_poly_projection_matrix(monkeypatch) -> None:
 @pytest.mark.parametrize("n", [0, 3, 4, 9])
 def test_to_derivatives_series(monkeypatch, n: int) -> None:
     orbit = modulate.CircularModulating(p_orb=5000.0, psi=0.7, x_orb=0.1)
-    control = orbit.to_derivatives_series(n)
-    monkeypatch.setattr(modulate, "np", poisoned_numpy())
-    poisoned = orbit.to_derivatives_series(n)
-    monkeypatch.undo()
+    control = check(monkeypatch, modulate, orbit.to_derivatives_series, n)
     assert set(control) == {"coeffs"}  # its only output
-    np.testing.assert_array_equal(poisoned["coeffs"], control["coeffs"])
 
 
 # ------------------------------------- core/circular resolvers (filled per leaf class)
@@ -407,17 +410,103 @@ def test_ffa_plan_configure(monkeypatch) -> None:
         bseg_ffa=2**14,
         prune_poly_order=3,
     )
-    control = ffa.FFAPlan(cfg)
-    monkeypatch.setattr(ffa, "np", poisoned_numpy())
-    poisoned = ffa.FFAPlan(cfg)
-    monkeypatch.undo()
-    arrays = {k: v for k, v in vars(control).items() if isinstance(v, np.ndarray)}
+
+    def plan_state(cfg: PulsarSearchConfig) -> tuple[dict, list]:
+        # The array attributes, and the per-level parameter grids (lists of arrays).
+        plan = ffa.FFAPlan(cfg)
+        arrays = {k: v for k, v in vars(plan).items() if isinstance(v, np.ndarray)}
+        return arrays, plan.params
+
+    arrays, params = check(monkeypatch, ffa, plan_state, cfg)
     assert arrays, "the plan holds arrays"
-    for name, value in arrays.items():
-        np.testing.assert_array_equal(getattr(poisoned, name), value)
-    # The per-level parameter grids live in a list of lists of arrays.
-    assert len(poisoned.params) == len(control.params) > 0
-    for level_c, level_p in zip(control.params, poisoned.params, strict=True):
-        assert len(level_p) == len(level_c)
-        for c, p in zip(level_c, level_p, strict=True):
-            np.testing.assert_array_equal(p, c)
+    assert len(params) > 0
+
+
+# ----------------------------------------------------------------- branching
+
+
+def _branch_input(*, expand_crackle: bool) -> np.ndarray:
+    """Circular leaves whose steps are set so that some axes branch.
+
+    With ``expand_crackle`` the hole leaf's crackle needs branching (the expansion
+    path); without it there is no hole leaf and the kernel takes its early return.
+    """
+    leaves = _circular_leaves() if expand_crackle else _circular_leaves()[[0, 2]]
+    factors = [3.3, 2.1, 2.4, 0.5, 2.2] if expand_crackle else [0.5, 0.5, 2.4, 0.5, 2.2]
+    dnew = psr_utils.poly_taylor_step_d_vec(
+        5, 12.0, NBINS, 1.0, leaves[:, -1, 0], t_ref=0.0
+    )
+    leaves[:, :5, 1] = dnew * np.array(factors)
+    if expand_crackle:
+        leaves[1, 2, 1] = abs(leaves[1, 2, 0]) / 10
+    return leaves
+
+
+@pytest.mark.parametrize("expand_crackle", [False, True])
+def test_circ_taylor_branch_batch(monkeypatch, expand_crackle: bool) -> None:
+    leaves = _branch_input(expand_crackle=expand_crackle)
+    out, _ = check(
+        monkeypatch,
+        circular,
+        circular.circ_taylor_branch_batch.py_func,
+        leaves,
+        (20.0, 12.0),
+        NBINS,
+        1.0,
+        5,
+        64,
+        2.0,
+    )
+    assert len(out) > len(leaves)  # something branched, so the path did real work
+
+
+_PARAM_ARR_3 = typed.List([np.array([0.0]), np.array([0.0]), np.array([100.0])])
+_PARAM_ARR_5 = typed.List([np.array([0.0])] * 4 + [np.array([100.0])])
+BP_GENERATORS = {
+    "taylor": (
+        taylor,
+        taylor.generate_bp_poly_taylor,
+        _PARAM_ARR_3,
+        np.array([2e-4, 2.0, 0.05]),
+        {"use_cheby_coarsening": False},
+    ),
+    "chebyshev": (
+        chebyshev,
+        chebyshev.generate_bp_poly_chebyshev,
+        _PARAM_ARR_3,
+        np.array([2e-4, 2.0, 0.05]),
+        {},
+    ),
+    "circular": (
+        circular,
+        circular.generate_bp_circ_taylor,
+        _PARAM_ARR_5,
+        np.array([1e-9, 1e-6, 2e-4, 2.0, 0.05]),
+        {},
+    ),
+}
+
+
+@pytest.mark.parametrize("strategy", STRATEGIES)
+@pytest.mark.parametrize("moving", [True, False])
+@pytest.mark.parametrize("name", sorted(BP_GENERATORS))
+def test_branching_pattern_generators(
+    monkeypatch, name: str, moving: bool, strategy: str
+) -> None:
+    module, kernel, param_arr, dparams, kwargs = BP_GENERATORS[name]
+    pattern = check(
+        monkeypatch,
+        module,
+        kernel.py_func,
+        param_arr,
+        dparams,
+        10.0,  # tseg_ffa
+        16,  # nsegments
+        NBINS,
+        1.0,  # eta
+        8,  # ref_seg
+        use_moving_grid=moving,
+        tiling_strategy=strategy,
+        **kwargs,
+    )
+    assert np.isfinite(pattern).all()

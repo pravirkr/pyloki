@@ -1,9 +1,9 @@
 """Helpers for unit-testing numba kernels so that coverage can see them.
 
 A ``@njit`` kernel is executed as machine code, so ``coverage`` never records a line
-inside its body. Measured on this repo, that is not a rounding error: 3384 of the
-library's 8309 statements (40.7%) live inside ``@njit``/``@vectorize`` bodies, and the
-suite as it stands covers **0** of them. Every kernel is invisible.
+inside its body. Roughly 40% of the library's statements live inside
+``@njit``/``@vectorize`` bodies, so testing only the compiled path leaves all of them
+unmeasured.
 
 Numba keeps the undecorated Python function on the decorated object, and calling it
 runs the same source under the interpreter, where coverage does see it:
@@ -102,4 +102,21 @@ def jit_variants(func: Callable[..., Any]) -> list[Any]:
     return [
         pytest.param(func, id="compiled"),
         pytest.param(python_impl(func), id="py_func"),
+    ]
+
+
+def jit_cases(func: Callable[..., Any], *values: Any) -> list[Any]:
+    """`jit_variants` for a multi-argument parametrize: params ``(impl, *values)``.
+
+    Ids are ``<name>-compiled`` and ``<name>-py_func``, so lists for several kernels
+    can be concatenated into one parametrize without colliding::
+
+        @pytest.mark.parametrize(
+            ("impl", "shape"), jit_cases(f, (1, 5)) + jit_cases(g, (1, 5, 2))
+        )
+    """
+    name = getattr(func, "__name__", "kernel")
+    return [
+        pytest.param(func, *values, id=f"{name}-compiled"),
+        pytest.param(python_impl(func), *values, id=f"{name}-py_func"),
     ]

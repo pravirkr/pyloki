@@ -556,7 +556,7 @@ def pre_simulate_stage_folds(
     for ii in prange(n_beam * nprobs):
         # One generator per iteration, so the result does not depend on which
         # thread runs which iteration. See DynamicThresholdScheme._stage_rngs.
-        rng = rngs[ii]
+        rng = rngs[np.int64(ii)]  # prange indices are uint64
         kprob = ii % nprobs
         ibeam = ii // nprobs
         jthresh = beam_idx_prev[ibeam]
@@ -620,7 +620,7 @@ def run_stage_legacy(
     for ibeam_cur in prange(len(beam_idx_cur)):
         # One generator per iteration, so the result does not depend on which
         # thread runs which iteration. See DynamicThresholdScheme._stage_rngs.
-        rng = rngs[ibeam_cur]
+        rng = rngs[np.int64(ibeam_cur)]  # prange indices are uint64
         ithres = int(beam_idx_cur[ibeam_cur])
         # Find nearest neighbors in the previous beam
         neighbour_beam_indices = neighbouring_indices(

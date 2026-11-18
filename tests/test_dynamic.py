@@ -48,10 +48,14 @@ def _limits(order: int) -> np.ndarray:
     return np.array([*higher, [-20.0, 20.0], [99.0, 101.0]])
 
 
+POLY_DPARAMS = np.array([1e-4, 0.05, 0.01])  # order 3: jerk, accel, freq
+CIRC_DPARAMS = np.array([1e-9, 1e-6, 1e-4, 0.05, 0.01])  # order 5
+
+
 def _poly_funcs(init: object, order: int, *, moving: bool) -> object:
     return init(
         _param_arr(order),
-        np.array([1e-4] * (order - 2) + [0.05, 0.01]),
+        POLY_DPARAMS,
         COUNTS,
         10.0,
         NBINS,
@@ -95,7 +99,7 @@ def _circ(*, moving: bool, complex_: bool = False) -> object:
     )
     return init(
         _param_arr(5),
-        np.array([1e-9, 1e-6, 1e-4, 0.05, 0.01]),
+        CIRC_DPARAMS,
         COUNTS,
         10.0,
         NBINS,
@@ -109,6 +113,15 @@ def _circ(*, moving: bool, complex_: bool = False) -> object:
         *CIRC_EXTRA,
         moving,
     )
+
+
+def _assert_same(got: tuple, want: tuple) -> None:
+    """Integer outputs bit-exact; float outputs to rounding (fastmath may reorder)."""
+    for g, w in zip(got, want, strict=True):
+        if np.issubdtype(np.asarray(w).dtype, np.integer):
+            np.testing.assert_array_equal(g, w)
+        else:
+            np.testing.assert_allclose(g, w, rtol=1e-12, atol=0)
 
 
 def _taylor_leaves(order: int) -> np.ndarray:
@@ -153,8 +166,7 @@ class TestTaylorRouting:
                 _limits(3),
                 NBINS,
             )
-        for g, w in zip(got, want, strict=True):
-            np.testing.assert_array_equal(g, w)
+        _assert_same(got, want)
 
     @pytest.mark.parametrize("moving", [True, False])
     def test_transform(self, moving: bool) -> None:
@@ -167,7 +179,7 @@ class TestTaylorRouting:
                 (T_CUR, 1.0),
                 "aggressive",
             )
-            np.testing.assert_array_equal(got, want)
+            np.testing.assert_allclose(got, want, rtol=1e-12, atol=0)
         else:
             np.testing.assert_array_equal(got, leaves)
 
@@ -178,8 +190,7 @@ class TestTaylorRouting:
         want, want_origins = taylor.poly_taylor_branch_batch(
             leaves, (20.0, 12.0), NBINS, 1.0, 3, 64
         )
-        np.testing.assert_array_equal(got, want)
-        np.testing.assert_array_equal(origins, want_origins)
+        _assert_same((got, origins), (want, want_origins))
         kept, kept_origins = funcs.validate(got, origins, (20.0, 12.0))
         np.testing.assert_array_equal(kept, got)
         np.testing.assert_array_equal(kept_origins, origins)
@@ -187,15 +198,16 @@ class TestTaylorRouting:
     def test_report_moving(self) -> None:
         leaves = _taylor_leaves(3)
         got = _taylor(moving=True).report(leaves.copy(), (T_ADD, 20.0), (T_INIT, 5.0))
-        np.testing.assert_array_equal(got, taylor.poly_taylor_report_batch(leaves))
+        np.testing.assert_allclose(
+            got, taylor.poly_taylor_report_batch(leaves), rtol=1e-12, atol=0
+        )
 
     def test_report_fixed_grid_recentres(self) -> None:
-        """The fixed-grid report must keep its re-centring transform (#34).
+        """The fixed-grid report must use its re-centred leaves (#34).
 
         On a fixed grid the leaves are expanded about ``t_init``, and `report_func`
-        re-centres them with `poly_taylor_transform_batch`, which returns a new array.
-        Before #35 that result was discarded, so the reported frequency was
-        ``f(t_init)``: 100.0 instead of ``100 (1 - 5 * 20 / c)`` for the leaf below.
+        re-centres them with `poly_taylor_transform_batch`. The reported frequency is
+        then ``f(t_add) = 100 (1 - 5 * 20 / c)`` for the leaf below, not ``f(t_init)``.
         """
         leaf = np.zeros((1, 5, 2))
         leaf[0, 1, 0] = 5.0
@@ -241,8 +253,7 @@ class TestChebyshevRouting:
                 _limits(3),
                 NBINS,
             )
-        for g, w in zip(got, want, strict=True):
-            np.testing.assert_array_equal(g, w)
+        _assert_same(got, want)
 
     @pytest.mark.parametrize("moving", [True, False])
     def test_transform(self, moving: bool) -> None:
@@ -255,7 +266,7 @@ class TestChebyshevRouting:
                 (T_CUR, 5.0),
                 "aggressive",
             )
-            np.testing.assert_array_equal(got, want)
+            np.testing.assert_allclose(got, want, rtol=1e-12, atol=0)
         else:
             np.testing.assert_array_equal(got, leaves)
 
@@ -272,15 +283,16 @@ class TestChebyshevRouting:
             64,
             "aggressive",
         )
-        np.testing.assert_array_equal(got, want)
-        np.testing.assert_array_equal(origins, want_origins)
+        _assert_same((got, origins), (want, want_origins))
 
     def test_report_moving(self) -> None:
         leaves = _cheby_leaves()
         got = _cheby(moving=True).report(leaves.copy(), (T_ADD, 5.0), (T_INIT, 5.0))
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             got,
             chebyshev.poly_chebyshev_report_batch(leaves, (T_ADD, 5.0)),
+            rtol=1e-12,
+            atol=0,
         )
 
     def test_report_fixed_grid_recentres(self) -> None:
@@ -299,14 +311,20 @@ class TestChebyshevRouting:
         )
 
 
-class TestCircularRouting:
-    @staticmethod
-    def _leaves() -> np.ndarray:
-        return _taylor_leaves(5)
+def _circ_leaves() -> np.ndarray:
+    # Leaf 0 gets a physical snap (opposite in sign to accel) at 3 sigma: snap
+    # class at the propagator significance (2), Taylor class at the validation
+    # significance (5). Resolve and transform then differ if the bundle passes
+    # the wrong one.
+    leaves = _taylor_leaves(5)
+    leaves[0, 1] = [-0.3 * np.sign(leaves[0, 3, 0]), 0.1]
+    return leaves
 
+
+class TestCircularRouting:
     @pytest.mark.parametrize("moving", [True, False])
     def test_resolve(self, moving: bool) -> None:
-        leaves = self._leaves()
+        leaves = _circ_leaves()
         got = _circ(moving=moving).resolve(
             leaves.copy(), (T_ADD, 1.0), (T_CUR, 1.0), (T_INIT, 1.0)
         )
@@ -325,12 +343,11 @@ class TestCircularRouting:
             NBINS,
             2.0,
         )
-        for g, w in zip(got, want, strict=True):
-            np.testing.assert_array_equal(g, w)
+        _assert_same(got, want)
 
     @pytest.mark.parametrize("moving", [True, False])
     def test_transform(self, moving: bool) -> None:
-        leaves = self._leaves()
+        leaves = _circ_leaves()
         got = _circ(moving=moving).transform(leaves, (T_ADD, 1.0), (T_CUR, 1.0))
         if moving:
             want = circular.circ_taylor_transform_batch(
@@ -340,13 +357,13 @@ class TestCircularRouting:
                 "aggressive",
                 2.0,
             )
-            np.testing.assert_array_equal(got, want)
+            np.testing.assert_allclose(got, want, rtol=1e-12, atol=0)
         else:
             np.testing.assert_array_equal(got, leaves)
 
     def test_branch_and_validate(self) -> None:
         funcs = _circ(moving=True)
-        leaves = self._leaves()
+        leaves = _circ_leaves()
         got, origins = funcs.branch(leaves, (20.0, 12.0), (18.0, 6.0))
         want, want_origins = circular.circ_taylor_branch_batch(
             leaves,
@@ -362,8 +379,7 @@ class TestCircularRouting:
         # and two calls need not agree there. Compare every slot it writes.
         written = np.ones(got.shape, dtype=bool)
         written[:, -2, 1] = False
-        np.testing.assert_array_equal(got[written], want[written])
-        np.testing.assert_array_equal(origins, want_origins)
+        _assert_same((got[written], origins), (want[written], want_origins))
         kept, kept_origins = funcs.validate(got, origins, (20.0, 12.0))
         want_kept, want_kept_origins = circular.circ_taylor_validate_batch(
             got,
@@ -394,9 +410,16 @@ class TestCircularRouting:
         )
         assert len(strict) == 0  # the propagator's 2 sigma would reject both
 
+    def test_report_moving(self) -> None:
+        leaves = _circ_leaves()
+        got = _circ(moving=True).report(leaves.copy(), (T_ADD, 20.0), (T_INIT, 5.0))
+        np.testing.assert_allclose(
+            got, taylor.poly_taylor_report_batch(leaves), rtol=1e-12, atol=0
+        )
+
     def test_report_fixed_grid_recentres(self) -> None:
         """The fixed-grid report must re-centre, as for `dyn_poly_taylor` (#34)."""
-        leaves = self._leaves()
+        leaves = _circ_leaves()
         got = _circ(moving=False).report(leaves.copy(), (T_ADD, 20.0), (T_INIT, 5.0))
         recentred = taylor.poly_taylor_transform_batch(
             leaves,
@@ -408,10 +431,15 @@ class TestCircularRouting:
 
 
 PRUNE_BUNDLES = [
-    pytest.param(_taylor, taylor.poly_taylor_seed, 3, id="taylor"),
-    pytest.param(_cheby, chebyshev.poly_chebyshev_seed, 3, id="chebyshev"),
-    pytest.param(_circ, None, 5, id="circular"),
+    pytest.param(_taylor, taylor.poly_taylor_seed, 3, POLY_DPARAMS, id="taylor"),
+    pytest.param(
+        _cheby, chebyshev.poly_chebyshev_seed, 3, POLY_DPARAMS, id="chebyshev"
+    ),
+    # The circular bundle seeds in the Taylor basis, at order 5.
+    pytest.param(_circ, taylor.poly_taylor_seed, 5, CIRC_DPARAMS, id="circular"),
 ]
+BUNDLE_PARAMS = ("make", "seed_fn", "order", "dparams")
+UNUSED_BUNDLE_PARAMS = ("make", "_seed_fn", "_order", "_dparams")
 
 
 class TestSharedOperations:
@@ -426,10 +454,10 @@ class TestSharedOperations:
             return real
         return np.ascontiguousarray(np.fft.rfft(real, axis=-1).astype(np.complex64))
 
-    @pytest.mark.parametrize(("make", "_seed", "_order"), PRUNE_BUNDLES)
+    @pytest.mark.parametrize(UNUSED_BUNDLE_PARAMS, PRUNE_BUNDLES)
     @pytest.mark.parametrize("complex_", [False, True])
     def test_score_and_shift_add(
-        self, make, _seed, _order: int, complex_: bool
+        self, make, _seed_fn, _order: int, _dparams, complex_: bool
     ) -> None:
         funcs = make(moving=True, complex_=complex_)
         folds = self._folds(6, complex_=complex_)
@@ -448,12 +476,10 @@ class TestSharedOperations:
             add_fn(segs, shifts, folds, isuggest),
         )
 
-    @pytest.mark.parametrize(("make", "seed_fn", "order"), PRUNE_BUNDLES[:2])
-    def test_seed(self, make, seed_fn, order: int) -> None:
+    @pytest.mark.parametrize(BUNDLE_PARAMS, PRUNE_BUNDLES)
+    def test_seed(self, make, seed_fn, order: int, dparams) -> None:
         funcs = make(moving=True)
-        leaves = seed_fn(
-            _param_arr(order), np.array([1e-4, 0.05, 0.01]), order, (5.0, 5.0)
-        )
+        leaves = seed_fn(_param_arr(order), dparams, order, (5.0, 5.0))
         fold_seg = self._folds(len(leaves), complex_=False).reshape(
             1, 2, len(leaves) // 2, 2, NBINS
         )
@@ -461,34 +487,79 @@ class TestSharedOperations:
         np.testing.assert_array_equal(tree.leaves, leaves)
         np.testing.assert_array_equal(tree.scores, funcs.score(tree.folds))
 
-    @pytest.mark.parametrize(("make", "_seed", "_order"), PRUNE_BUNDLES)
-    def test_load_and_pack(self, make, _seed, _order: int) -> None:
+    @pytest.mark.parametrize(UNUSED_BUNDLE_PARAMS, PRUNE_BUNDLES)
+    def test_load_and_pack(self, make, _seed_fn, _order: int, _dparams) -> None:
         funcs = make(moving=True)
         data = self._folds(5, complex_=False)
         np.testing.assert_array_equal(funcs.load(data, 3), data[3])
         np.testing.assert_array_equal(funcs.pack(data), data)
 
+    @pytest.mark.parametrize(UNUSED_BUNDLE_PARAMS, PRUNE_BUNDLES)
+    def test_transform_matrix_and_validation_params(
+        self, make, _seed_fn, _order: int, _dparams
+    ) -> None:
+        """`prune_dyp_tree` calls both; they forward to the `common` placeholders.
+
+        Neither depends on the bundle's configuration: the transform matrix is the
+        2x2 identity and the validation parameters are fixed.
+        """
+        funcs = make(moving=True)
+        matrix = funcs.get_transform_matrix((20.0, 12.0), (18.0, 6.0))
+        np.testing.assert_array_equal(matrix, np.eye(2))
+        got = funcs.get_validation_params((20.0, 12.0))
+        want = common.get_validation_params((20.0, 12.0))
+        np.testing.assert_array_equal(got[0], want[0])
+        np.testing.assert_array_equal(got[1], want[1])
+        assert got[2] == want[2]
+
+
+def _taylor_ascend_ref(leaves: np.ndarray, coords: np.ndarray) -> tuple:
+    return taylor.poly_taylor_ascend_resolve_batch(
+        leaves, coords, (T_INIT, 5.0), COUNTS, _limits(3), NBINS
+    )
+
+
+def _circ_ascend_ref(leaves: np.ndarray, coords: np.ndarray) -> tuple:
+    # The bundle must use the propagator significance (CIRC_EXTRA[2]).
+    return circular.circ_taylor_ascend_resolve_batch(
+        leaves, coords, (T_INIT, 5.0), COUNTS, _limits(5), NBINS, CIRC_EXTRA[2]
+    )
+
 
 class TestAscend:
-    def test_batch_size_does_not_change_the_result(self) -> None:
+    @pytest.mark.parametrize(
+        ("make", "make_leaves", "resolve_ref"),
+        [
+            pytest.param(
+                _taylor, lambda: _taylor_leaves(3), _taylor_ascend_ref, id="taylor"
+            ),
+            pytest.param(_circ, _circ_leaves, _circ_ascend_ref, id="circular"),
+        ],
+    )
+    def test_batch_size_does_not_change_the_result(
+        self, make, make_leaves, resolve_ref
+    ) -> None:
         """Rescoring a tree: scores move to scores_ep; folds and scores are rebuilt."""
-        funcs = _taylor(moving=False)
+        funcs = make(moving=False)
         rng = np.random.default_rng(9)
         n = 5
-        leaves = _taylor_leaves(3)
+        leaves = make_leaves()
         leaves = np.concatenate([leaves, leaves[:2]])
         dyp = rng.standard_normal((4, 4, 8, 2, NBINS)).astype(np.float32)
+        # Channel 1 is the variance: keep it positive, or every score is the sentinel.
+        dyp[..., 1, :] = np.abs(dyp[..., 1, :]) + 1.0
         idx_segments = np.array([0, 2, 3])
         coord_segments = np.array([[5.0, 5.0], [25.0, 5.0], [35.0, 5.0]])
+        # The same initial scores for every batch size.
+        scores_init = rng.standard_normal(n).astype(np.float32)
 
         def run(batch_size: int) -> WorldTree:
             tree = WorldTree(
                 leaves.copy(),
                 np.zeros((n, 2, NBINS), np.float32),
-                rng.standard_normal(n).astype(np.float32),
-                np.zeros((n, 5), np.int32),
+                scores_init.copy(),
+                np.zeros((n, leaves.shape[1]), np.int32),
             )
-            before = tree.scores.copy()
             funcs.ascend(
                 tree,
                 dyp,
@@ -498,20 +569,13 @@ class TestAscend:
                 (T_INIT, 5.0),
                 batch_size,
             )
-            np.testing.assert_array_equal(tree.scores_ep, before)
+            np.testing.assert_array_equal(tree.scores_ep, scores_init)
             return tree
 
         one, many = run(1), run(n)
         np.testing.assert_allclose(one.folds, many.folds, rtol=1e-6)
         np.testing.assert_allclose(one.scores, many.scores, rtol=1e-6)
-        idx, phase = taylor.poly_taylor_ascend_resolve_batch(
-            leaves,
-            coord_segments,
-            (T_INIT, 5.0),
-            COUNTS,
-            _limits(3),
-            NBINS,
-        )
+        idx, phase = resolve_ref(leaves, coord_segments)
         combined = common.shift_add_ascend_batch(
             dyp,
             common.load_prune_folds_2d,
@@ -520,11 +584,9 @@ class TestAscend:
             phase,
         )
         np.testing.assert_allclose(many.folds, combined, rtol=1e-6)
-        np.testing.assert_allclose(
-            many.scores,
-            scoring.snr_score_batch_func(combined, SCORE_WIDTHS),
-            rtol=1e-6,
-        )
+        expected = scoring.snr_score_batch_func(combined, SCORE_WIDTHS)
+        assert np.all(np.abs(expected) < 1e6), "scores must be real, not the sentinel"
+        np.testing.assert_allclose(many.scores, expected, rtol=1e-6)
 
 
 class TestFFARouting:

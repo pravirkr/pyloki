@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 
 from pyloki.utils import snail
-from tests.jit_utils import jit_variants
+from tests.jit_utils import jit_cases, jit_variants
 
 SCHEMES = [
     (7, 2, 0.5, 1),
@@ -37,6 +37,19 @@ SCHEMES = [
     (6, 3, 1.5, 1),
 ]
 STRIDED = [(9, 4, 1.0, 3), (10, 1, 0.5, 2), (6, 5, 2.0, 4)]
+# Each scalar-valued proxy method, with arguments valid on the (9, 4, 1.0, 3) scheme.
+METHOD_CALLS = [
+    ("get_segment_idx", (1,)),
+    ("get_coord", (3,)),
+    ("get_anchor_level", (5,)),
+    ("get_segment_coord", (2,)),
+    ("get_current_coord", (4, True)),
+    ("get_previous_coord", (4, False)),
+    ("get_report_coord", (True,)),
+    ("get_current_coord_stride", (5,)),
+    ("do_transform", (3,)),
+    ("get_valid", (4,)),
+]
 
 
 def _order(nsegments: int, ref_idx: int) -> list[int]:
@@ -168,7 +181,7 @@ class TestCoordinates:
     @pytest.mark.parametrize(
         "impl",
         [
-            p.values[0]
+            case
             for func in (
                 snail.get_segment_idx_func,
                 snail.get_coord_func,
@@ -178,7 +191,7 @@ class TestCoordinates:
                 snail.do_transform_func,
                 snail.get_current_coord_stride_func,
             )
-            for p in jit_variants(func)
+            for case in jit_cases(func)
         ],
     )
     @pytest.mark.parametrize("level", [-1, 7])
@@ -292,54 +305,21 @@ class TestValidAndMethods:
         with pytest.raises(ValueError, match="level must be in"):
             impl(_scheme((7, 2, 0.5, 1)), level, moving_grid=True)
 
-    def test_method_wrappers_on_both_paths(self) -> None:
-        """Run the Python body of each ``@njit`` method wrapper on the proxy too."""
-        s = _scheme((9, 4, 1.0, 3))
-        cls = type(s)
-        for name, args in [
-            ("get_segment_idx", (1,)),
-            ("get_coord", (3,)),
-            ("get_anchor_level", (5,)),
-            ("get_segment_coord", (2,)),
-            ("get_current_coord", (4, True)),
-            ("get_previous_coord", (4, False)),
-            ("get_report_coord", (True,)),
-            ("get_current_coord_stride", (5,)),
-            ("do_transform", (3,)),
-            ("get_valid", (4,)),
-        ]:
-            method = getattr(cls, name)
-            assert method.py_func(s, *args) == method(s, *args), name
-        seg_idx, _ = cls.get_segment_coords_so_far.py_func(s, 3)
-        np.testing.assert_array_equal(seg_idx, s.data[:4])
+    @pytest.mark.parametrize(("name", "args"), METHOD_CALLS)
+    def test_method_wraps_its_kernel(self, name: str, args: tuple) -> None:
+        """Each ``@njit`` proxy method returns its ``*_func`` kernel's result.
 
-    def test_methods_route_to_the_kernels(self) -> None:
-        """The proxy methods are thin wrappers; one call each, for the wiring."""
+        Run on both paths: the compiled method, and its Python body on the proxy.
+        """
         s = _scheme((9, 4, 1.0, 3))
-        assert s.get_segment_idx(1) == snail.get_segment_idx_func(s, 1)
-        assert s.get_coord(3) == snail.get_coord_func(s, 3)
-        assert s.get_segment_coord(2) == snail.get_segment_coord_func(s, 2)
-        assert s.get_anchor_level(5) == snail.get_anchor_level_func(s, 5)
-        assert s.get_current_coord(4, moving_grid=True) == snail.get_current_coord_func(
-            s,
-            4,
-            moving_grid=True,
-        )
-        assert s.get_previous_coord(
-            4, moving_grid=False
-        ) == snail.get_previous_coord_func(
-            s,
-            4,
-            moving_grid=False,
-        )
-        assert s.get_report_coord(moving_grid=True) == snail.get_report_coord_func(
-            s,
-            moving_grid=True,
-        )
-        assert s.get_current_coord_stride(5) == snail.get_current_coord_stride_func(
-            s, 5
-        )
-        assert s.do_transform(3) == snail.do_transform_func(s, 3)
-        assert s.get_valid(4) == snail.get_valid_func(s, 4)
-        seg_idx, _ = s.get_segment_coords_so_far(3)
-        np.testing.assert_array_equal(seg_idx, s.data[:4])
+        method = getattr(type(s), name)
+        expected = getattr(snail, f"{name}_func")(s, *args)
+        assert method(s, *args) == expected
+        assert method.py_func(s, *args) == expected
+
+    def test_segment_coords_so_far_method(self) -> None:
+        s = _scheme((9, 4, 1.0, 3))
+        method = type(s).get_segment_coords_so_far
+        for impl in (method, method.py_func):
+            seg_idx, _ = impl(s, 3)
+            np.testing.assert_array_equal(seg_idx, s.data[:4])

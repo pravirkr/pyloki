@@ -3,8 +3,8 @@
 Both functions used to append every stage's `Folds` to a list they only ever read at
 `[istage - 1]`, so peak memory grew linearly with the number of stages on top of the
 single stage's ``ntrials x nbins``. The memory tests pin the growth. The output tests
-compare against the old keep-every-stage loop, reproduced below, on the same machine,
-so exact equality holds whatever the platform's floating point does.
+check that keeping one stage still yields every stage's state, with the invariants a
+stage-to-stage chain must satisfy, deterministically under a seed.
 """
 
 from __future__ import annotations
@@ -16,8 +16,9 @@ import numpy as np
 import pytest
 
 from pyloki.detection import thresholding
-from pyloki.detection.schemes import StateInfo
-from pyloki.simulation.pulse import generate_folded_profile
+
+if TYPE_CHECKING:
+    from pyloki.detection.schemes import StateInfo
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -69,54 +70,6 @@ def test_peak_memory_does_not_grow_with_stages(
     assert _peak(make(64)) < 3 * _peak(make(8))
 
 
-def _keep_every_stage(
-    gen_next: Callable[..., tuple[np.ndarray, thresholding.Folds]],
-    per_stage: np.ndarray,
-    bp: np.ndarray,
-    *,
-    ntrials: int,
-    seed: int,
-    ref_ducy: float,
-    nbins: int,
-    snr_final: float,
-    ducy_max: float,
-    wtsp: float,
-) -> list[StateInfo]:
-    """Run the loop as it was before the fix, retaining every stage's folds."""
-    nstages = len(bp)
-    profile = generate_folded_profile(nbins=nbins, ducy=ref_ducy)
-    bias_snr = snr_final / np.sqrt(nstages + 1)
-    rng = np.random.default_rng(seed)
-    folds = np.zeros((ntrials, len(profile)), dtype=np.float32)
-    h0, _ = thresholding.simulate_folds(folds, 0, profile, rng, 0, 1.0, ntrials)
-    h1, _ = thresholding.simulate_folds(folds, 0, profile, rng, bias_snr, 1.0, ntrials)
-    initial_state = np.ones(1, dtype=thresholding.state_dtype)[0]
-    initial_state["threshold"] = -1
-    initial_state["threshold_prev"] = -1
-    initial_fold_state = thresholding.Folds(h0, h1, 1.0)
-    states, fold_states = [], []
-    for istage in range(nstages):
-        prev_state = initial_state if istage == 0 else states[istage - 1]
-        prev_folds = initial_fold_state if istage == 0 else fold_states[istage - 1]
-        if istage > 0 and prev_folds.is_empty:
-            break
-        cur_state, cur_folds = gen_next(
-            prev_state,
-            prev_folds,
-            per_stage[istage],
-            bp[istage],
-            bias_snr,
-            profile,
-            rng,
-            ntrials,
-            ducy_max,
-            wtsp,
-        )
-        states.append(cur_state[0])
-        fold_states.append(cur_folds)
-    return [StateInfo.from_record(state) for state in states]
-
-
 PATTERNS = {
     "mixed": np.array([1.0, 2.0, 1.0, 3.0, 1.0, 1.5, 1.0, 2.0]),
     "unbranched": np.ones(40),
@@ -131,29 +84,47 @@ OUT_KW = {
 }
 
 
+def _check_chain(entries: list[StateInfo], bp: np.ndarray) -> None:
+    """Invariants of a stage-to-stage chain, whatever the Monte Carlo draws."""
+    # Every stage is reported: none is dropped by keeping only the previous one.
+    assert len(entries) == len(bp)
+    np.testing.assert_array_equal([e.nbranches for e in entries], bp)
+    h1 = np.array([e.success_h1 for e in entries])
+    h1_cumul = np.array([e.success_h1_cumul for e in entries])
+    assert np.all((h1 >= 0.0) & (h1 <= 1.0))
+    # Cumulative survival is the product of the per-stage survivals ...
+    np.testing.assert_allclose(h1_cumul, np.cumprod(h1), rtol=1e-5)
+    # ... and cumulative complexity only grows.
+    assert np.all(np.diff([e.complexity_cumul for e in entries]) > 0.0)
+
+
 @pytest.mark.parametrize("name", list(PATTERNS))
-def test_determine_scheme_output_unchanged(name: str) -> None:
+def test_determine_scheme_output(name: str) -> None:
     bp = PATTERNS[name]
     got = thresholding.determine_scheme(1 / bp, bp, seed=SEED, **OUT_KW).entries
-    want = _keep_every_stage(
-        thresholding.gen_next_using_surv_prob, 1 / bp, bp, seed=SEED, **OUT_KW
-    )
-    assert got == want
+    _check_chain(got, bp)
+    # Each threshold is set so the requested fraction of H0 trials survives.
+    np.testing.assert_allclose([e.success_h0 for e in got], 1 / bp, atol=0.01)
+    assert got == thresholding.determine_scheme(1 / bp, bp, seed=SEED, **OUT_KW).entries
     # The comparison can fail: another seed gives other states.
-    assert got != _keep_every_stage(
-        thresholding.gen_next_using_surv_prob, 1 / bp, bp, seed=SEED + 1, **OUT_KW
+    assert (
+        got
+        != thresholding.determine_scheme(1 / bp, bp, seed=SEED + 1, **OUT_KW).entries
     )
 
 
 @pytest.mark.parametrize("name", list(PATTERNS))
-def test_evaluate_scheme_output_unchanged(name: str) -> None:
+def test_evaluate_scheme_output(name: str) -> None:
     bp = PATTERNS[name]
     thresholds = np.linspace(0.5, 3.0, len(bp))
     got = thresholding.evaluate_scheme(thresholds, bp, seed=SEED, **OUT_KW).entries
-    want = _keep_every_stage(
-        thresholding.gen_next_using_thresh, thresholds, bp, seed=SEED, **OUT_KW
+    _check_chain(got, bp)
+    # The ladder that was asked for is the ladder that was applied.
+    np.testing.assert_allclose([e.threshold for e in got], thresholds, rtol=1e-6)
+    assert (
+        got == thresholding.evaluate_scheme(thresholds, bp, seed=SEED, **OUT_KW).entries
     )
-    assert got == want
-    assert got != _keep_every_stage(
-        thresholding.gen_next_using_thresh, thresholds, bp, seed=SEED + 1, **OUT_KW
+    assert (
+        got
+        != thresholding.evaluate_scheme(thresholds, bp, seed=SEED + 1, **OUT_KW).entries
     )

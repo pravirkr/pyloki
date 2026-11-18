@@ -24,7 +24,7 @@ The references are these.
 
 from __future__ import annotations
 
-import itertools
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -34,11 +34,23 @@ from numpy import polynomial
 from pyloki.core import chebyshev, taylor
 from pyloki.utils import psr_utils, transforms
 from pyloki.utils.misc import C_VAL
+from tests._kernel_refs import (
+    CELL_DV,
+    COUNTS,
+    LIMITS,
+    NBINS,
+    T_ADD,
+    T_INIT,
+    assert_phase,
+    descendant_weighted_mean,
+    expected_children,
+    expected_phase,
+    grid_cell,
+    instantaneous_cell,
+    paired_jit_variants,
+)
 from tests.jit_utils import jit_variants
 
-NBINS = 64
-LIMITS = np.array([[-20.0, 20.0], [99.0, 101.0]])  # [accel, freq]
-COUNTS = np.array([16, 64])
 SCALE = 5.0
 
 
@@ -53,21 +65,6 @@ def _cheby_leaf(d_vec: np.ndarray, f0: float, scale: float = SCALE) -> np.ndarra
 
 def _series(leaf_row: np.ndarray, t_c: float, scale: float) -> polynomial.Chebyshev:
     return polynomial.Chebyshev(leaf_row[::-1], domain=[t_c - scale, t_c + scale])
-
-
-def _cell(value: float, limits: np.ndarray, count: int) -> int:
-    lo, hi = limits
-    return int(np.clip(np.floor(count * (value - lo) / (hi - lo)), 0, count - 1))
-
-
-def _phase(dt: float, delay: float, f0: float) -> float:
-    return ((dt - delay) * f0) % 1 * NBINS
-
-
-def _assert_phase(got: float, expected: float) -> None:
-    """Compare phases on the circle of NBINS bins (63.999... and 0 are equal)."""
-    diff = (got - expected + NBINS / 2) % NBINS - NBINS / 2
-    assert abs(diff) < 1e-6, (got, expected)
 
 
 def _state_with_offset(accel: float, d1: float, t_init: float, t_c: float) -> list:
@@ -96,10 +93,6 @@ class TestSeed:
 
 
 class TestResolve:
-    # T_ADD - T_INIT is not a whole number of cycles at f0: a wrong proper time shows.
-    T_INIT, T_ADD = 10.0, 30.0037
-    CELL_DV = (2 / 64) * C_VAL / 100.0  # one frequency cell of velocity at f0 = 100
-
     @pytest.mark.parametrize(
         "impl",
         jit_variants(chebyshev.poly_chebyshev_fixed_resolve_batch),
@@ -110,20 +103,18 @@ class TestResolve:
         leaf = _cheby_leaf([2e-3, 5.0, d1, 0.0], 100.0)
         idx, phase = impl(
             leaf,
-            (self.T_ADD, 1.0),
+            (T_ADD, 1.0),
             (0.0, SCALE),
-            (self.T_INIT, 1.0),
+            (T_INIT, 1.0),
             COUNTS,
             LIMITS,
             NBINS,
         )
-        p = _series(leaf[0, :4, 0], self.T_INIT, SCALE)
-        freq = 100.0 * (1 - p.deriv(1)(self.T_ADD) / C_VAL)
-        _assert_phase(
-            phase[0], _phase(self.T_ADD - self.T_INIT, p(self.T_ADD) / C_VAL, 100.0)
-        )
-        assert idx[0, 0] == _cell(p.deriv(2)(self.T_ADD), LIMITS[0], 16)
-        assert idx[0, 1] == _cell(freq, LIMITS[1], 64)
+        p = _series(leaf[0, :4, 0], T_INIT, SCALE)
+        freq = 100.0 * (1 - p.deriv(1)(T_ADD) / C_VAL)
+        assert_phase(phase[0], expected_phase(T_ADD - T_INIT, p(T_ADD) / C_VAL, 100.0))
+        assert idx[0, 0] == grid_cell(p.deriv(2)(T_ADD), LIMITS[0], 16)
+        assert idx[0, 1] == grid_cell(freq, LIMITS[1], 64)
 
     @pytest.mark.parametrize(
         "impl", jit_variants(chebyshev.poly_chebyshev_resolve_batch)
@@ -132,34 +123,24 @@ class TestResolve:
     @pytest.mark.parametrize("x_init", [0.0, 1.3e5])
     def test_moving_grid(self, impl, t_cur: float, x_init: float) -> None:
         """Phase and accel cell in general; freq cell where ``v(t_init) = 0``."""
-        state = _state_with_offset(5.0, 0.0, self.T_INIT, t_cur)
+        state = _state_with_offset(5.0, 0.0, T_INIT, t_cur)
         state[3] += x_init
         leaf = _cheby_leaf(state, 100.0)
         idx, phase = impl(
             leaf,
-            (self.T_ADD, 1.0),
+            (T_ADD, 1.0),
             (t_cur, SCALE),
-            (self.T_INIT, 1.0),
+            (T_INIT, 1.0),
             COUNTS,
             LIMITS,
             NBINS,
         )
         p = _series(leaf[0, :4, 0], t_cur, SCALE)
-        delay = (p(self.T_ADD) - p(self.T_INIT)) / C_VAL
-        freq = 100.0 * (1 - p.deriv(1)(self.T_ADD) / C_VAL)
-        _assert_phase(phase[0], _phase(self.T_ADD - self.T_INIT, delay, 100.0))
-        assert idx[0, 0] == _cell(p.deriv(2)(self.T_ADD), LIMITS[0], 16)
-        assert idx[0, 1] == _cell(freq, LIMITS[1], 64)
-
-    @staticmethod
-    def _instantaneous_cell(resolve, t_add: float, f0: float) -> tuple[int, int]:
-        """Return (picked freq cell, cell of the derivative of the returned phase)."""
-        eps = 1e-3
-        hi = resolve(t_add + eps)[1] / NBINS
-        lo = resolve(t_add - eps)[1] / NBINS
-        dcyc = (hi - lo + 0.5) % 1 - 0.5
-        f_inst = (dcyc + round(f0 * 2 * eps - dcyc)) / (2 * eps)
-        return resolve(t_add)[0][1], _cell(f_inst, LIMITS[1], 64)
+        delay = (p(T_ADD) - p(T_INIT)) / C_VAL
+        freq = 100.0 * (1 - p.deriv(1)(T_ADD) / C_VAL)
+        assert_phase(phase[0], expected_phase(T_ADD - T_INIT, delay, 100.0))
+        assert idx[0, 0] == grid_cell(p.deriv(2)(T_ADD), LIMITS[0], 16)
+        assert idx[0, 1] == grid_cell(freq, LIMITS[1], 64)
 
     @pytest.mark.parametrize(
         "impl",
@@ -167,21 +148,21 @@ class TestResolve:
     )
     @pytest.mark.parametrize("frac", [-0.5, -0.25, 0.0, 0.25, 0.5])
     def test_fixed_grid_cell_follows_its_own_phase(self, impl, frac: float) -> None:
-        leaf = _cheby_leaf([0.0, 5.0, frac * self.CELL_DV, 0.0], 100.0)
+        leaf = _cheby_leaf([0.0, 5.0, frac * CELL_DV, 0.0], 100.0)
 
         def resolve(t: float) -> tuple[np.ndarray, float]:
             idx, ph = impl(
                 leaf,
                 (t, 1.0),
                 (0.0, SCALE),
-                (self.T_INIT, 1.0),
+                (T_INIT, 1.0),
                 COUNTS,
                 LIMITS,
                 NBINS,
             )
             return idx[0], ph[0]
 
-        picked, expected = self._instantaneous_cell(resolve, self.T_ADD, 100.0)
+        picked, expected = instantaneous_cell(resolve, T_ADD, 100.0)
         assert picked == expected
 
     @pytest.mark.parametrize(
@@ -197,11 +178,10 @@ class TestResolve:
     ) -> None:
         """The moving-grid resolver picks the cell of its own phase's derivative (#30).
 
-        Before #30 was fixed, it computed ``f0 (1 - (v(t_add) - v(t_init)) / c)`` while
-        its phase included ``v(t_init)``, so at ``v(t_init) = -0.5`` cell it picked cell
-        31 when the derivative of its own phase lay in cell 32.
+        The frequency must come from the absolute ``v(t_add)``, which the phase also
+        carries, so a nonzero ``v(t_init)`` must not move the picked cell.
         """
-        state = _state_with_offset(5.0, frac * self.CELL_DV, self.T_INIT, t_cur)
+        state = _state_with_offset(5.0, frac * CELL_DV, T_INIT, t_cur)
         leaf = _cheby_leaf(state, 100.0)
 
         def resolve(t: float) -> tuple[np.ndarray, float]:
@@ -209,14 +189,14 @@ class TestResolve:
                 leaf,
                 (t, 1.0),
                 (t_cur, SCALE),
-                (self.T_INIT, 1.0),
+                (T_INIT, 1.0),
                 COUNTS,
                 LIMITS,
                 NBINS,
             )
             return idx[0], ph[0]
 
-        picked, expected = self._instantaneous_cell(resolve, self.T_ADD, 100.0)
+        picked, expected = instantaneous_cell(resolve, T_ADD, 100.0)
         assert picked == expected
 
     @pytest.mark.parametrize(
@@ -239,14 +219,24 @@ class TestResolve:
             p = _series(leaves[i, :4, 0], t_cur, SCALE)
             f0 = leaves[i, -1, 0]
             for s, (t_seg, _) in enumerate(seg_times):
-                _assert_phase(phase[i, s], _phase(t_seg - t_cur, p(t_seg) / C_VAL, f0))
+                assert_phase(
+                    phase[i, s], expected_phase(t_seg - t_cur, p(t_seg) / C_VAL, f0)
+                )
                 freq = f0 * (1 - p.deriv(1)(t_seg) / C_VAL)
-                assert idx[i, s, 0] == _cell(p.deriv(2)(t_seg), LIMITS[0], 16)
-                assert idx[i, s, 1] == _cell(freq, LIMITS[1], 64)
+                assert idx[i, s, 0] == grid_cell(p.deriv(2)(t_seg), LIMITS[0], 16)
+                assert idx[i, s, 1] == grid_cell(freq, LIMITS[1], 64)
 
 
 class TestBranch:
     COORD_PREV, COORD_CUR = (18.0, 6.0), (20.0, 12.0)
+    # Parent steps in units of the new step. The domain shift maps them to
+    # [8 m0, 4 m1, 2 m2] (aggressive), and with "conservative" to
+    # [8 m0, 8 m0 + 4 m1, 20.7 m0 + 2.7 m1 + 2 m2], so there a branching jerk forces
+    # velocity to branch: there jerk is the parameter that passes through.
+    MULTIPLIERS: ClassVar = {
+        "aggressive": (0.5, 0.6, 0.1),
+        "conservative": (0.02, 0.6, 0.6),
+    }
 
     @pytest.mark.parametrize(
         "impl", jit_variants(chebyshev.poly_chebyshev_branch_batch)
@@ -261,8 +251,7 @@ class TestBranch:
         )
         f0 = leaves[:, -1, 0]
         dnew = psr_utils.poly_cheb_step_vec(3, NBINS, 1.0, f0)
-        # Parent steps a few times the new step once shifted, except the last.
-        leaves[:, :3, 1] = dnew * np.array([2.5, 3.2, 0.1])
+        leaves[:, :3, 1] = dnew * np.array(self.MULTIPLIERS[strategy])
         out, origins = impl(
             leaves, self.COORD_CUR, self.COORD_PREV, NBINS, 1.0, 3, 64, strategy
         )
@@ -273,31 +262,18 @@ class TestBranch:
             strategy,
         )
         shift = psr_utils.poly_cheb_shift_vec(shifted[:, :-1, 1], dnew, NBINS, f0)
-        expected_rows, expected_origins = [], []
-        for i in range(2):
-            axes, steps = [], []
-            for j in range(3):
-                if shift[i, j] < 1.0 - 1e-12:
-                    axes.append([shifted[i, j, 0]])
-                    steps.append(shifted[i, j, 1])
-                else:
-                    vals, dact = psr_utils.branch_param(
-                        shifted[i, j, 0],
-                        shifted[i, j, 1],
-                        dnew[i, j],
-                    )
-                    axes.append(list(vals))
-                    steps.append(dact)
-            for combo in itertools.product(*axes):
-                expected_rows.append((combo, steps))
-                expected_origins.append(i)
-        np.testing.assert_array_equal(origins, expected_origins)
-        assert len(out) == len(expected_rows) > 2
-        for leaf, (combo, steps), i in zip(out, expected_rows, origins, strict=True):
-            np.testing.assert_allclose(leaf[:3, 0], combo, rtol=1e-12, atol=1e-12)
-            np.testing.assert_allclose(leaf[:3, 1], steps, rtol=1e-12)
-            assert leaf[3, 0] == pytest.approx(shifted[i, 3, 0], rel=1e-12)
-            np.testing.assert_array_equal(leaf[-1], leaves[i, -1])
+        # Both the branching and the pass-through path are exercised.
+        assert (shift < 1).any()
+        assert (shift >= 1).any()
+        values, steps, want_origins = expected_children(
+            shifted[:, :3, 0], shifted[:, :3, 1], dnew, shift
+        )
+        np.testing.assert_array_equal(origins, want_origins)
+        assert 2 < len(out) == len(values) <= 50
+        np.testing.assert_allclose(out[:, :3, 0], values, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(out[:, :3, 1], steps, rtol=1e-12)
+        np.testing.assert_allclose(out[:, 3, 0], shifted[origins, 3, 0], rtol=1e-12)
+        np.testing.assert_array_equal(out[:, -1], leaves[origins, -1])
 
 
 class TestTransformAndReport:
@@ -352,10 +328,12 @@ class TestBranchingPattern:
     ARGS = (10.0, 16, NBINS, 1.0, 8)
     DPARAMS_F0 = np.array([1e-2, 200.0, 0.05])
 
-    @pytest.mark.parametrize("impl", jit_variants(chebyshev.generate_bp_poly_chebyshev))
     @pytest.mark.parametrize(
-        "approx_impl",
-        jit_variants(chebyshev.generate_bp_poly_chebyshev_approx),
+        ("impl", "approx_impl"),
+        paired_jit_variants(
+            chebyshev.generate_bp_poly_chebyshev,
+            chebyshev.generate_bp_poly_chebyshev_approx,
+        ),
     )
     @pytest.mark.parametrize("moving", [True, False])
     @pytest.mark.parametrize("strategy", ["aggressive", "conservative"])
@@ -389,10 +367,7 @@ class TestBranchingPattern:
 
     @pytest.mark.parametrize("impl", jit_variants(chebyshev.generate_bp_poly_chebyshev))
     def test_exact_averages_over_frequencies(self, impl) -> None:
-        """Each level is the descendant-weighted mean branching factor.
-
-        Level ``l`` is ``sum_i W_i n_i[l] / sum_i W_i``, ``W_i = prod_{m<l} n_i[m]``.
-        """
+        """Each level is the descendant-weighted mean branching factor."""
         freqs = np.array([20.0, 100.0, 400.0])
         kwargs = {"use_moving_grid": True, "tiling_strategy": "aggressive"}
         mixed = impl(
@@ -413,12 +388,7 @@ class TestBranchingPattern:
             ]
         )
         assert not np.allclose(singles[0], singles[-1])
-        weights = np.cumprod(
-            np.hstack([np.ones((len(freqs), 1)), singles[:, :-1]]),
-            axis=1,
-        )
-        expected = (weights * singles).sum(axis=0) / weights.sum(axis=0)
-        np.testing.assert_allclose(mixed, expected, rtol=1e-12)
+        np.testing.assert_allclose(mixed, descendant_weighted_mean(singles), rtol=1e-12)
 
     @pytest.mark.parametrize(
         "impl",

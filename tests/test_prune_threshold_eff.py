@@ -9,105 +9,86 @@ silently tightened was indistinguishable from one that ran at the scheme's thres
 `score_min` does not substitute for it: that is taken over every scored leaf before
 thresholding, not over the survivors.
 
-This runs the scaled-down Extreme-Pruning pipeline of `test_example_ep_accel.py` on one
-time series at two buffers and asserts the log distinguishes them. It also asserts the
-result file does: `threshold_eff` must be saved in each run's `level_stats`, so a
-finished run can be checked for ratcheting without its log.
+This runs the Extreme-Pruning pipeline of `test_example_ep_accel.py`, at half its
+size, on one time series at two buffers and asserts the log distinguishes them. It also
+asserts the result file does: `threshold_eff` must be saved in each run's
+`level_stats`, so a finished run can be checked for ratcheting without its log.
 """
 
 from __future__ import annotations
 
 import re
-import tempfile
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import h5py
 import numpy as np
 import pytest
 
-from pyloki.config import ParamLimits, PulsarSearchConfig
-from pyloki.detection import thresholding
-from pyloki.ffa import DynamicProgramming
+from pyloki.config import ParamLimits
 from pyloki.io.cands import PruneStats, PruneStatsCollection
 from pyloki.periodogram import PruningStatsPlotter
 from pyloki.prune import prune_dyp_tree
 from pyloki.simulation.pulse import PulseSignalConfig
+from tests._pipelines import EpSearch, build_ep
 
-NSAMPS, NSEGMENTS, FFA_LEVELS, NBINS, SNR, DUCY = 2**21, 8, 16, 64, 20.0, 0.1
+if TYPE_CHECKING:
+    from pathlib import Path
+
+# Half the accel example's size: recovery is not asserted here, only the ratchet. At
+# 2**20 a 2**10 buffer still binds on 4 of 8 levels; at 2**18 it no longer binds.
+NSAMPS, NSEGMENTS, FFA_LEVELS, NBINS, SNR, DUCY = 2**20, 8, 16, 64, 20.0, 0.1
+SEED = 42
 
 LINE = re.compile(r"score thresh:\s*([-\d.]+), eff:\s*([-\d.naN]+)")
 
 
 def build():
-    cfg = PulseSignalConfig(
+    signal = PulseSignalConfig(
         period=0.007,
         dt=64e-6,
         nsamps=NSAMPS,
         snr=SNR,
         ducy=DUCY,
         mod_kwargs={"acc": 1500.0},
+        seed=SEED,
     )
-    tim = cfg.generate(shape="gaussian")
     limits = ParamLimits.from_upper(
-        (140.0, 150.0), [1500.0], (-2500.0, 2500.0), cfg.tobs
+        (140.0, 150.0), [1500.0], (-2500.0, 2500.0), signal.tobs
     )
-    bseg_ffa = NSAMPS // NSEGMENTS
-    scfg = PulsarSearchConfig(
-        nsamps=cfg.nsamps,
-        tsamp=cfg.dt,
-        nbins=NBINS,
-        eta=1,
-        param_limits=limits.limits,
-        bseg_brute=bseg_ffa // FFA_LEVELS,
-        bseg_ffa=bseg_ffa,
+    search = EpSearch(
+        nsegments=NSEGMENTS,
         prune_poly_order=2,
-        ducy_max=0.5,
-        wtsp=1.2,
-        use_fourier=True,
-        branch_max=32,
-    )
-    dyp = DynamicProgramming(tim, scfg)
-    dyp.initialize()
-    dyp.execute()
-    bp = np.asarray(
-        scfg.generate_branching_pattern(kind="poly_taylor_moving", ref_seg=0),
-        dtype=np.float64,
-    )
-    scheme = thresholding.determine_scheme(
-        1.0 / bp,
-        bp,
-        ref_ducy=DUCY,
+        kind="poly_taylor_moving",
+        max_sugg=0,  # each test prunes with its own buffer size
+        ffa_levels=FFA_LEVELS,
         nbins=NBINS,
-        ntrials=1024,
-        snr_final=SNR,
-        ducy_max=0.5,
-        wtsp=1.2,
     )
-    return dyp, np.asarray(scheme.thresholds, dtype=np.float64)
+    dyp, thresholds, _ = build_ep(signal, limits.limits, search, SEED)
+    return dyp, thresholds
 
 
-def run(dyp, thresholds, max_sugg: int) -> tuple[list[tuple[float, float]], np.ndarray]:
+def run(
+    dyp, thresholds, max_sugg: int, outdir: Path
+) -> tuple[list[tuple[float, float]], np.ndarray]:
     """Prune once; return log (nominal, effective) pairs and saved level_stats."""
-    with tempfile.TemporaryDirectory() as td:
-        result_file = prune_dyp_tree(
-            dyp,
-            thresholds,
-            n_runs=1,
-            max_sugg=max_sugg,
-            outdir=td,
-            file_prefix="v",
-            poly_basis="taylor",
-            n_workers=1,
-            use_moving_grid=True,
-        )
-        logs = list(Path(td).rglob("*_log.txt"))
-        if not logs:
-            msg = f"no log written in {td}"
-            raise SystemExit(msg)
-        text = max(logs, key=lambda p: p.stat().st_size).read_text()
-        with h5py.File(result_file) as f:
-            (group,) = f["runs"].values()
-            level_stats = group["level_stats"][()]
+    result_file = prune_dyp_tree(
+        dyp,
+        thresholds,
+        n_runs=1,
+        max_sugg=max_sugg,
+        outdir=str(outdir),
+        file_prefix="v",
+        poly_basis="taylor",
+        n_workers=1,
+        use_moving_grid=True,
+    )
+    logs = list(outdir.rglob("*_log.txt"))
+    if not logs:
+        pytest.fail(f"no log written in {outdir}")
+    text = max(logs, key=lambda p: p.stat().st_size).read_text()
+    with h5py.File(result_file) as f:
+        (group,) = f["runs"].values()
+        level_stats = group["level_stats"][()]
     pairs = [(float(a), float(b)) for a, b in LINE.findall(text) if b.lower() != "nan"]
     return pairs, level_stats
 
@@ -118,13 +99,14 @@ def pipeline():
 
 
 @pytest.fixture(scope="module")
-def runs(pipeline):
+def runs(pipeline, tmp_path_factory):
     """One prune per buffer size, shared by the tests below."""
     cache: dict[int, tuple] = {}
 
     def get(max_sugg: int) -> tuple:
         if max_sugg not in cache:
-            cache[max_sugg] = run(*pipeline, max_sugg)
+            outdir = tmp_path_factory.mktemp(f"max_sugg_{max_sugg}")
+            cache[max_sugg] = run(*pipeline, max_sugg, outdir)
         return cache[max_sugg]
 
     return get

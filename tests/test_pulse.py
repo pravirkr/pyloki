@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from pyloki.simulation.pulse import build_cdf_lut, generate_pulse_template
+from tests.jit_utils import jit_variants
 
 SHAPES = ["boxcar", "gaussian", "von_mises"]
 PHASES = [0.0, 0.05, 0.25, 0.5, 0.75, 0.95, 0.98]
@@ -18,13 +19,18 @@ def make_template(
     ducy: float = DUCY,
     period: float = 1.0,
     nperiods: int = 1,
+    impl=generate_pulse_template,
 ) -> np.ndarray:
-    """Sample one (or several) periods of the pulse template at nbins/period."""
+    """Sample one (or several) periods of the pulse template at nbins/period.
+
+    `impl` is the kernel or its ``py_func``; the parallel kernel's Python source runs
+    on a representative subset of the tests below.
+    """
     dt = period / nbins
     ngrid = max(4096, int(100 / ducy))
     cdf_lut = build_cdf_lut(shape, ducy, phi0, ngrid=ngrid)
     proper_time = np.arange(nbins * nperiods) * dt
-    return generate_pulse_template(proper_time, dt, period, cdf_lut)
+    return impl(proper_time, dt, period, cdf_lut)
 
 
 class TestBuildCdfLut:
@@ -56,11 +62,12 @@ class TestBuildCdfLut:
 
 
 class TestGeneratePulseTemplate:
+    @pytest.mark.parametrize("impl", jit_variants(generate_pulse_template))
     @pytest.mark.parametrize("shape", SHAPES)
     @pytest.mark.parametrize("phi0", PHASES)
-    def test_flux_per_period(self, shape: str, phi0: float) -> None:
+    def test_flux_per_period(self, impl, shape: str, phi0: float) -> None:
         """One period of the template integrates to exactly one, at any phase."""
-        prof = make_template(shape, phi0)
+        prof = make_template(shape, phi0, impl=impl)
         np.testing.assert_allclose(prof.sum(), 1.0, atol=FLUX_TOL)
 
     @pytest.mark.parametrize("shape", SHAPES)
@@ -90,22 +97,23 @@ class TestGeneratePulseTemplate:
         assert prof.min() >= 0.0
         np.testing.assert_allclose(prof.sum(), 1.0, atol=nbins * 1e-7)
 
+    @pytest.mark.parametrize("impl", jit_variants(generate_pulse_template))
     @pytest.mark.parametrize("shape", SHAPES)
-    @pytest.mark.parametrize("phi0", PHASES)
-    def test_boundary_sample_is_not_dropped(self, shape: str, phi0: float) -> None:
+    def test_boundary_sample_is_not_dropped(self, impl, shape: str) -> None:
         """The sample straddling the period boundary carries the wrapped mass."""
         nbins = 64
-        # place the peak on the boundary so the straddling sample is the brightest
-        prof = make_template(shape, 0.0, nbins=nbins)
-        assert prof[0] > 0
+        # Peak on the boundary: the last sample, [1 - 1/nbins, 1), wraps onto the
+        # first, and by symmetry the two carry equal, maximal flux.
+        prof = make_template(shape, 0.0, nbins=nbins, impl=impl)
+        assert prof[-1] > 0
+        np.testing.assert_allclose(prof[-1], prof[0], atol=1e-6)
+        np.testing.assert_allclose(prof[-1], prof.max(), atol=1e-6)
         np.testing.assert_allclose(prof.sum(), 1.0, atol=FLUX_TOL)
-        # a peak at phi0 -> the same profile rolled, including across the boundary
-        rolled = make_template(shape, phi0, nbins=nbins)
-        assert rolled.sum() == pytest.approx(1.0, abs=FLUX_TOL)
 
+    @pytest.mark.parametrize("impl", jit_variants(generate_pulse_template))
     @pytest.mark.parametrize("shape", SHAPES)
     @pytest.mark.parametrize("phi0", PHASES)
-    def test_profile_is_a_circular_shift(self, shape: str, phi0: float) -> None:
+    def test_profile_is_a_circular_shift(self, impl, shape: str, phi0: float) -> None:
         """Moving the peak by half a period rolls the profile by half a period.
 
         A template that silently truncates the mass falling outside [0, 1) is
@@ -113,8 +121,8 @@ class TestGeneratePulseTemplate:
         flux deficit becomes obvious.
         """
         nbins = 256
-        prof = make_template(shape, phi0, nbins=nbins)
-        shifted = make_template(shape, (phi0 + 0.5) % 1.0, nbins=nbins)
+        prof = make_template(shape, phi0, nbins=nbins, impl=impl)
+        shifted = make_template(shape, (phi0 + 0.5) % 1.0, nbins=nbins, impl=impl)
         np.testing.assert_allclose(
             prof,
             np.roll(shifted, -nbins // 2),

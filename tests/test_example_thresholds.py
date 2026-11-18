@@ -10,38 +10,9 @@ against.
 `determine_scheme` is used by the EP example tests, but only to produce a
 ladder -- nothing asserted anything about it.
 
-## What is deliberately NOT converted: `DynamicThresholdScheme.run()`
-
-The notebook's centrepiece is the Viterbi threshold optimiser (cells 3-4). It is left
-out because **it aborts the interpreter in this environment**:
-
-    Numba workqueue threading layer is terminating: Concurrent access has been detected.
-
-exit code 134 (SIGABRT). `run_stage_improved` / `run_stage_legacy` use `prange` and call
-further parallel functions, which is a nested parallel region, and numba's default
-`workqueue` layer explicitly cannot do that. Verified:
-
-- both `mode="improved"` and `mode="legacy"` abort;
-- `NUMBA_NUM_THREADS=1` does not help;
-- TBB, the layer numba's own error message recommends, has no wheel for macOS arm64
-  (`pip install tbb` -> "No matching distribution found"), so it is not a portable fix.
-
-This is not something a test can skip around: `SIGABRT` kills the worker process, so
-pytest cannot catch it and turn it into a skip. Including the call would either crash
-the CI run or pass, depending on which threading layer numba happens to select on the
-runner -- a coin flip either way. It is left out until the nesting is fixed upstream,
-and it is worth reporting: a public API demonstrated in a shipped example aborts the
-process on a default install.
-
-## The `schemes` import is guarded
-
-`pyloki/detection/schemes.py` imports `tkinter`, `tkinter.filedialog`,
-`tkinter.messagebox`, `tkinter.ttk` and `matplotlib.backends.backend_tkagg` at **module
-level** (lines 4, 6, 15), so the module is unimportable wherever Tk is absent -- which
-includes minimal and headless installs. The tests that need it use
-`pytest.importorskip`, so they run where Tk exists and skip cleanly where it does not,
-rather than failing. Also worth reporting: a library module should not require a GUI
-toolkit at import time.
+`DynamicThresholdScheme.run()`, the notebook's Viterbi optimiser (cells 3-4), is not
+repeated here: `tests/test_thresholding.py` runs it in both `mode="legacy"` and
+`mode="improved"` and checks the states it produces.
 
 ## Sizing
 
@@ -51,7 +22,7 @@ The notebook uses its own 127-stage branching pattern with `ntrials=2**10`. This
 with data volume -- it is pure Monte Carlo over folded profiles -- so the whole module
 runs in a few seconds.
 
-**Measured stability** over 8 independent runs of the unseeded Monte Carlo: detection
+**Measured stability** over 8 independent Monte Carlo realisations: detection
 probability at `snr_final` 4/7/10/13/16 came out in the ranges 0.008-0.016, 0.209-0.257,
 0.672-0.715, 0.918-0.939, 0.989-0.996, and was monotonic in 8/8. The gaps between
 adjacent points are an order of magnitude wider than the spread, so the monotonicity
@@ -63,12 +34,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pyloki.detection import thresholding
+from pyloki.detection import schemes, thresholding
 
-# Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
-# threshold ladder were drawn from unseeded generators inside pyloki and this file
-# had no way to reach them; see tests/test_rng_seeding.py.
-SEED = 42
+SEED = 42  # Pinned so CI is reproducible.
 
 # --- The notebook's setup, unchanged except the stage count ------------------------
 TARGET_SNR = 10.0
@@ -186,15 +154,7 @@ def test_detection_probability_rises_with_injected_snr(constant_scheme) -> None:
 
 
 def test_reference_ladders_and_their_ordering(constant_scheme) -> None:
-    """`bound_scheme` vs `trials_scheme`, and that a stricter ladder detects less.
-
-    Skipped where Tk is unavailable: `pyloki.detection.schemes` imports tkinter at
-    module level (see the module docstring).
-    """
-    schemes = pytest.importorskip(
-        "pyloki.detection.schemes",
-        reason="pyloki.detection.schemes imports tkinter at module level",
-    )
+    """`bound_scheme` vs `trials_scheme`, and that a stricter ladder detects less."""
     pattern = constant_scheme["pattern"]
 
     bound = np.asarray(schemes.bound_scheme(NSTAGES, TARGET_SNR), dtype=np.float64)
@@ -204,14 +164,11 @@ def test_reference_ladders_and_their_ordering(constant_scheme) -> None:
     assert np.all(np.isfinite(bound))
     assert np.all(np.isfinite(trials))
 
-    # The notebook's combination, and what it means.
-    minimized = np.minimum(bound, trials)
-    np.testing.assert_array_equal(minimized, np.minimum(bound, trials))
-    assert np.all(minimized <= bound + 1e-12)
-    assert np.all(minimized <= trials + 1e-12)
+    # `bound` is the strict ladder and `trials` the permissive one: stage by stage,
+    # so the notebook's `np.minimum(bound, trials)` is `trials` here.
+    assert np.all(bound >= trials), f"bound={bound}\ntrials={trials}"
 
-    # `bound` is the strict ladder and `trials` the permissive one here, so `bound`
-    # must not detect more. Measured: ~0.09 against ~0.996.
+    # A stricter ladder must not detect more. Measured: ~0.09 against ~0.996.
     det_bound = detection_probability(bound, pattern, TARGET_SNR)
     det_trials = detection_probability(trials, pattern, TARGET_SNR)
     assert det_bound <= det_trials, (

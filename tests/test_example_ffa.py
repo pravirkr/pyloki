@@ -47,12 +47,6 @@ must not sit near threshold. Everything else -- `eta`, `ducy`, `ducy_max`, `wtsp
 
 The tolerance is 3 bins, i.e. 1.5x the worst observed. A 1-bin tolerance would have
 failed the jerk case roughly 8% of the time -- worth measuring rather than assuming.
-
-Cost: ~14.7 s locally for all 27 tests, and consistently so -- the numba disk cache
-does not make repeat runs cheap here, because each pytest invocation is a fresh process
-and the time goes on process setup plus simulating ~7.3M samples across the three cases.
-(Within a single process the searches themselves are 0.04-0.3 s once compiled, which is
-what the sizing probes measured; that speed is not what a CI run sees.)
 """
 
 from __future__ import annotations
@@ -67,10 +61,7 @@ from pyloki.search import ffa_search
 from pyloki.simulation.pulse import PulseSignalConfig
 from pyloki.utils import np_utils
 
-# Pinned so CI is reproducible. Before the library took a `seed`, the noise and the
-# threshold ladder were drawn from unseeded generators inside pyloki and this file
-# had no way to reach them; see tests/test_rng_seeding.py.
-SEED = 42
+SEED = 42  # Pinned so CI is reproducible.
 
 # Measured over 40 seeded realisations, as the largest peak offset on any axis of
 # any case, against INDEX_TOL = 3 bins. Observed offsets were 0, 1 or 2 bins -- never
@@ -86,6 +77,9 @@ DT = 64e-6
 NBINS = 64
 SNR = 20.0  # notebooks use 10; see docstring
 INDEX_TOL = 3  # bins; worst observed offset was 2
+# An axis needs more cells than the 2 * INDEX_TOL + 1 the tolerance window spans, or
+# "the peak is within INDEX_TOL of the injection" holds for almost any peak.
+MIN_CHECKED_CELLS = 2 * INDEX_TOL + 2
 MIN_SNR = 12.0  # peak must be a real detection, well above noise
 BACKENDS = (False, True)  # use_fourier
 
@@ -108,6 +102,10 @@ class FfaCase:
     # which passes an explicit frequency range instead.
     upper_params: tuple[float, ...] | None = None
     upper_range: tuple[float, float] | None = None
+    # Axes too coarse at this nsamps for the cell check to discriminate. They are
+    # still searched and must not collapse to one cell, but their peak index is not
+    # asserted.
+    coarse_axes: tuple[str, ...] = ()
 
     def build(self, seed: int = SEED):
         """Simulate and configure exactly as the notebook does."""
@@ -172,6 +170,7 @@ CASES = (
         mod_kwargs={"acc": 300.0, "jerk": 1.0},
         upper_params=(1.0, 300.0),
         upper_range=(-2.5, 2.5),
+        coarse_axes=("jerk",),  # 6 cells at 2**22
     ),
 )
 
@@ -204,13 +203,14 @@ def ffa_result(request) -> dict:
     return _run_case(request.param, SEED)
 
 
-def _index_offsets(pgram, truth: dict[str, float]) -> dict[str, int]:
-    """Best-peak index minus the index nearest the injected value, per axis."""
+def _index_offsets(result: dict, use_fourier: bool) -> dict[str, int]:
+    """Best-peak index minus the index nearest the injected value, per checked axis."""
+    pgram, truth = result["pgrams"][use_fourier], result["truth"]
     best_indices = pgram.find_best_indices()
     offsets = {}
-    for dim, idx in zip(pgram.data.dims, best_indices, strict=False):
+    for dim, idx in zip(pgram.data.dims, best_indices, strict=True):
         name = str(dim)
-        if name in truth:
+        if name in truth and name not in result["case"].coarse_axes:
             true_idx = np_utils.find_nearest_sorted_idx(pgram.params[name], truth[name])
             offsets[name] = int(idx) - int(true_idx)
     return offsets
@@ -229,7 +229,7 @@ def _check_detection(result: dict, use_fourier: bool) -> None:
 
 
 def _check_peak_cell(result: dict, use_fourier: bool) -> None:
-    offsets = _index_offsets(result["pgrams"][use_fourier], result["truth"])
+    offsets = _index_offsets(result, use_fourier)
     assert offsets, "no searched axis matched an injected parameter"
     for name, offset in offsets.items():
         assert abs(offset) <= INDEX_TOL, (
@@ -240,8 +240,8 @@ def _check_peak_cell(result: dict, use_fourier: bool) -> None:
 
 
 def _check_backends_agree(result: dict) -> None:
-    direct = _index_offsets(result["pgrams"][False], result["truth"])
-    fourier = _index_offsets(result["pgrams"][True], result["truth"])
+    direct = _index_offsets(result, use_fourier=False)
+    fourier = _index_offsets(result, use_fourier=True)
     assert direct.keys() == fourier.keys()
     for name in direct:
         assert abs(direct[name] - fourier[name]) <= INDEX_TOL, (
@@ -285,18 +285,25 @@ def test_search_returns_a_periodogram(ffa_result, use_fourier: bool) -> None:
 
 @pytest.mark.parametrize("use_fourier", BACKENDS)
 def test_searched_axes_are_not_degenerate(ffa_result, use_fourier: bool) -> None:
-    """Guard: an axis with one cell makes the index check below vacuous.
+    """Guard: the cell check is only meaningful on an axis wider than its window.
 
-    This is exactly what ruled out `2**21` for the jerk case, where the jerk axis
-    collapsed to a single cell.
+    Checked axes need `MIN_CHECKED_CELLS`. An axis listed in `coarse_axes` is exempt
+    from the cell check, but must still be searched (more than one cell) and must
+    really be coarse, so the exemption is dropped once nsamps makes it checkable.
     """
     pgram = ffa_result["pgrams"][use_fourier]
+    coarse = ffa_result["case"].coarse_axes
     for name in ffa_result["truth"]:
         ncells = len(pgram.params[name])
-        assert ncells > 1, (
-            f"{name!r} axis has {ncells} cell(s), so 'the peak is in the right cell' "
-            f"would be trivially true -- this case needs a larger nsamps"
-        )
+        if name in coarse:
+            assert 1 < ncells < MIN_CHECKED_CELLS, (
+                f"{name!r} is listed as coarse but has {ncells} cell(s)"
+            )
+        else:
+            assert ncells >= MIN_CHECKED_CELLS, (
+                f"{name!r} axis has {ncells} cell(s), so a +/-{INDEX_TOL} cell check "
+                f"would pass for almost any peak -- this case needs a larger nsamps"
+            )
 
 
 @pytest.mark.parametrize("use_fourier", BACKENDS)
@@ -310,10 +317,10 @@ def test_peak_lands_on_the_injected_cell(ffa_result, use_fourier: bool) -> None:
 
 
 def test_backends_agree(ffa_result) -> None:
-    """The Fourier and direct FFA backends must find the same cell.
+    """The Fourier and direct FFA backends must find nearby cells.
 
-    A cross-check that needs no reference value: whatever the right answer is, the two
-    implementations should agree on it. This is the only assertion here that would catch
-    a regression in one backend but not the other.
+    A cross-check that needs no reference value. The two backends do not land on the
+    same cell: measured over the sweep seeds they differ by up to 3 cells (jerk case,
+    seed 8: freq -2 direct vs +1 fourier), so the tolerance is INDEX_TOL.
     """
     _check_backends_agree(ffa_result)

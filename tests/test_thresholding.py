@@ -8,7 +8,7 @@ discarded them all at the next stage (`np.digitize(0.0, probs) - 1 == -1`), leav
 nothing to backtrack and making the whole optimiser silently useless.
 
 The cause is a numba miscompilation of whole-record assignment when the record comes
-from an array returned by another jitted function; `test_record_assignment_*` below pins
+from an array returned by another jitted function; `TestRecordAssignment` below pins
 the construct itself, and the scheme tests pin the consequence.
 """
 
@@ -19,8 +19,11 @@ import pytest
 from numba import njit
 from scipy import stats
 
-from pyloki.detection import schemes
-from pyloki.detection.thresholding import DynamicThresholdScheme
+from pyloki.detection import schemes, thresholding
+from pyloki.detection.thresholding import (
+    DynamicThresholdScheme,
+    schedule_survive_probs,
+)
 
 RECORD_DTYPE = np.dtype([("a", np.float32), ("b", np.float32), ("flag", np.bool_)])
 
@@ -81,12 +84,20 @@ def _small_scheme(mode: str, seed: int = SEED) -> DynamicThresholdScheme:
     )
 
 
-@pytest.mark.parametrize("mode", ["legacy", "improved"])
+@pytest.fixture(scope="class", params=["legacy", "improved"])
+def ran_scheme(request: pytest.FixtureRequest) -> DynamicThresholdScheme:
+    """Run the seeded scheme once per mode; the tests below only read its states."""
+    scheme = _small_scheme(request.param)
+    scheme.run(thres_neigh=5)
+    return scheme
+
+
 class TestDynamicThresholdScheme:
-    def test_states_survive_past_the_first_stage(self, mode: str) -> None:
+    def test_states_survive_past_the_first_stage(
+        self, ran_scheme: DynamicThresholdScheme
+    ) -> None:
         """The headline symptom: everything vanished from stage 2 onward."""
-        scheme = _small_scheme(mode)
-        scheme.run(thres_neigh=5)
+        scheme = ran_scheme
         populated = [
             int((~scheme.states[i]["is_empty"]).sum()) for i in range(scheme.nstages)
         ]
@@ -94,15 +105,16 @@ class TestDynamicThresholdScheme:
             f"states emptied partway through: non-empty per stage = {populated}"
         )
 
-    def test_stored_states_are_not_zero_filled(self, mode: str) -> None:
+    def test_stored_states_are_not_zero_filled(
+        self, ran_scheme: DynamicThresholdScheme
+    ) -> None:
         """The cause, distinct from the symptom.
 
         A zeroed record reads as `is_empty == False`, so counting non-empty states is
         not enough -- the numbers inside have to be real. Every stored state must carry
         the threshold it was built with, and no threshold in the grid is 0.
         """
-        scheme = _small_scheme(mode)
-        scheme.run(thres_neigh=5)
+        scheme = ran_scheme
         for istage in range(scheme.nstages):
             stage = scheme.states[istage]
             stored = stage[~stage["is_empty"]]
@@ -117,10 +129,11 @@ class TestDynamicThresholdScheme:
             assert np.all(stored["complexity_cumul"] > 0.0)
             assert np.all(stored["nbranches"] > 0.0)
 
-    def test_survival_decreases_monotonically(self, mode: str) -> None:
+    def test_survival_decreases_monotonically(
+        self, ran_scheme: DynamicThresholdScheme
+    ) -> None:
         """Cumulative survival is a product of probabilities, so it cannot grow."""
-        scheme = _small_scheme(mode)
-        scheme.run(thres_neigh=5)
+        scheme = ran_scheme
         best = []
         for istage in range(scheme.nstages):
             stage = scheme.states[istage]
@@ -184,3 +197,66 @@ class TestTrialsScheme:
             int((~scheme.states[i]["is_empty"]).sum()) for i in range(scheme.nstages)
         ]
         assert all(n > 0 for n in populated), f"non-empty per stage = {populated}"
+
+
+# A pruning pattern shaped like generate_branching_pattern: x4, x9 early, x3 later.
+BP = np.array([4, 9, 1, 1, 3, 3, 1, 3, 1, 1, 3, 1, 3, 1, 1], dtype=float)
+# A pattern whose branching stages after the fourth are far apart.
+BP_SPARSE = np.array(
+    [4, 3, 4, 1, 1, 9, 1, 1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 9, 1, 1], dtype=float
+)
+
+
+class TestScheduleSurviveProbs:
+    def test_protect_zero_is_the_plain_vector(self) -> None:
+        probs, stages, factor = schedule_survive_probs(BP, protect=0)
+        np.testing.assert_allclose(probs[BP > 1], 1.0 / BP[BP > 1])
+        assert np.all(probs[BP == 1] == 1.0)
+        assert stages == []
+        assert factor == 1.0
+        probs_nb, _, _ = schedule_survive_probs(BP, protect=0, survive_nonbranch=0.95)
+        assert np.all(probs_nb[BP == 1] == 0.95)
+
+    def test_schedule_arithmetic_and_return_to_size(self) -> None:
+        probs, stages, factor = schedule_survive_probs(BP)
+        assert stages == [5, 6, 8]
+        assert abs(factor - 36.0 ** (1.0 / 3.0)) < 1e-12
+        assert np.all(probs[:4] == 1.0)
+        for st in stages:
+            assert abs(probs[st - 1] - 1.0 / (BP[st - 1] * factor)) < 1e-12
+        np.testing.assert_allclose(probs[8:][BP[8:] > 1], 1.0 / BP[8:][BP[8:] > 1])
+        # Noise tree vs the plain ladder: 36x through the protected stages, 1x from 8.
+        rel = np.cumprod(BP * probs)
+        assert abs(rel[1] - 36.0) < 1e-9
+        assert abs(rel[3] - 36.0) < 1e-9
+        assert np.allclose(rel[7:], 1.0)
+
+    def test_window_is_in_branching_stages_not_levels(self) -> None:
+        probs, stages, factor = schedule_survive_probs(BP_SPARSE)
+        assert stages == [6, 10, 18]
+        assert abs(factor - 48.0 ** (1.0 / 3.0)) < 1e-12
+        rel = np.cumprod(BP_SPARSE * probs)
+        assert abs(rel[2] - 48.0) < 1e-9
+        assert np.allclose(rel[17:], 1.0)
+
+    def test_fewer_branching_stages_than_asked(self) -> None:
+        short = np.array([4.0, 9.0, 1.0, 1.0, 3.0, 1.0])
+        probs, stages, factor = schedule_survive_probs(short)
+        assert stages == [5]
+        assert abs(factor - 36.0) < 1e-12
+        assert abs(probs[4] - 1.0 / 108.0) < 1e-12
+        probs_p, stages_p, factor_p = schedule_survive_probs(BP, return_stages=0)
+        assert stages_p == []
+        assert factor_p == 1.0
+        assert np.all(probs_p[:4] == 1.0)
+
+    def test_determine_scheme_accepts_the_vector(self) -> None:
+        probs, _, _ = schedule_survive_probs(BP)
+        states = thresholding.determine_scheme(
+            probs, BP, ref_ducy=0.1, nbins=32, ntrials=128, snr_final=9.0, seed=3
+        )
+        thresholds = np.asarray(states.thresholds)
+        assert len(thresholds) == len(BP)
+        # No cut at the protected stages: thresholds there are the minimum over trials,
+        # below the later cutting stages' thresholds.
+        assert thresholds[:4].max() < thresholds[4]

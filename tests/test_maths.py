@@ -5,8 +5,8 @@ import pytest
 from numpy import polynomial
 from scipy import special, stats
 
-from pyloki.utils import maths, transforms
-from tests.jit_utils import jit_variants, python_impl
+from pyloki.utils import maths
+from tests.jit_utils import jit_cases, jit_variants, python_impl
 
 # ``maths.norm_isf_func`` linearly interpolates a table of ``norm.isf(exp(-x))``
 # sampled every ``maths.minus_logsf_res`` (= 0.1). The tabulated function is
@@ -47,17 +47,6 @@ CHI_SQ_POINTS = [0.25, 0.75, 1.6, 3.3, 6.2, 9.8]
 
 
 class TestMaths:
-    @pytest.mark.parametrize(
-        ("n", "k"),
-        [(5, 2), (6, 7), (2, 3), (20, 12), (5, 0), (5, 5), (0, 0)],
-    )
-    def test_nbinom(self, n: int, k: int) -> None:
-        np.testing.assert_almost_equal(maths.nbinom(n, k), special.binom(n, k))
-
-    @pytest.mark.parametrize("n", [0, 1, 5, 20, np.array([0, 1, 5, 20])])
-    def test_fact(self, n: int | np.ndarray) -> None:
-        np.testing.assert_almost_equal(maths.fact(n), special.factorial(n))
-
     @pytest.mark.parametrize(("minus_logsf", "atol"), NORM_ISF_POINTS)
     def test_norm_isf_func(self, minus_logsf: float, atol: float) -> None:
         expected = stats.norm.isf(np.exp(-minus_logsf))
@@ -69,17 +58,15 @@ class TestMaths:
         )
 
     def test_norm_isf_table_is_finite(self) -> None:
-        """Entry 0 used to be ``norm.isf(exp(-0)) == norm.isf(1) == -inf``."""
+        """Every entry is finite, including entry 0, where the exact value is -inf."""
         assert np.isfinite(maths.norm_isf_table).all()
 
     @pytest.mark.parametrize("minus_logsf", [0.0, 1e-9, 0.05, 0.099])
     def test_norm_isf_func_first_cell_is_finite(self, minus_logsf: float) -> None:
-        """The first cell [0, ``minus_logsf_res``) used to come back non-finite.
+        """The first cell [0, ``minus_logsf_res``) is finite and a non-detection.
 
-        ``gen_norm_isf_table`` starts at x = 0, where the tabulated function is
-        ``-inf``, and that infinity propagated through every interpolation in the
-        first cell. Entry 0 now carries the extrapolation of the first two finite
-        nodes, so the cell is finite. It is not accurate -- see
+        The tabulated function is ``-inf`` at x = 0, so entry 0 carries the
+        extrapolation of the first two finite nodes. It is not accurate -- see
         ``test_norm_isf_func_below_first_node_is_approximate``.
         """
         result = maths.norm_isf_func(minus_logsf)
@@ -90,12 +77,10 @@ class TestMaths:
     def test_norm_isf_func_out_of_domain_is_negative(self, minus_logsf: float) -> None:
         """Negative input is out of domain and must not read as a detection.
 
-        ``sf = exp(-minus_logsf) > 1`` here, so the honest answer is "very
-        negative". ``pos`` went negative, ``int(pos)`` truncated towards zero and
-        the negative index wrapped to the tail of the table, so these inputs came
-        back at ~+28 sigma -- a non-detection reported as a maximal detection.
-        Reachable from ``scoring.py`` via ``chi_sq_minus_logsf_func(...) -
-        lee_penalty``, which is routinely negative on noise.
+        ``sf = exp(-minus_logsf) > 1`` here, so the answer must be "very negative",
+        never a wrapped index into the table's tail. Reachable from ``scoring.py``
+        via ``chi_sq_minus_logsf_func(...) - lee_penalty``, which is routinely
+        negative on noise.
         """
         result = maths.norm_isf_func(minus_logsf)
         assert np.isfinite(result), f"expected finite, got {result}"
@@ -124,13 +109,10 @@ class TestMaths:
         self,
         minus_logsf: float,
     ) -> None:
-        """The top cell used to read one entry past the end of the table.
+        """The top cell [399.9, 400) must not read past the end of the table.
 
         ``np.arange(0, max_minus_logsf, minus_logsf_res)`` stops one step short, so
-        the top node is at 399.9, not 400. The guard tested ``minus_logsf <
-        max_minus_logsf``, so [399.9, 400) still interpolated and reached
-        ``norm_isf_table[4000]`` in a 4000-entry table. These functions are njit'd
-        and unchecked, so that read returned whatever was in memory -- ~1.6e185.
+        the top node is at 399.9, not 400, and the njit'd lookup is unchecked.
         """
         result = maths.norm_isf_func(minus_logsf)
         assert np.isfinite(result)
@@ -143,13 +125,11 @@ class TestMaths:
         chi_sq: float,
         df: int,
     ) -> None:
-        """The top cell used to read across into the next ``df`` row.
+        """The top cell must stay inside its own ``df`` row.
 
-        Same off-by-one-cell as ``norm_isf_func``, but the table is 2-D and C
-        contiguous, so ``[df, 600]`` in a (65, 600) table silently returned row
-        ``df + 1``'s first entry: ``chi_sq_minus_logsf_func(299.9, 2)`` gave 29.95
-        where the true value is ~149.95. At ``df = 64``, the last row, the read
-        left the array entirely.
+        The table is 2-D and C contiguous, so reading one past the end of row ``df``
+        would silently return row ``df + 1``'s first entry (or leave the array at
+        ``df = 64``).
         """
         result = maths.chi_sq_minus_logsf_func(chi_sq, df)
         assert np.isfinite(result)
@@ -174,11 +154,13 @@ class TestMaths:
     def test_norm_isf_func_below_first_node_is_approximate(self) -> None:
         """Pin how wrong the first cell still is, so "finite" is not read as "right".
 
+        Pins a known limitation; update this test if the accuracy improves.
+
         ``norm.isf(exp(-x))`` diverges to -inf at x = 0, so no finite entry on a
         uniform ``minus_logsf_res`` grid can follow it. The extrapolated entry 0
         keeps the cell finite and monotonic and is right to ~0.5 sigma over most of
         it, but reads high without bound as x -> 0. A finer table below x = 1 is
-        what would fix this; if one lands, this test is the one to update.
+        what would fix this.
         """
         x = np.linspace(1e-12, maths.minus_logsf_res, 2001, endpoint=False)
         err = np.array([maths.norm_isf_func(val) for val in x]) - stats.norm.isf(
@@ -194,6 +176,8 @@ class TestMaths:
 
     def test_norm_isf_func_first_cell_accuracy_limit(self) -> None:
         """Characterise the error spike in the first *finite* table cell.
+
+        Pins a known limitation; update this test if the accuracy improves.
 
         With ``minus_logsf_res = 0.1`` the table cannot follow the curvature of
         ``norm.isf(exp(-x))`` just above zero: the error peaks at ~2.7e-2 near
@@ -224,6 +208,8 @@ class TestMaths:
     def test_chi_sq_minus_logsf_func_df1_accuracy_limit(self) -> None:
         """Characterise the one df where the chi2 table misses two decimals.
 
+        Pins a known limitation; update this test if the accuracy improves.
+
         ``-chi2.logsf(x, 1)`` has an infinite slope at x = 0, and with
         ``chi_sq_res = 0.5`` the first cell is far too coarse for it: the error
         reaches ~1.4e-1 near x = 0.12 and stays above 1.5e-2 out to x ~ 0.47.
@@ -239,121 +225,11 @@ class TestMaths:
         )
         np.testing.assert_array_less(err.max(), 1.5e-1)
 
-    @pytest.mark.parametrize(("order_max", "n_derivs"), [(3, 1), (5, 3), (10, 10)])
-    def test_gen_chebyshev_polys_table(self, order_max: int, n_derivs: int) -> None:
-        expected = maths.gen_chebyshev_polys_table_np(order_max, n_derivs)
-        np.testing.assert_equal(
-            expected.shape,
-            (n_derivs + 1, order_max + 1, order_max + 1),
-        )
-        np.testing.assert_almost_equal(
-            maths.gen_chebyshev_polys_table(order_max, n_derivs),
-            expected,
-            decimal=2,
-        )
-
-
-class TestChebyshevTransform:
-    def test_connection_coefficients_s(self) -> None:
-        # S_{0,0} = 1
-        np.testing.assert_almost_equal(
-            maths.compute_connection_coefficient_s(0, 0),
-            1.0,
-        )
-        # S_{2,0} = 1/2, S_{2,2} = 1/2
-        np.testing.assert_almost_equal(
-            maths.compute_connection_coefficient_s(2, 0),
-            0.5,
-        )
-        np.testing.assert_almost_equal(
-            maths.compute_connection_coefficient_s(2, 2),
-            0.5,
-        )
-        # S_{3,1} = 3/4, S_{3,3} = 1/4
-        np.testing.assert_almost_equal(
-            maths.compute_connection_coefficient_s(3, 1),
-            0.75,
-        )
-        np.testing.assert_almost_equal(
-            maths.compute_connection_coefficient_s(3, 3),
-            0.25,
-        )
-
-    def test_connection_coefficients_r(self) -> None:
-        # R_{2,0} = 1, R_{2,2} = 2
-        np.testing.assert_almost_equal(
-            maths.compute_connection_coefficient_r(2, 0),
-            -1.0,
-        )
-        np.testing.assert_almost_equal(
-            maths.compute_connection_coefficient_r(2, 2),
-            2.0,
-        )
-
-    def test_taylor_to_cheby_manual(self) -> None:
-        # Snap parameters
-        d_vec = np.array([0.5, 2.3, 1500.0, 1e6, 1e4])
-        t_s = 4.2
-        # Expected coefficients
-        alpha_4 = d_vec[0] * t_s**4 / (8 * maths.fact(4))
-        alpha_3 = d_vec[1] * t_s**3 / (4 * maths.fact(3))
-        alpha_2 = 0.5 * (
-            (d_vec[2] * t_s**2 / maths.fact(2)) + (d_vec[0] * t_s**4 / (maths.fact(4)))
-        )
-        alpha_1 = d_vec[3] * t_s + (0.75 * d_vec[1] * t_s**3 / maths.fact(3))
-        alpha_0 = (
-            d_vec[4]
-            + d_vec[2] * t_s**2 / (2 * maths.fact(2))
-            + 3 * d_vec[0] * t_s**4 / (8 * maths.fact(4))
-        )
-        alpha_expected = np.array([alpha_4, alpha_3, alpha_2, alpha_1, alpha_0])
-        alpha = transforms.taylor_to_cheby(d_vec, t_s)
-        np.testing.assert_almost_equal(alpha, alpha_expected, decimal=12)
-
-    def test_cheby_to_taylor_manual(self) -> None:
-        alpha_vec = np.array([0.5, 2.3, 1500.0, 1e6, 1e4])
-        t_s = 4.2
-        # Expected coefficients
-        d_4 = 192 * alpha_vec[0] / t_s**4
-        d_3 = 24 * alpha_vec[1] / t_s**3
-        d_2 = 4 * (alpha_vec[2] - 4 * alpha_vec[0]) / t_s**2
-        d_1 = 1 * (alpha_vec[3] - 3 * alpha_vec[1]) / t_s
-        d_0 = alpha_vec[4] - alpha_vec[2] + alpha_vec[0]
-        d_expected = np.array([d_4, d_3, d_2, d_1, d_0])
-        d = transforms.cheby_to_taylor(alpha_vec, t_s)
-        np.testing.assert_almost_equal(d, d_expected, decimal=12)
-
-    @pytest.mark.parametrize("k_max", [2, 4, 6])
-    def test_roundtrip_identity(self, k_max: int) -> None:
-        rng = np.random.default_rng(42)
-        d_vec = rng.random(k_max + 1)
-        t_s = 1.5
-        alpha = transforms.taylor_to_cheby(d_vec, t_s)
-        d_reconstructed = transforms.cheby_to_taylor(alpha, t_s)
-        np.testing.assert_almost_equal(d_vec, d_reconstructed, decimal=12)
-
-    def test_polynomial_evaluation(self) -> None:
-        d_vec = np.array([0.5, 2.3, 1500.0, 1e6, 1e4])
-        k_max = len(d_vec) - 1
-        t_c, t_s = 4.2, 2.6
-        alpha_vec = transforms.taylor_to_cheby(d_vec, t_s)
-        t_test = np.linspace(t_c - t_s, t_c + t_s, 11)
-        x = (t_test - t_c) / t_s
-        k_range = np.arange(k_max + 1)
-        c_power = d_vec[::-1] / maths.fact(k_range)
-        taylor_poly = polynomial.Polynomial(c_power)
-        val_taylor = taylor_poly(t_test - t_c)
-        cheby_poly = polynomial.Chebyshev(alpha_vec[::-1], domain=[-1, 1])
-        val_cheby = cheby_poly(x)
-        np.testing.assert_almost_equal(val_taylor, val_cheby, decimal=8)
-
 
 # --------------------------------------------------------------------------------------
-# Kernel tests toward #12. Each contract runs on both the compiled kernel and its Python
+# Kernel tests (#12). Each contract runs on both the compiled kernel and its Python
 # source via ``jit_variants`` (see tests/jit_utils.py). `norm_isf_func` and
-# `chi_sq_minus_logsf_func` are deliberately not covered here: their table edges are
-# fixed and tested in #21.
-#
+# `chi_sq_minus_logsf_func` are covered by `TestMaths` above (#21).
 
 
 class TestFactKernel:
@@ -370,11 +246,7 @@ class TestFactKernel:
     @pytest.mark.parametrize("impl", jit_variants(maths.fact))
     @pytest.mark.parametrize("n", [21, 30, 66, 119, 120, 170])
     def test_above_20(self, impl, n: int) -> None:
-        """Double-precision factorial above 20! (#22).
-
-        Before #22 was fixed, `fact_factory` filled its table with an int64 product,
-        overflowing from 21! onward and returning 0 for every n >= 66.
-        """
+        """Double-precision factorial above 20!, past the int64 range (#22)."""
         np.testing.assert_allclose(impl(n), float(math.factorial(n)), rtol=1e-12)
 
 
@@ -414,16 +286,9 @@ class TestNbinomKernel:
 
     @pytest.mark.parametrize("impl", jit_variants(maths.nbinom))
     def test_multiplicative_branch_above_int64(self, impl) -> None:
-        """Compiled and Python paths agree above int64 (#22).
-
-        Before #22 was fixed, the multiplicative loop used an int64 accumulator and
-        wrapped on C(200, 100) ~ 9.1e58. Both paths now compute in float64.
-        """
+        """The multiplicative branch computes in float64 above int64 (#22)."""
         np.testing.assert_allclose(
             impl(200, 100), float(math.comb(200, 100)), rtol=1e-12
-        )
-        np.testing.assert_allclose(
-            maths.nbinom(200, 100), maths.nbinom.py_func(200, 100), rtol=1e-12
         )
 
 
@@ -437,7 +302,9 @@ class TestIsPowerOfTwo:
 
 class TestChebyshevPolysTable:
     @pytest.mark.parametrize("impl", jit_variants(maths.gen_chebyshev_polys_table))
-    @pytest.mark.parametrize(("order_max", "n_derivs"), [(1, 0), (3, 1), (8, 3)])
+    @pytest.mark.parametrize(
+        ("order_max", "n_derivs"), [(1, 0), (3, 1), (5, 3), (8, 3), (10, 10)]
+    )
     def test_matches_numpy(self, impl, order_max: int, n_derivs: int) -> None:
         np.testing.assert_allclose(
             impl(order_max, n_derivs),
@@ -446,18 +313,11 @@ class TestChebyshevPolysTable:
         )
 
     @pytest.mark.parametrize("impl", jit_variants(maths.generalized_cheb_pols))
-    @pytest.mark.parametrize(("t0", "scale"), [(0.0, 1.0), (0.0, 1.7), (0.3, 1.0)])
-    def test_generalized_where_correct(self, impl, t0: float, scale: float) -> None:
-        """Correct whenever ``t0 == 0`` or ``scale == 1``."""
-        self._check_generalized(impl, t0, scale)
-
-    @pytest.mark.parametrize("impl", jit_variants(maths.generalized_cheb_pols))
-    def test_generalized_shifted_and_scaled(self, impl) -> None:
+    @pytest.mark.parametrize(
+        ("t0", "scale"), [(0.0, 1.0), (0.0, 1.7), (0.3, 1.0), (0.3, 1.7)]
+    )
+    def test_generalized(self, impl, t0: float, scale: float) -> None:
         """Generalized Chebyshev polynomials match ``T_n((x - t0) / scale)``."""
-        self._check_generalized(impl, 0.3, 1.7)
-
-    @staticmethod
-    def _check_generalized(impl, t0: float, scale: float) -> None:
         order = 4
         table = impl(order, t0, scale)
         x = np.linspace(t0 - scale, t0 + scale, 17)
@@ -604,15 +464,12 @@ class TestConnectionCoefficients:
 
     @pytest.mark.parametrize(
         ("impl", "matrix"),
-        [
-            (impl.values[0], maths.compute_connection_matrix_s)
-            for impl in jit_variants(maths.compute_connection_coefficient_s)
-        ]
-        + [
-            (impl.values[0], maths.compute_connection_matrix_r)
-            for impl in jit_variants(maths.compute_connection_coefficient_r)
-        ],
-        ids=["s-compiled", "s-py_func", "r-compiled", "r-py_func"],
+        jit_cases(
+            maths.compute_connection_coefficient_s, maths.compute_connection_matrix_s
+        )
+        + jit_cases(
+            maths.compute_connection_coefficient_r, maths.compute_connection_matrix_r
+        ),
     )
     def test_scalar_matches_matrix(self, impl, matrix) -> None:
         mat = matrix(self.K_MAX)
@@ -688,14 +545,14 @@ class TestPolyChebyshevTransformMatrix:
     @pytest.mark.parametrize(
         ("args", "match"),
         [
-            ((-1, 0, 1, 0, 1), "non-negative"),
-            ((2, 0, 0, 0, 1), "positive"),
-            ((2, 0, 1, 0, -1), "positive"),
+            ((-1, 0.0, 1.0, 0.0, 1.0), "non-negative"),
+            ((2, 0.0, 0.0, 0.0, 1.0), "positive"),
+            ((2, 0.0, 1.0, 0.0, -1.0), "positive"),
         ],
     )
     def test_rejects_bad_input(self, impl, args, match: str) -> None:
         with pytest.raises(ValueError, match=match):
-            impl(*args)
+            impl(*args, 0)
 
     @pytest.mark.parametrize(
         "impl",

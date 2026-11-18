@@ -1,75 +1,17 @@
 """Unit tests for `pyloki.utils.psr_utils`, the search-grid geometry kernels.
 
-Why this module first
----------------------
-`psr_utils` decides where the search looks. It sets the step size of every parameter
-axis (`poly_taylor_step_*`), converts a parameter offset into a phase drift in bins
-(`poly_taylor_shift_*`), tiles a parameter range into cells (`range_param`), subdivides
-a parent cell into children (`branch_param`), and maps a time sample onto a profile bin
-(`get_phase_idx`). Those five things are the search's resolution. A defect here does
-not raise; it widens a cell or leaves a gap between two, and the pipeline goes on
-returning candidates with quietly reduced sensitivity. That is the failure mode the
-notebook-derived tests are worst at: they assert a peak lands in the right cell, which
-stays true while the cells themselves are subtly wrong.
-
-It is also a leaf. It imports only `utils.maths` and two constants from `utils.misc`,
-so a failure here localises to here, and the tests run in milliseconds rather than
-sharing a multi-second pipeline fixture.
-
-Finally it spans the whole numba taxonomy in one module -- plain `@njit`, `@njit` that
-calls a `@vectorize` ufunc (`poly_taylor_step_f` -> `maths.fact`), and `@vectorize`
-itself (`get_phase_idx`) -- so the pattern set here transfers to every other module.
-
-What is asserted
-----------------
-Invariants and cross-checks, not golden numbers. Almost every contract below is stated
-by the source itself and can be checked without a reference implementation:
-
-- `range_param` documents "Exact Outset Gridding": the cells must tile ``[vmin, vmax]``
-  with no gap at either end. That is checkable as ``grid[0] - dv/2 == vmin``, and it is
-  a regression guard -- the docstring records that an older `np.linspace(n+2)[1:-1]`
-  left exactly such gaps unsearched.
-- `branch_param` documents "zero overlap and zero gaps" against the parent cell, which
-  is the same statement one level down.
-- `range_param_count` and `range_param` are written separately and must agree on the
-  count; `branch_param`, `branch_param_padded` and `branch_dparam_crackle` are three
-  copies of one calculation and must agree on the spacing.
-- The step/shift duality is the deepest one: a step size is *defined* as the parameter
-  change that drifts the profile by `eta` bins over `tobs`, so feeding a step straight
-  back into the matching shift function must return `eta`. It ties two independently
-  written families of functions to a single physical definition, and it holds for every
-  parameter order and for both the Chebyshev and plain Taylor coarsening.
-- Every scalar kernel has a `_vec` twin, near-duplicated by hand. They must agree.
-
-Coverage of the kernels, and the `NUMBA_DISABLE_JIT` question
--------------------------------------------------------------
-Tests are parametrised over ``jit_variants(...)`` (see `tests/jit_utils`), running the
-same assertion against the compiled dispatcher and against `.py_func` so the kernel
-body is executed under the interpreter where `coverage` can see it. Measured on this
-module: 22% -> 26% from the two ufunc bodies alone, against a baseline in which the
-jitted fraction of the whole library sits at exactly 0.0% covered.
-
-``NUMBA_DISABLE_JIT=1`` was measured as the alternative and does not work here:
-
-1. It does not disable `@vectorize`. `maths.fact` is a `DUFunc` built by
-   `fact_factory`, so it is still compiled while the `_fact` it closes over is not, and
-   numba cannot type a plain Python global. `maths.fact` therefore raises `TypingError`
-   under the flag, taking 14 of the 24 tests in `tests/test_maths.py` with it -- and
-   `psr_utils` calls `maths.fact` from five kernels.
-2. It hides the signature contracts. `core.common.shift_add` is declared
-   ``f4[:,::1](f4[:,::1], ...)``; compiled it rejects a float64 array, un-jitted it
-   accepts one and returns float64. A suite run under the flag would not notice.
-3. It is ~110x slower on `core.fold.brutefold` (1.0 ms -> 112 ms at 2**18 samples),
-   which rules out running the pipeline-level tests under it.
-
-`.py_func` has its own limit, which is why `jit_variants` is opt-in per test rather
-than applied everywhere: it un-jits one level only, so a kernel that passes a
-first-class function into a still-jitted helper fails on the Python path
-(`np_utils.nb_max.py_func` raises `TypingError`). Nothing in `psr_utils` hits that.
+Covers phase-bin mapping (`get_phase_idx*`), grid tiling (`range_param*`), cell
+branching (`branch_param*`), step sizes and bin shifts (`poly_taylor_step_*`,
+`poly_taylor_shift_*`, `period_step`) and nearest-cell lookup, against invariants and
+closed forms: exact outset tiling, gap-free branching, step/shift duality, and every
+`_vec` twin against its scalar form. ``NUMBA_DISABLE_JIT=1`` was measured and rejected
+in favour of `jit_variants`: it leaves `@vectorize` ufuncs compiled (so `maths.fact`
+raises `TypingError`) and hides the compiled path's signature checks.
 """
 
 from __future__ import annotations
 
+import math
 from typing import ClassVar
 
 import numpy as np
@@ -77,11 +19,23 @@ import pytest
 
 from pyloki.utils import psr_utils
 from pyloki.utils.misc import C_VAL
-from tests.jit_utils import jit_variants
+from tests.jit_utils import jit_variants, python_impl
 
 NBINS = 64
 ETA = 1.0
 TOBS = 1000.0
+# Reference times inside the segment; non-zero exercises the ``tobs - t_ref`` term.
+T_REFS = [0.0, 250.0]
+
+# Spacings `branch_param*` must reject: (dparam_cur, dparam_new).
+NON_POSITIVE_SPACING = [(0.0, 1.0), (-1.0, 1.0), (1.0, 0.0), (1.0, -1.0)]
+# Ranges `range_param*` must reject: (vmin, vmax, dv).
+EMPTY_OR_UNSTEPPED_RANGE = [
+    (1.0, 1.0, 0.1),
+    (2.0, 1.0, 0.1),
+    (0.0, 1.0, 0.0),
+    (0.0, 1.0, -0.1),
+]
 
 
 class TestGetPhaseIdx:
@@ -212,8 +166,14 @@ class TestRangeParam:
         grid = impl(vmin, vmax, dv)
         assert len(grid) > 1, "test is vacuous on a one-cell grid"
         dv_actual = grid[1] - grid[0]
-        np.testing.assert_allclose(grid[0] - dv_actual / 2.0, vmin, rtol=1e-12)
-        np.testing.assert_allclose(grid[-1] + dv_actual / 2.0, vmax, rtol=1e-12)
+        # atol: rtol alone is exact equality when the edge is 0.0.
+        atol = 1e-12 * (vmax - vmin)
+        np.testing.assert_allclose(
+            grid[0] - dv_actual / 2.0, vmin, rtol=1e-12, atol=atol
+        )
+        np.testing.assert_allclose(
+            grid[-1] + dv_actual / 2.0, vmax, rtol=1e-12, atol=atol
+        )
 
     @pytest.mark.parametrize("impl", jit_variants(psr_utils.range_param))
     @pytest.mark.parametrize(("vmin", "vmax", "dv"), CASES)
@@ -251,10 +211,7 @@ class TestRangeParam:
         assert impl(0.0, 1.0, 0.3).dtype == np.float64
 
     @pytest.mark.parametrize("impl", jit_variants(psr_utils.range_param))
-    @pytest.mark.parametrize(
-        ("vmin", "vmax", "dv"),
-        [(1.0, 1.0, 0.1), (2.0, 1.0, 0.1), (0.0, 1.0, 0.0), (0.0, 1.0, -0.1)],
-    )
+    @pytest.mark.parametrize(("vmin", "vmax", "dv"), EMPTY_OR_UNSTEPPED_RANGE)
     def test_rejects_an_empty_or_unstepped_range(
         self,
         impl,
@@ -289,10 +246,7 @@ class TestRangeParamCount:
         assert impl(vmin, vmax, dv) == len(psr_utils.range_param(vmin, vmax, dv))
 
     @pytest.mark.parametrize("impl", jit_variants(psr_utils.range_param_count))
-    @pytest.mark.parametrize(
-        ("vmin", "vmax", "dv"),
-        [(1.0, 1.0, 0.1), (2.0, 1.0, 0.1), (0.0, 1.0, 0.0), (0.0, 1.0, -0.1)],
-    )
+    @pytest.mark.parametrize(("vmin", "vmax", "dv"), EMPTY_OR_UNSTEPPED_RANGE)
     def test_rejects_an_empty_or_unstepped_range(
         self,
         impl,
@@ -385,9 +339,7 @@ class TestBranchParam:
         assert values.dtype == np.float64
 
     @pytest.mark.parametrize("impl", jit_variants(psr_utils.branch_param))
-    @pytest.mark.parametrize(
-        ("dparam_cur", "dparam_new"), [(0.0, 1.0), (-1.0, 1.0), (1.0, 0.0), (1.0, -1.0)]
-    )
+    @pytest.mark.parametrize(("dparam_cur", "dparam_new"), NON_POSITIVE_SPACING)
     def test_rejects_non_positive_spacing(
         self,
         impl,
@@ -462,10 +414,7 @@ class TestBranchParamVariants:
             impl(out, 0.0, 1.0, 0.1)
 
     @pytest.mark.parametrize("impl", jit_variants(psr_utils.branch_param_padded))
-    @pytest.mark.parametrize(
-        ("dparam_cur", "dparam_new"),
-        [(0.0, 1.0), (-1.0, 1.0), (1.0, 0.0), (1.0, -1.0)],
-    )
+    @pytest.mark.parametrize(("dparam_cur", "dparam_new"), NON_POSITIVE_SPACING)
     def test_padded_rejects_non_positive_spacing(
         self,
         impl,
@@ -481,9 +430,7 @@ class TestBranchParamVariants:
             impl(1.0, 0.1, 4)
 
     @pytest.mark.parametrize("impl", jit_variants(psr_utils.branch_dparam_crackle))
-    @pytest.mark.parametrize(
-        ("dparam_cur", "dparam_new"), [(0.0, 1.0), (-1.0, 1.0), (1.0, 0.0), (1.0, -1.0)]
-    )
+    @pytest.mark.parametrize(("dparam_cur", "dparam_new"), NON_POSITIVE_SPACING)
     def test_crackle_rejects_non_positive_spacing(
         self,
         impl,
@@ -505,34 +452,45 @@ class TestStepShiftDuality:
     and it loses signal -- and nothing else in the suite would notice.
     """
 
+    # Every call to `poly_taylor_step_f` / `poly_taylor_shift_d` / `split_f` in this
+    # module passes ``t_ref`` (float) and ``use_cheby`` explicitly and gets contiguous
+    # arrays, so numba compiles one specialisation of each rather than several.
+
     @pytest.mark.parametrize("nparams", [1, 2, 3, 4])
     @pytest.mark.parametrize("use_cheby", [True, False])
+    @pytest.mark.parametrize("t_ref", T_REFS)
     def test_a_step_drifts_the_profile_by_eta_bins(
         self,
         nparams: int,
         use_cheby: bool,
+        t_ref: float,
     ) -> None:
-        step = psr_utils.poly_taylor_step_f(nparams, TOBS, NBINS, ETA, 0.0, use_cheby)
+        # The step comes back as a reversed view; copy it to a contiguous array.
+        step = np.ascontiguousarray(
+            psr_utils.poly_taylor_step_f(nparams, TOBS, NBINS, ETA, t_ref, use_cheby)
+        )
         shift = psr_utils.poly_taylor_shift_d(
             np.zeros(nparams),
             step,
             TOBS,
             NBINS,
             C_VAL,
-            0.0,
+            t_ref,
             use_cheby,
         )
         np.testing.assert_allclose(shift, ETA, rtol=1e-9)
 
     @pytest.mark.parametrize("nparams", [2, 3, 4])
     @pytest.mark.parametrize("use_cheby", [True, False])
+    @pytest.mark.parametrize("t_ref", T_REFS)
     def test_split_f_fires_exactly_at_one_step(
         self,
         nparams: int,
         use_cheby: bool,
+        t_ref: float,
     ) -> None:
         """`split_f` is the same duality as a boolean, so it must turn over at `eta`."""
-        step = psr_utils.poly_taylor_step_f(nparams, TOBS, NBINS, ETA, 0.0, use_cheby)
+        step = psr_utils.poly_taylor_step_f(nparams, TOBS, NBINS, ETA, t_ref, use_cheby)
         for i in range(nparams):
             k = nparams - 1 - i  # step is returned in reverse derivative order
             assert not psr_utils.split_f(
@@ -542,7 +500,7 @@ class TestStepShiftDuality:
                 k,
                 NBINS,
                 ETA,
-                0.0,
+                t_ref,
                 use_cheby,
             )
             assert psr_utils.split_f(
@@ -552,7 +510,7 @@ class TestStepShiftDuality:
                 k,
                 NBINS,
                 ETA,
-                0.0,
+                t_ref,
                 use_cheby,
             )
 
@@ -564,11 +522,34 @@ class TestStepShiftDuality:
         nparams: int,
     ) -> None:
         """Reverse order: the highest derivative -- the finest step -- comes first."""
-        step = impl(nparams, TOBS, NBINS, ETA)
+        step = impl(nparams, TOBS, NBINS, ETA, 0.0, use_cheby=True)
         assert step.shape == (nparams,)
         assert step.dtype == np.float64
         assert np.all(step > 0)
         assert np.all(np.diff(step) > 0), f"not ascending towards f0: {step}"
+
+    @pytest.mark.parametrize("impl", jit_variants(psr_utils.poly_taylor_step_f))
+    @pytest.mark.parametrize("use_cheby", [True, False])
+    @pytest.mark.parametrize("t_ref", T_REFS)
+    def test_matches_closed_form(self, impl, use_cheby: bool, t_ref: float) -> None:
+        """Step is ``eta / nbins * (k+1)! / (tobs - t_ref)**(k+1)`` (x ``2**k`` cheby).
+
+        The phase drift of a ``k``-th derivative offset over ``tobs - t_ref`` is
+        ``df_k * (tobs - t_ref)**(k+1) / (k+1)!`` turns; the step is the offset whose
+        drift is ``eta`` bins. Reverse order, highest derivative first.
+        """
+        span = TOBS - t_ref
+        expected = [
+            ETA
+            / NBINS
+            * math.factorial(k + 1)
+            / span ** (k + 1)
+            * 2.0 ** (k * use_cheby)
+            for k in range(4)
+        ][::-1]
+        np.testing.assert_allclose(
+            impl(4, TOBS, NBINS, ETA, t_ref, use_cheby), expected, rtol=1e-12
+        )
 
     @pytest.mark.parametrize("impl", jit_variants(psr_utils.poly_taylor_step_f))
     @pytest.mark.parametrize("nparams", [1, 2, 3, 4])
@@ -587,14 +568,40 @@ class TestStepShiftDuality:
     def test_eta_scales_the_grid_linearly(self, impl) -> None:
         """`eta` is a bin tolerance, so doubling it doubles every step."""
         np.testing.assert_allclose(
-            impl(4, TOBS, NBINS, 2 * ETA),
-            2 * impl(4, TOBS, NBINS, ETA),
+            impl(4, TOBS, NBINS, 2 * ETA, 0.0, use_cheby=True),
+            2 * impl(4, TOBS, NBINS, ETA, 0.0, use_cheby=True),
             rtol=1e-12,
         )
 
     @pytest.mark.parametrize("impl", jit_variants(psr_utils.poly_taylor_step_f))
     def test_a_longer_observation_needs_a_finer_grid(self, impl) -> None:
-        assert np.all(impl(4, 2 * TOBS, NBINS, ETA) < impl(4, TOBS, NBINS, ETA))
+        finer = impl(4, 2 * TOBS, NBINS, ETA, 0.0, use_cheby=True)
+        assert np.all(finer < impl(4, TOBS, NBINS, ETA, 0.0, use_cheby=True))
+
+
+class TestPeriodStep:
+    """`period_step` is the period offset that drifts the last pulse by `tol` bins.
+
+    Over ``tobs`` there are ``tobs / p_min`` cycles; a period error ``dp`` moves the
+    last cycle's arrival by ``(tobs / p_min - 1) * dp`` relative to the first, and the
+    step is the ``dp`` for which that equals ``tol`` bins of width ``p_min / nbins``.
+    """
+
+    @pytest.mark.parametrize("impl", jit_variants(psr_utils.period_step))
+    @pytest.mark.parametrize(("p_min", "tol"), [(0.01, 1.0), (0.0013, 0.5), (1.7, 2.0)])
+    def test_last_pulse_drifts_by_tol_bins(
+        self,
+        impl,
+        p_min: float,
+        tol: float,
+    ) -> None:
+        dp = impl(TOBS, NBINS, p_min, tol)
+        drift = (TOBS / p_min - 1.0) * dp
+        np.testing.assert_allclose(drift, tol * p_min / NBINS, rtol=1e-12)
+        # Same thing in closed form, written in terms of tobs directly.
+        np.testing.assert_allclose(
+            dp, tol * p_min**2 / (NBINS * (TOBS - p_min)), rtol=1e-12
+        )
 
 
 class TestScalarVectorAgreement:
@@ -627,7 +634,9 @@ class TestScalarVectorAgreement:
         new = np.tile(np.array([1e-10, 1e-8, 1e-5]), (len(self.F_MAX), 1))
         expected = np.stack(
             [
-                psr_utils.poly_taylor_shift_d(old[i], new[i], TOBS, NBINS, f)
+                psr_utils.poly_taylor_shift_d(
+                    old[i], new[i], TOBS, NBINS, f, 0.0, use_cheby=True
+                )
                 for i, f in enumerate(self.F_MAX)
             ]
         )
@@ -798,15 +807,18 @@ class TestCompiledAndPythonDoNotDiverge:
     CALLS: ClassVar = [
         (psr_utils.get_phase_idx, (0.3, 2.0, NBINS, 0.05)),
         (psr_utils.get_phase_idx_int, (0.3, 2.0, NBINS, 0.05)),
-        (psr_utils.poly_taylor_step_f, (4, TOBS, NBINS, ETA)),
+        (psr_utils.poly_taylor_step_f, (4, TOBS, NBINS, ETA, 0.0, True)),
         (psr_utils.poly_taylor_step_d_f, (4, TOBS, NBINS, ETA, 150.0)),
         (psr_utils.poly_taylor_step_d, (4, TOBS, NBINS, ETA, 150.0)),
         (psr_utils.poly_taylor_step_d_vec, (3, TOBS, NBINS, ETA, F_VEC)),
         (psr_utils.poly_taylor_step_d_f_vec, (3, TOBS, NBINS, ETA, F_VEC)),
-        (psr_utils.poly_taylor_shift_d, (OLD[0], NEW[0], TOBS, NBINS, 150.0)),
+        (
+            psr_utils.poly_taylor_shift_d,
+            (OLD[0], NEW[0], TOBS, NBINS, 150.0, 0.0, True),
+        ),
         (psr_utils.poly_taylor_shift_d_vec, (OLD, NEW, TOBS, NBINS, F_VEC)),
         (psr_utils.poly_taylor_shift_d_f_vec, (OLD, NEW, TOBS, NBINS, F_VEC)),
-        (psr_utils.split_f, (0.0, 1e-9, TOBS, 1, NBINS, ETA)),
+        (psr_utils.split_f, (0.0, 1e-9, TOBS, 1, NBINS, ETA, 0.0, True)),
         (psr_utils.period_step, (TOBS, NBINS, 0.01, 1.0)),
         (psr_utils.poly_cheb_step_vec, (3, NBINS, ETA, F_VEC)),
         (psr_utils.poly_cheb_shift_vec, (OLD, NEW, NBINS, F_VEC)),
@@ -835,7 +847,7 @@ class TestCompiledAndPythonDoNotDiverge:
     )
     def test_same_result_on_both_paths(self, kernel, args: tuple) -> None:
         compiled = kernel(*args)
-        python = jit_variants(kernel)[1].values[0](*args)
+        python = python_impl(kernel)(*args)
         np.testing.assert_allclose(compiled, python, rtol=1e-12)
 
     def test_branch_param_agrees_on_both_paths(self) -> None:

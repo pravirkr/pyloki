@@ -117,7 +117,7 @@ def poly_taylor_branch_batch(
         nbins,
         eta,
         f0_batch,
-        t_ref=0,
+        t_ref=0.0,
     )
     shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
         dparam_cur_batch,
@@ -125,7 +125,7 @@ def poly_taylor_branch_batch(
         t_obs_minus_t_ref,
         nbins,
         f0_batch,
-        t_ref=0,
+        t_ref=0.0,
     )
 
     # Vectorized Padded Branching
@@ -454,7 +454,7 @@ def generate_bp_poly_taylor(
             nbins,
             eta,
             f0_batch,
-            t_ref=0,
+            t_ref=0.0,
             use_cheby=use_cheby_coarsening,
         )
         shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
@@ -463,7 +463,7 @@ def generate_bp_poly_taylor(
             t_obs_minus_t_ref,
             nbins,
             f0_batch,
-            t_ref=0,
+            t_ref=0.0,
             use_cheby=use_cheby_coarsening,
         )
         n_branches = np.ones(n_freqs, dtype=np.int64)

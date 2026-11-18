@@ -38,7 +38,7 @@ import pytest
 from numba import typed
 
 from pyloki.core import common
-from tests.jit_utils import jit_variants
+from tests.jit_utils import jit_cases, jit_variants, python_impl
 
 NBINS = 64
 NBINS_F = NBINS // 2 + 1
@@ -47,7 +47,7 @@ NBINS_F = NBINS // 2 + 1
 # path rather than through `jit_variants`.
 PATHS = [
     pytest.param(lambda f: f, id="compiled"),
-    pytest.param(lambda f: f.py_func, id="py_func"),
+    pytest.param(python_impl, id="py_func"),
 ]
 
 
@@ -182,8 +182,9 @@ class TestTrivialKernels:
 
     @pytest.mark.parametrize("impl", jit_variants(common.pack))
     def test_pack_is_identity(self, impl) -> None:
+        """`pack` returns its argument itself, not a copy."""
         a = _profiles(1, 3)[0]
-        assert impl(a) is a or np.array_equal(impl(a), a)
+        assert impl(a) is a
 
     @pytest.mark.parametrize("impl", jit_variants(common.shift))
     @pytest.mark.parametrize("phase_shift", [0, 1, 17, -5, 70])
@@ -223,8 +224,8 @@ class TestShiftAdd:
 
     @pytest.mark.parametrize(
         "impl",
-        jit_variants(common.shift_add_complex)
-        + jit_variants(common.shift_add_complex_direct),
+        jit_cases(common.shift_add_complex)
+        + jit_cases(common.shift_add_complex_direct),
     )
     @pytest.mark.parametrize(("shift_tail", "shift_head"), SHIFTS)
     def test_complex_matches_exponential(

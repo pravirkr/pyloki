@@ -7,6 +7,7 @@ import itertools
 import attrs
 import numpy as np
 from astropy import constants
+from numba import typed
 
 from pyloki import kepler
 from pyloki.core import (
@@ -503,7 +504,7 @@ class PulsarSearchConfig:
             Array with the step sizes in decreasing derivative order.
         """
         tseg_cur = 2**ffa_level * self.tseg_brute
-        t_ref = 0 if self.nparams == 1 else tseg_cur / 2
+        t_ref = 0.0 if self.nparams == 1 else tseg_cur / 2
         return psr_utils.poly_taylor_step_f(
             self.nparams,
             tseg_cur,
@@ -532,7 +533,7 @@ class PulsarSearchConfig:
             Array with the parameter step sizes.
         """
         tseg_cur = 2**ffa_level * self.tseg_brute
-        t_ref = 0 if self.nparams == 1 else tseg_cur / 2
+        t_ref = 0.0 if self.nparams == 1 else tseg_cur / 2
         return psr_utils.poly_taylor_step_d_f(
             self.nparams,
             tseg_cur,
@@ -742,7 +743,7 @@ class PulsarSearchConfig:
             raise ValueError(msg) from None
 
         return generate_func(
-            param_arr,
+            typed.List(param_arr),
             dparams_act,
             self.tseg_ffa,
             nsegments_ffa,
@@ -806,7 +807,7 @@ class PulsarSearchConfig:
             raise ValueError(msg) from None
 
         return generate_func(
-            param_arr,
+            typed.List(param_arr),
             dparams_act,
             self.tseg_ffa,
             nsegments_ffa,

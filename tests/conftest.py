@@ -31,5 +31,5 @@ def pytest_collection_modifyitems(
         return
     skip = pytest.mark.skip(reason="needs --runslow")
     for item in items:
-        if "slow" in item.keywords:
+        if item.get_closest_marker("slow") is not None:
             item.add_marker(skip)

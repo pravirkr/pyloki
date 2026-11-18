@@ -30,10 +30,11 @@ import math
 import numpy as np
 import pytest
 from numpy import polynomial
+from scipy import special
 
 from pyloki.utils import maths, transforms
 from pyloki.utils.misc import C_VAL
-from tests.jit_utils import jit_variants
+from tests.jit_utils import jit_cases, jit_variants
 
 STRATEGIES = ("conservative", "quadrature", "aggressive")
 
@@ -65,8 +66,14 @@ class TestShiftTaylorParams:
     POLY = polynomial.Polynomial([0.3, -1.1, 0.7, 2.0, -0.4, 0.05])
 
     def _state(self, t: float) -> np.ndarray:
-        """Return ``[d_5, ..., d_0]``: the derivatives of POLY at `t`, descending."""
-        return np.array([self.POLY.deriv(k)(t) for k in range(6)])[::-1]
+        """Return ``[d_5, ..., d_0]``: the derivatives of POLY at `t`, descending.
+
+        Contiguous, so the only non-contiguous ('A' layout) compile is the one
+        `test_batch_and_non_contiguous_view` asks for.
+        """
+        return np.ascontiguousarray(
+            np.array([self.POLY.deriv(k)(t) for k in range(6)])[::-1]
+        )
 
     @pytest.mark.parametrize("impl", jit_variants(transforms.shift_taylor_params))
     @pytest.mark.parametrize("delta_t", [-2.1, 0.0, 0.9, 7.5])
@@ -121,12 +128,11 @@ class TestShiftTaylorErrors:
         )
 
     @pytest.mark.parametrize(
-        "impl",
-        jit_variants(transforms.shift_taylor_errors)
-        + jit_variants(transforms.shift_taylor_full),
+        ("impl", "vec"),
+        jit_cases(transforms.shift_taylor_errors, np.ones(4))
+        + jit_cases(transforms.shift_taylor_full, np.ones((4, 2))),
     )
-    def test_rejects_unknown_strategy(self, impl) -> None:
-        vec = np.ones((4, 2)) if "full" in impl.__name__ else np.ones(4)
+    def test_rejects_unknown_strategy(self, impl, vec: np.ndarray) -> None:
         with pytest.raises(ValueError, match="Invalid tiling strategy"):
             impl(vec, 1.0, "bogus")
 
@@ -225,19 +231,18 @@ class TestShiftTaylorCircular(CircularOrbit):
         np.testing.assert_array_equal(out[:, 1], errors)
 
     @pytest.mark.parametrize(
-        ("impl", "shape"),
-        [
-            (p.values[0], (1, 5))
-            for p in jit_variants(transforms.shift_taylor_circular_params)
-        ]
-        + [
-            (p.values[0], (1, 5, 2))
-            for p in jit_variants(transforms.shift_taylor_circular_full)
-        ],
+        ("impl", "vec", "strategy"),
+        # Strategy and in_hole are passed as the passing tests pass them, so this
+        # reuses their compiled specialisations instead of adding new ones.
+        jit_cases(transforms.shift_taylor_circular_params, np.ones((1, 5)), None)
+        + jit_cases(
+            transforms.shift_taylor_circular_full, np.ones((1, 5, 2)), "aggressive"
+        ),
     )
-    def test_requires_six_coefficients(self, impl, shape) -> None:
+    def test_requires_six_coefficients(self, impl, vec, strategy) -> None:
+        args = (1.0, False) if strategy is None else (1.0, strategy, False)
         with pytest.raises(ValueError, match="5 parameters"):
-            impl(np.ones(shape), 1.0)
+            impl(vec, *args)
 
 
 class TestShiftTaylorCircularErrors:
@@ -430,23 +435,18 @@ class TestTaylorToCircular:
         )
 
     @pytest.mark.parametrize("impl", jit_variants(transforms.taylor_to_circular_full))
-    @pytest.mark.parametrize("row", [0, 1, 3], ids=["omega", "freq", "x_cos_phi"])
+    @pytest.mark.parametrize(
+        "row", [0, 1, 2, 3], ids=["omega", "freq", "x_sin_phi", "x_cos_phi"]
+    )
     def test_errors_are_first_order(self, impl, row: int) -> None:
+        """Each error is the linear propagation of the input errors.
+
+        For ``x_sin_phi = accel**2 / (snap * C)`` that means ``accel`` enters with
+        weight 2, not as independent ``accel`` and ``omega**2`` terms (#28).
+        """
         values, errors = self._inputs()
         out = impl(np.stack([values, errors], axis=-1)[None])[0]
         np.testing.assert_allclose(out[row, 1], self._linear_errors()[row], rtol=1e-5)
-
-    @pytest.mark.parametrize("impl", jit_variants(transforms.taylor_to_circular_full))
-    def test_x_sin_phi_error_is_first_order(self, impl) -> None:
-        """``dx_sin_phi`` accounts for ``accel`` entering twice via ``omega**2`` (#28).
-
-        ``x_sin_phi = accel**2 / (snap * C)``, so relative ``accel`` error enters
-        with weight 2 rather than as independent quadrature terms ``accel`` and
-        ``omega**2``.
-        """
-        values, errors = self._inputs()
-        out = impl(np.stack([values, errors], -1)[None])
-        np.testing.assert_allclose(out[0, 2, 1], self._linear_errors()[2], rtol=1e-5)
 
 
 class TestTaylorChebyshevBasis:
@@ -461,7 +461,7 @@ class TestTaylorChebyshevBasis:
     def test_same_polynomial(self, impl) -> None:
         alpha = impl(self.D_VEC, self.TS)
         t = np.linspace(-self.TS, self.TS, 11)
-        coeffs = self.D_VEC[::-1] / special_factorials(len(self.D_VEC))
+        coeffs = self.D_VEC[::-1] / special.factorial(np.arange(len(self.D_VEC)))
         np.testing.assert_allclose(
             polynomial.Chebyshev(alpha[::-1])(t / self.TS),
             polynomial.Polynomial(coeffs)(t),
@@ -469,8 +469,44 @@ class TestTaylorChebyshevBasis:
         )
 
     @pytest.mark.parametrize("impl", jit_variants(transforms.cheby_to_taylor))
-    def test_inverse(self, impl) -> None:
-        np.testing.assert_allclose(impl(self._alpha(), self.TS), self.D_VEC, atol=1e-12)
+    @pytest.mark.parametrize("n_params", [3, 5, 7])
+    def test_inverse(self, impl, n_params: int) -> None:
+        d_vec = np.random.default_rng(42).random(n_params)
+        # taylor_to_cheby returns a reversed view; copy it so no 'A' variant compiles.
+        alpha = np.ascontiguousarray(transforms.taylor_to_cheby(d_vec, self.TS))
+        np.testing.assert_allclose(impl(alpha, self.TS), d_vec, atol=1e-12)
+
+    # Hand-derived degree-4 maps on ``[-t_s, t_s]``, from ``x^2 = (T_0 + T_2) / 2``,
+    # ``x^3 = (3 T_1 + T_3) / 4`` and ``x^4 = (3 T_0 + 4 T_2 + T_4) / 8``. Inputs of
+    # mixed magnitude (up to 1e6) so a wrong scale on any one order shows.
+    MIXED = np.array([0.5, 2.3, 1500.0, 1e6, 1e4])
+    MIXED_TS = 4.2
+
+    @pytest.mark.parametrize("impl", jit_variants(transforms.taylor_to_cheby))
+    def test_taylor_to_cheby_closed_form(self, impl) -> None:
+        d4, d3, d2, d1, d0 = self.MIXED
+        t_s = self.MIXED_TS
+        expected = [
+            d4 * t_s**4 / (8 * 24),
+            d3 * t_s**3 / (4 * 6),
+            0.5 * (d2 * t_s**2 / 2 + d4 * t_s**4 / 24),
+            d1 * t_s + 0.75 * d3 * t_s**3 / 6,
+            d0 + d2 * t_s**2 / 4 + 3 * d4 * t_s**4 / (8 * 24),
+        ]
+        np.testing.assert_allclose(impl(self.MIXED, t_s), expected, rtol=1e-12)
+
+    @pytest.mark.parametrize("impl", jit_variants(transforms.cheby_to_taylor))
+    def test_cheby_to_taylor_closed_form(self, impl) -> None:
+        a4, a3, a2, a1, a0 = self.MIXED
+        t_s = self.MIXED_TS
+        expected = [
+            192 * a4 / t_s**4,
+            24 * a3 / t_s**3,
+            4 * (a2 - 4 * a4) / t_s**2,
+            (a1 - 3 * a3) / t_s,
+            a0 - a2 + a4,
+        ]
+        np.testing.assert_allclose(impl(self.MIXED, t_s), expected, rtol=1e-12)
 
     @pytest.mark.parametrize("impl", jit_variants(transforms.taylor_to_cheby))
     def test_batch_rows_independent(self, impl) -> None:
@@ -512,31 +548,20 @@ class TestTaylorChebyshevBasis:
         )
 
     @pytest.mark.parametrize(
-        ("impl", "ndim"),
-        [
-            (p.values[0], ndim)
-            for func, ndim in [
-                (transforms.taylor_to_cheby, 1),
-                (transforms.taylor_to_cheby_errors, 1),
-                (transforms.cheby_to_taylor, 1),
-                (transforms.taylor_to_cheby_full, 2),
-                (transforms.cheby_to_taylor_full, 2),
-            ]
-            for p in jit_variants(func)
-        ],
+        ("impl", "vec"),
+        jit_cases(transforms.taylor_to_cheby, np.ones(3))
+        + jit_cases(transforms.taylor_to_cheby_errors, np.ones(3))
+        + jit_cases(transforms.cheby_to_taylor, np.ones(3))
+        + jit_cases(transforms.taylor_to_cheby_full, np.ones((3, 2)))
+        + jit_cases(transforms.cheby_to_taylor_full, np.ones((3, 2))),
     )
     @pytest.mark.parametrize("t_s", [0.0, -1.0])
-    def test_rejects_non_positive_scale(self, impl, ndim: int, t_s: float) -> None:
-        vec = np.ones((3, 2)) if ndim == 2 else np.ones(3)
+    def test_rejects_non_positive_scale(self, impl, vec, t_s: float) -> None:
         with pytest.raises(ValueError, match="t_s must be a positive"):
             impl(vec, t_s)
 
 
-def special_factorials(n: int) -> np.ndarray:
-    return np.array([math.factorial(k) for k in range(n)], dtype=float)
-
-
-# Module level so that the parametrize comprehensions below can see them.
+# Module level so that the parametrize lists below can see them.
 CHEBY_ALPHA = np.array([[0.3, -0.2, 1.4, 0.8, -0.5], [1.0, 0.0, -2.0, 0.5, 0.1]])
 CHEBY_ERRORS = np.array([[0.1, 0.2, 0.3, 0.4, 0.5], [1.0, 0.5, 0.25, 0.125, 0.0625]])
 
@@ -595,14 +620,11 @@ class TestShiftCheby:
 
     @pytest.mark.parametrize(
         ("impl", "vec"),
-        [
-            (p.values[0], CHEBY_ERRORS)
-            for p in jit_variants(transforms.shift_cheby_errors)
-        ]
-        + [
-            (p.values[0], np.stack([CHEBY_ALPHA, CHEBY_ERRORS], axis=-1))
-            for p in jit_variants(transforms.shift_cheby_full)
-        ],
+        jit_cases(transforms.shift_cheby_errors, CHEBY_ERRORS)
+        + jit_cases(
+            transforms.shift_cheby_full,
+            np.stack([CHEBY_ALPHA, CHEBY_ERRORS], axis=-1),
+        ),
     )
     def test_rejects_unknown_strategy(self, impl, vec) -> None:
         with pytest.raises(ValueError, match="Invalid tiling strategy"):
@@ -690,23 +712,15 @@ class TestChebyshevLimits:
         limits = self._limits(n_higher + 1, n_batch=4)
         limits[:, :-1] = limits[0, :-1]
         generic = transforms.taylor_to_chebyshev_limits_generic(limits, self.TS)
-        out = impl(limits[:, -1], limits[0, :-1], self.TS)
+        d1_limits = np.ascontiguousarray(limits[:, -1])
+        out = impl(d1_limits, limits[0, :-1], self.TS)
         np.testing.assert_allclose(out, generic[:, -1], atol=1e-12)
 
     @pytest.mark.parametrize(
         "impl",
         jit_variants(transforms.taylor_to_chebyshev_limits_upto_d2),
     )
-    def test_upto_d2_single_param(self, impl) -> None:
-        limits = self._limits(2, n_batch=1)
-        generic = transforms.taylor_to_chebyshev_limits_generic(limits, self.TS)
-        np.testing.assert_allclose(impl(limits[0, :-1], self.TS), generic[0, :-1])
-
-    @pytest.mark.parametrize(
-        "impl",
-        jit_variants(transforms.taylor_to_chebyshev_limits_upto_d2),
-    )
-    @pytest.mark.parametrize("n_higher", [2, 3, 4])
+    @pytest.mark.parametrize("n_higher", [1, 2, 3, 4])
     def test_upto_d2_unrolls_generic(self, impl, n_higher: int) -> None:
         """Unrolled branches match ``generic`` in descending order (#26)."""
         limits = self._limits(n_higher + 1, n_batch=1)
@@ -718,18 +732,14 @@ class TestChebyshevLimits:
 
     @pytest.mark.parametrize(
         ("impl", "args"),
-        [
-            (p.values[0], (np.ones((1, 6, 2)), 1.0))
-            for p in jit_variants(transforms.taylor_to_chebyshev_limits_full)
-        ]
-        + [
-            (p.values[0], (np.ones((1, 2)), np.ones((5, 2)), 1.0))
-            for p in jit_variants(transforms.taylor_to_chebyshev_limits_d1)
-        ]
-        + [
-            (p.values[0], (np.ones((5, 2)), 1.0))
-            for p in jit_variants(transforms.taylor_to_chebyshev_limits_upto_d2)
-        ],
+        jit_cases(transforms.taylor_to_chebyshev_limits_full, (np.ones((1, 6, 2)), 1.0))
+        + jit_cases(
+            transforms.taylor_to_chebyshev_limits_d1,
+            (np.ones((1, 2)), np.ones((5, 2)), 1.0),
+        )
+        + jit_cases(
+            transforms.taylor_to_chebyshev_limits_upto_d2, (np.ones((5, 2)), 1.0)
+        ),
     )
     def test_unrolled_reject_too_many_params(self, impl, args) -> None:
         with pytest.raises(ValueError, match="not supported"):
