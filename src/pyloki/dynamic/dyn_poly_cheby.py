@@ -226,7 +226,7 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
 
         Returns
         -------
-        float
+        np.ndarray
             The statistical detection score of the combined fold.
 
         Notes
@@ -683,7 +683,7 @@ def shift_add_complex_func(
 def score_func(
     self: PrunePolyChebyshevDPFuncts,
     combined_res_batch: np.ndarray,
-) -> float:
+) -> np.ndarray:
     return scoring.snr_score_batch_func(combined_res_batch, self.score_widths)
 
 
@@ -691,7 +691,7 @@ def score_func(
 def score_complex_func(
     self: PrunePolyChebyshevComplexDPFuncts,
     combined_res_batch: np.ndarray,
-) -> float:
+) -> np.ndarray:
     return scoring.snr_score_batch_func_complex(combined_res_batch, self.score_widths)
 
 
@@ -966,7 +966,10 @@ def ol_score_func(
     self: PrunePolyChebyshevDPFuncts,
     combined_res_batch: np.ndarray,
 ) -> types.FunctionType:
-    def impl(self: PrunePolyChebyshevDPFuncts, combined_res_batch: np.ndarray) -> float:
+    def impl(
+        self: PrunePolyChebyshevDPFuncts,
+        combined_res_batch: np.ndarray,
+    ) -> np.ndarray:
         return score_func(self, combined_res_batch)
 
     return impl

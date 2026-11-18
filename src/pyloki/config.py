@@ -39,20 +39,28 @@ def _param_limits_validator(
     attribute: attrs.Attribute,
     value: np.ndarray,
 ) -> None:
+    if not isinstance(value, np.ndarray):
+        msg = f"param_limits must be a numpy ndarray, got {type(value)}"
+        raise TypeError(msg)
+    if value.ndim != 2 or value.shape[1] != 2:
+        msg = f"param_limits must have shape (nparams, 2), got {value.shape}"
+        raise ValueError(msg)
     val_len = value.shape[0]
-    if val_len < 1:  # or val_len > 4:
+    if val_len < 1 or val_len > 5:
         msg = f"param_limits must have 1-5 elements, got {val_len}"
         raise ValueError(msg)
     for i in range(val_len):
         val_min = value[i, 0]
         val_max = value[i, 1]
-        if not isinstance(val_min, int | float) or not isinstance(
-            val_max,
-            int | float,
+        if (
+            not isinstance(val_min, int | float | np.integer | np.floating)
+            or isinstance(val_min, bool | np.bool_)
+            or not isinstance(val_max, int | float | np.integer | np.floating)
+            or isinstance(val_max, bool | np.bool_)
         ):
             msg = f"param_limits must be tuples of numbers, got {value}"
             raise TypeError(msg)
-        if val_min >= val_max:
+        if val_min >= val_max or np.isnan(val_min) or np.isnan(val_max):
             msg = f"param_limits must have min < max, got {value}"
             raise ValueError(msg)
 
@@ -86,27 +94,28 @@ class ParamLimits:
 
         Returns
         -------
-        types.ListType[types.Tuple[float, float]]
+        list[tuple[float, float]]
             List of tuples with the Chebyshev coefficient bounds.
             Should be in the order: [freq, alpha_0, alpha_1, ..., alpha_n], where
             n is the highest polynomial order in the search.
         """
         t_s = tobs / 2
-        # Get kinematic terms only (ignore freq), in increasing derivative order
-        d_limits = self.limits[:-1][::-1]
-        d_limits = [(0, 0), (0, 0), *d_limits]
-        d_corners = np.array(list(itertools.product(*list(d_limits))))
+        # Decreasing derivative order [d_n, ..., d_2, d_1=0, d_0=0] for taylor_to_cheby
+        d_limits = [*self.limits[:-1], (0.0, 0.0), (0.0, 0.0)]
+        d_corners = np.array(list(itertools.product(*d_limits)), dtype=np.float64)
         alpha_corners = np.vstack(
             [transforms.taylor_to_cheby(d_vec, t_s) for d_vec in d_corners],
         )
+        # taylor_to_cheby yields [alpha_n, ..., alpha_0]; reverse to [alpha_0..alpha_n]
         alpha_bounds = list(
             zip(
-                np.min(alpha_corners, axis=0),
-                np.max(alpha_corners, axis=0),
+                np.min(alpha_corners, axis=0)[::-1],
+                np.max(alpha_corners, axis=0)[::-1],
                 strict=False,
             ),
         )
-        return [self.limits[-1], *alpha_bounds]
+        freq_bounds = (float(self.limits[-1, 0]), float(self.limits[-1, 1]))
+        return [freq_bounds, *[(float(lo), float(hi)) for lo, hi in alpha_bounds]]
 
     @classmethod
     def from_taylor(
@@ -176,21 +185,26 @@ class ParamLimits:
             Object with the search parameter limits.
         """
         nparams = len(true_d_params) + 1
-        dvec = np.zeros(nparams + 1, dtype=np.float64)
-        dvec[1:-2] = true_d_params[1:]  # till acceleration
-        dvec[0] = d_upper_limits[0]
-        dvec_min_up = transforms.shift_taylor_params(dvec, t_obs / 2)
-        dvec_min_low = transforms.shift_taylor_params(dvec, -t_obs / 2)
-        dvec[0] = d_upper_limits[1]
-        dvec_max_up = transforms.shift_taylor_params(dvec, t_obs / 2)
-        dvec_max_low = transforms.shift_taylor_params(dvec, -t_obs / 2)
-        dvec_bound_low = np.minimum(dvec_min_low, dvec_max_low)
-        dvec_bound_up = np.maximum(dvec_min_up, dvec_max_up)
+        dvecs = np.zeros((2, nparams + 1), dtype=np.float64)
+        dvecs[:, 1:-2] = true_d_params[1:]  # till acceleration
+        dvecs[0, 0] = d_upper_limits[0]
+        dvecs[1, 0] = d_upper_limits[1]
+        shifted = np.vstack(
+            [
+                transforms.shift_taylor_params(dvecs, float(dt))
+                for dt in np.linspace(-t_obs / 2, t_obs / 2, 101)
+            ],
+        )
+        dvec_bound_low = np.min(shifted, axis=0)
+        dvec_bound_up = np.max(shifted, axis=0)
         bounds_d = [
-            (low, up) for low, up in zip(dvec_bound_low, dvec_bound_up, strict=False)
+            (float(low), float(up))
+            for low, up in zip(dvec_bound_low, dvec_bound_up, strict=False)
         ]
         bounds = bounds_d[:-2]
-        freq_shift = dvec_bound_up[-2] / C_VAL
+        freq_shift = float(
+            max(abs(dvec_bound_low[-2]), abs(dvec_bound_up[-2])) / C_VAL,
+        )
         if isinstance(freq, (tuple, list, np.ndarray)):
             freq_min, freq_max = freq
             bounds.append((freq_min * (1 - freq_shift), freq_max * (1 + freq_shift)))
@@ -419,11 +433,14 @@ class PulsarSearchConfig:
     )
 
     def __attrs_post_init__(self) -> None:
+        if self.use_fourier and self.nbins % 2 != 0:
+            msg = f"nbins ({self.nbins}) must be even when use_fourier=True"
+            raise ValueError(msg)
         if self.bseg_brute == 0:
             object.__setattr__(self, "bseg_brute", self._bseg_brute_default())
         if self.bseg_ffa == 0:
             object.__setattr__(self, "bseg_ffa", self._bseg_ffa_default())
-        if self.bseg_brute > self.nsamps:
+        if self.bseg_brute >= self.nsamps:
             msg = f"bseg_brute ({self.bseg_brute}) must be < nsamps ({self.nsamps})"
             raise ValueError(msg)
         if self.bseg_ffa > self.nsamps:
@@ -822,7 +839,9 @@ class PulsarSearchConfig:
     def _bseg_brute_default(self) -> int:
         init_levels = 1 if self.nparams == 1 else 5
         levels = int(np.log2(self.nsamps * self.tsamp * self.f_min) - init_levels)
-        return int(self.nsamps / 2**levels)
+        max_levels = max(1, int(np.log2(self.nsamps)))
+        levels = int(np.clip(levels, 1, max_levels))
+        return int(self.nsamps // 2**levels)
 
     def _bseg_ffa_default(self) -> int:
         return self.nsamps

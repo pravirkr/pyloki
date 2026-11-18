@@ -871,7 +871,7 @@ def ol_pack_func(self: PrunePolyTaylorDPFuncts, data: np.ndarray) -> types.Funct
 @overload_method(PrunePolyTaylorDPFunctsTemplate, "ascend")
 def ol_ascend_func(
     self: PrunePolyTaylorDPFuncts,
-    leaves_batch: np.ndarray,
+    world_tree: WorldTree,
     dyp_folds: np.ndarray,
     load_func: Callable[[np.ndarray, np.ndarray], np.ndarray],
     idx_segments: np.ndarray,

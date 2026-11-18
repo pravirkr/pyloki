@@ -862,10 +862,6 @@ def prune_dyp_tree(
         msg = f"n_workers must be greater than 0, got {n_workers}"
         raise ValueError(msg)
 
-    filebase = f"{file_prefix}_pruning_nstages_{dyp.nsegments}"
-    log_file = Path(outdir) / f"{filebase}_log.txt"
-    result_file = Path(outdir) / f"{filebase}_results.h5"
-    outdir = mkdir_p(outdir, must_not_exist=[log_file.name, result_file.name])
     # n_runs takes precedence over ref_segs
     if n_runs is not None:
         if not 1 <= n_runs <= dyp.nsegments:
@@ -875,6 +871,14 @@ def prune_dyp_tree(
     elif ref_segs is None:
         msg = "Either n_runs or ref_segs must be provided"
         raise ValueError(msg)
+    elif len(ref_segs) == 0:
+        msg = "ref_segs must not be empty"
+        raise ValueError(msg)
+
+    filebase = f"{file_prefix}_pruning_nstages_{dyp.nsegments}"
+    log_file = Path(outdir) / f"{filebase}_log.txt"
+    result_file = Path(outdir) / f"{filebase}_results.h5"
+    outdir = mkdir_p(outdir, must_not_exist=[log_file.name, result_file.name])
 
     n_workers_act = min(n_workers, len(ref_segs))
     logger.info(

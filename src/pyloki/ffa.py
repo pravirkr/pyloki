@@ -78,11 +78,11 @@ class FFAPlan:
         self.segment_lens = np.empty(levels, dtype=np.float32)
         self.nsegments = np.empty(levels, dtype=np.int32)
         self.tsegments = np.empty(levels, dtype=np.float32)
-        self.ncoords = np.empty(levels, dtype=np.int32)
+        self.ncoords = np.empty(levels, dtype=np.int64)
         self.ncoords_lb = np.empty(levels, dtype=np.float32)
         self.dparams = np.empty((levels, self.n_params), dtype=np.float32)
         self.dparams_actual = np.empty((levels, self.n_params), dtype=np.float32)
-        self.param_counts = np.empty((levels, self.n_params), dtype=np.int32)
+        self.param_counts = np.empty((levels, self.n_params), dtype=np.int64)
         self.params = []
         for i_level in range(levels):
             segment_len = self.cfg.bseg_brute * (2**i_level)
@@ -98,7 +98,7 @@ class FFAPlan:
             self.dparams[i_level, :] = dparam_arr
             self.dparams_actual[i_level, :] = dparam_arr_actual
             self.param_counts[i_level, :] = param_counts_cur
-            self.ncoords[i_level] = np.prod([len(p) for p in param_arr])
+            self.ncoords[i_level] = np.prod([len(p) for p in param_arr], dtype=np.int64)
             self.ncoords_lb[i_level] = np.round(np.log2(self.ncoords[i_level]), 2)
             self.params.append(param_arr)
 
@@ -113,8 +113,8 @@ class FFAPlan:
         if self.n_params != 1:
             msg = "resolve_coordinates_freq is only supported for single parameter"
             raise ValueError(msg)
-        coords = []
-        for i_level in range(self.n_levels):
+        coords = [np.empty(0, dtype=ffacoordfreq_dtype)]
+        for i_level in range(1, self.n_levels):
             param_counts_prev = self.param_counts[i_level - 1, :]
             param_arr = self.params[i_level]
             param_cart_cur = np_utils.cartesian_prod_st(param_arr)
@@ -146,13 +146,15 @@ class FFAPlan:
         if self.n_params <= 1:
             msg = "resolve_coordinates is only supported for multiple parameters"
             raise ValueError(msg)
-        coords = []
-        for i_level in range(self.n_levels):
+        coords = [np.empty(0, dtype=ffacoord_dtype)]
+        for i_level in range(1, self.n_levels):
             param_arr = self.params[i_level]
             param_counts_prev = self.param_counts[i_level - 1, :]
             param_cart_cur = np_utils.cartesian_prod_st(param_arr)
-            lengths = [len(a) for a in param_counts_prev]
-            param_strides_prev = np.cumprod([1, *lengths[::-1][:-1]])[::-1]
+            param_strides_prev = np.cumprod(
+                [1, *param_counts_prev[::-1][:-1]],
+                dtype=np.int64,
+            )[::-1]
             coords_cur = np.zeros(len(param_cart_cur), dtype=ffacoord_dtype)
             for iparam_set in range(len(param_cart_cur)):
                 p_set = param_cart_cur[iparam_set]
@@ -401,7 +403,7 @@ class DynamicProgramming:
         if self.cfg.use_fourier:
             logger.info("Using FFT for phase shifts: Inverse FFTing the fold")
             logger.info(f"Fold shape: {self.fold.shape}")
-            fold_t = np.fft.irfft(self.fold).astype(np.float32)
+            fold_t = np.fft.irfft(self.fold, n=self.cfg.nbins).astype(np.float32)
         else:
             fold_t = self.fold
         if param_idx is None:
