@@ -24,6 +24,7 @@ from pyloki.io.cands import (
     merge_prune_result_files,
 )
 from pyloki.utils.misc import (
+    MP_CONTEXT,
     MultiprocessProgressTracker,
     PicklableStructRefWrapper,
     get_logger,
@@ -909,7 +910,10 @@ def prune_dyp_tree(
     else:
         with (
             MultiprocessProgressTracker("Pruning tree") as tracker,
-            ProcessPoolExecutor(max_workers=n_workers_act) as executor,
+            ProcessPoolExecutor(
+                max_workers=n_workers_act,
+                mp_context=MP_CONTEXT,
+            ) as executor,
         ):
             futures_to_seg = {}
             # Important: pass a reference to the tracker dict to the worker

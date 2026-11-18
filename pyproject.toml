@@ -179,6 +179,13 @@ testpaths = ["tests"]
 markers = [
     "slow: repeats a full search pipeline per noise realisation; needs --runslow",
 ]
+# Warnings that point at real problems fail the run. The Numba ones fire only
+# when a kernel compiles, so a warm cache can hide them; cold CI runs catch them.
+filterwarnings = [
+    "error::numba.core.errors.NumbaTypeSafetyWarning",
+    "error::numba.core.errors.NumbaPendingDeprecationWarning",
+    "error:.*use of fork\\(\\) may lead to deadlocks:DeprecationWarning",
+]
 
 [tool.coverage.run]
 source = ["src"]

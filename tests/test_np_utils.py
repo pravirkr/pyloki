@@ -30,6 +30,7 @@ import itertools
 
 import numpy as np
 import pytest
+from numba import typed
 from numba.core.errors import TypingError
 
 from pyloki.utils import np_utils
@@ -212,7 +213,9 @@ class TestCartesianProd:
     @pytest.mark.parametrize("arrays", CASES)
     def test_matches_itertools(self, impl, arrays: list[np.ndarray]) -> None:
         expected = np.array(list(itertools.product(*arrays)))
-        np.testing.assert_array_equal(impl(arrays), expected)
+        # Library callers pass a typed list; a plain list is a reflected list,
+        # which Numba is deprecating.
+        np.testing.assert_array_equal(impl(typed.List(arrays)), expected)
 
     @pytest.mark.parametrize("arrays", CASES)
     def test_three_implementations_agree(self, arrays: list[np.ndarray]) -> None:
@@ -221,7 +224,7 @@ class TestCartesianProd:
         `cartesian_prod`, `cartesian_prod_np` and `cartesian_prod_st` must agree,
         row order included.
         """
-        ref = np_utils.cartesian_prod(arrays)
+        ref = np_utils.cartesian_prod(typed.List(arrays))
         np.testing.assert_array_equal(np_utils.cartesian_prod_np(arrays), ref)
         cart_st = np_utils.cartesian_prod_st(arrays)
         np.testing.assert_array_equal(cart_st, ref)

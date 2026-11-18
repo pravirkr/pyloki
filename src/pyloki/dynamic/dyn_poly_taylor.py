@@ -39,7 +39,7 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
     ) -> Self:
         """Create a new instance of PrunePolyTaylorDPFuncts."""
         return prune_poly_taylor_dp_functs_init(
-            param_arr,
+            typed.List(param_arr),
             dparams,
             param_grid_count_init,
             tseg_ffa,
@@ -173,7 +173,7 @@ class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
     ) -> Self:
         """Create a new instance of PrunePolyTaylorComplexDPFuncts."""
         return prune_poly_taylor_complex_dp_functs_init(
-            param_arr,
+            typed.List(param_arr),
             dparams,
             param_grid_count_init,
             tseg_ffa,

@@ -39,7 +39,7 @@ class PrunePolyChebyshevDPFuncts(structref.StructRefProxy):
     ) -> Self:
         """Create a new instance of PrunePolyChebyshevDPFuncts."""
         return prune_chebyshev_dp_functs_init(
-            param_arr,
+            typed.List(param_arr),
             dparams,
             param_grid_count_init,
             tseg_ffa,
@@ -313,7 +313,7 @@ class PrunePolyChebyshevComplexDPFuncts(structref.StructRefProxy):
     ) -> Self:
         """Create a new instance of PrunePolyChebyshevComplexDPFuncts."""
         return prune_chebyshev_complex_dp_functs_init(
-            param_arr,
+            typed.List(param_arr),
             dparams,
             param_grid_count_init,
             tseg_ffa,

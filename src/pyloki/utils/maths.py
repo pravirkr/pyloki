@@ -658,16 +658,14 @@ def find_small_polys(
         - volume_factor: Factor to scale the point volume to the total volume.
     """
     test_points = np.linspace(-1, 1, npoints)
-    phase_space = np_utils.cartesian_prod(
-        [
-            np.linspace(
-                -(degree - 1) * error_bound,
-                (degree - 1) * error_bound,
-                2 * (degree - 1) * oversampling,
-            )
-            for _ in range(degree)
-        ],
+    coeff_grid = np.linspace(
+        -(degree - 1) * error_bound,
+        (degree - 1) * error_bound,
+        2 * (degree - 1) * oversampling,
     )
+    # One row per coefficient. A 2D array, not a list, so the compiled and
+    # `.py_func` paths hand `cartesian_prod` the same type.
+    phase_space = np_utils.cartesian_prod(np.ones((degree, 1)) * coeff_grid)
     point_volume = (2 * (degree - 1)) ** degree / len(phase_space)
     x_matrix = test_points[:, np.newaxis] ** np.arange(degree)
     poly_values = np.dot(x_matrix, phase_space.T)

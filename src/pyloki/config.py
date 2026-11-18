@@ -7,6 +7,7 @@ import itertools
 import attrs
 import numpy as np
 from astropy import constants
+from numba import typed
 
 from pyloki import kepler
 from pyloki.core import (
@@ -742,7 +743,7 @@ class PulsarSearchConfig:
             raise ValueError(msg) from None
 
         return generate_func(
-            param_arr,
+            typed.List(param_arr),
             dparams_act,
             self.tseg_ffa,
             nsegments_ffa,
@@ -806,7 +807,7 @@ class PulsarSearchConfig:
             raise ValueError(msg) from None
 
         return generate_func(
-            param_arr,
+            typed.List(param_arr),
             dparams_act,
             self.tseg_ffa,
             nsegments_ffa,
