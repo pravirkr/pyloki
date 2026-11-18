@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-nparam_to_str = {1: "freq", 2: "acc", 3: "jerk", 4: "snap"}
+nparam_to_str = {1: "freq", 2: "acc", 3: "jerk", 4: "snap", 5: "crackle"}
 
 
 def plot_sensitivity(filename: str | Path) -> plt.Figure:
@@ -123,7 +123,7 @@ def test_sensitivity_ffa(
     for deriv in range(2, nparams + 1):
         idx = np_utils.find_nearest_sorted_idx(
             dyp.param_arr[-deriv],
-            signal_cfg.mod_kwargs[nparam_to_str[deriv]],
+            signal_cfg.mod_kwargs.get(nparam_to_str[deriv], 0.0),
         )
         true_params_idx.insert(0, idx)
     snr_dynamic = float(pgram.data[tuple(true_params_idx)].max())
@@ -152,14 +152,18 @@ def get_shifted_snr(
         freq_shifted = signal_cfg.freq + diff_params[-1]
         fold = tim_data.fold_ephem(
             freq_shifted,
-            signal_cfg.fold_bins,
+            search_cfg.nbins,
             mod_kwargs={
-                nparam_to_str[deriv]: signal_cfg.mod_kwargs[nparam_to_str[deriv]]
+                nparam_to_str[deriv]: signal_cfg.mod_kwargs.get(
+                    nparam_to_str[deriv],
+                    0.0,
+                )
                 + diff_params[-deriv]
                 for deriv in range(2, nparams + 1)
             },
+            mod_tref=signal_cfg.mod_tref,
         )
-        shift_snr.append(get_best_snr(fold, signal_cfg.ducy, search_cfg.wtsp))
+        shift_snr.append(get_best_snr(fold, search_cfg.ducy_max, search_cfg.wtsp))
     return np.max(shift_snr)
 
 
@@ -246,12 +250,14 @@ class TestFFASensitivity:
         self,
         cfg: PulseSignalConfig,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        phi0 = 0.5 + self.rng.uniform(-cfg.dt, cfg.dt)
+        phi0 = (0.5 + self.rng.uniform(-0.5, 0.5) * (cfg.dt / cfg.period)) % 1.0
         tim_data = cfg.generate(phi0=phi0)
         fold_perfect = tim_data.fold_ephem(
             cfg.freq,
             cfg.fold_bins_ideal,
+            mod_type=cfg.mod_type,
             mod_kwargs=cfg.mod_kwargs,
+            mod_tref=cfg.mod_tref,
         )
         losses_real = np.zeros((3, self.ntols), dtype=float)
         losses_complex = np.zeros((3, self.ntols), dtype=float)
@@ -262,15 +268,18 @@ class TestFFASensitivity:
             fold_ds = tim_data.fold_ephem(
                 cfg.freq,
                 nbins,
+                mod_type=cfg.mod_type,
                 mod_kwargs=cfg.mod_kwargs,
+                mod_tref=cfg.mod_tref,
             )
             losses_ds[ids] = get_best_snr(fold_ds, self.ducy_max, self.wtsp)
+        nbins_search = max(2, (cfg.fold_bins // 2) * 2)
         # Compute signal strength over different eta
         for itol in range(self.ntols):
             search_cfg_real = PulsarSearchConfig(
                 nsamps=cfg.nsamps,
                 tsamp=cfg.dt,
-                nbins=cfg.fold_bins,
+                nbins=nbins_search,
                 eta=self.eta_arr[itol],
                 param_limits=self.param_limits,
                 ducy_max=self.ducy_max,
@@ -287,7 +296,7 @@ class TestFFASensitivity:
             search_cfg_complex = PulsarSearchConfig(
                 nsamps=cfg.nsamps,
                 tsamp=cfg.dt,
-                nbins=cfg.fold_bins,
+                nbins=nbins_search,
                 eta=self.eta_arr[itol],
                 param_limits=self.param_limits,
                 ducy_max=self.ducy_max,

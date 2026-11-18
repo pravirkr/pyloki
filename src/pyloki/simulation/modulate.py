@@ -134,7 +134,10 @@ class CircularModulating(Modulating):
 
     def __attrs_post_init__(self) -> None:
         # x_orb = Projected orbital radius, a * sin(i) / c (in light-sec).
-        if self.x_orb is None and self.m_c is not None:
+        if self.x_orb is None:
+            if self.m_c is None:
+                msg = "Either x_orb or m_c must be provided."
+                raise ValueError(msg)
             a = 0.005 * ((self.m_p + self.m_c) * self.p_orb**2) ** (1 / 3)
             self.x_orb = a * (self.m_c / (self.m_p + self.m_c)) * self.sin_i
 
@@ -201,8 +204,7 @@ class CircularModulating(Modulating):
             d_arr[4] = C_VAL * x_sin_nu * omega**4
             d2 = d_arr[2]
             d3 = d_arr[3]
-            d4 = d_arr[4]
-            ratio = d4 / d2 if d2 != 0 else 0.0
+            ratio = -(omega**2)
             for k in range(5, n + 1):
                 if k % 2 == 0:
                     d_arr[k] = (ratio ** ((k - 2) // 2)) * d2
@@ -213,11 +215,21 @@ class CircularModulating(Modulating):
 
 @attrs.define(auto_attribs=True, kw_only=True)
 class CircularT0Modulating(Modulating):
-    """A circular modulating function with a reference epoch."""
+    """A circular modulating function with a reference epoch.
 
-    a: float  # projected semi-major axis (in seconds)
+    Parameters
+    ----------
+    a : float
+        Projected semi-major axis ``a * sin(i)`` (in meters).
+    p_orb : float
+        Orbital period (in seconds).
+    t0 : float
+        Reference orbital epoch where orbital phase is zero (in seconds).
+    """
+
+    a: float  # projected semi-major axis (in meters)
     p_orb: float  # orbital period (in seconds)
-    t0: float  # time of periastron or reference epoch (in seconds)
+    t0: float  # reference epoch (in seconds)
 
     def generate(self, t_arr: np.ndarray, t_ref: float = 0) -> np.ndarray:
         omega = 2 * np.pi / self.p_orb

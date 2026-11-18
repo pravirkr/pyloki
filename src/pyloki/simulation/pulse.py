@@ -453,7 +453,7 @@ class PulseSignalConfig:
         # Get first guess for signal scale
         tmpl_norm = folded_tmpl_vals_phys / np.sqrt(folded_noise_var_scaled)
         snr_template = np.max(boxcar_snr_1d(tmpl_norm, box_widths, 1))
-        initial_scale = (self.snr / snr_template) * noise_scale
+        initial_scale = float(self.snr / snr_template)
 
         calibrated_scale = calibrate_scale_on_folds(
             folded_noise_vals_scaled.astype(np.float32),
@@ -533,34 +533,46 @@ class PulseShape:
         self.width = width
         self.pos = pos
 
-        self._rv = self._set_rv()
+        self._rv, self._nalias = self._set_rv()
 
     @property
     def rv(self) -> stats.rv_continuous:
         return self._rv
 
-    def generate(self) -> np.ndarray:
-        phase_start = (self.proper_time % self.period) / self.period
-        phase_end = ((self.proper_time + self.dt) % self.period) / self.period
-        return np.where(
-            phase_end > phase_start,
-            self.rv.cdf(phase_end) - self.rv.cdf(phase_start),
-            0,
+    def _wrapped_cdf(self, phase: np.ndarray) -> np.ndarray:
+        shifts = np.arange(-self._nalias, self._nalias + 1, dtype=np.float64)
+        p_eval = np.concatenate(
+            [np.array([0.0, 1.0]), np.asarray(phase, dtype=np.float64)],
         )
+        gcdf = self._rv.cdf(p_eval[:, None] + shifts[None, :]).sum(axis=1)
+        norm = gcdf[1] - gcdf[0]
+        return (gcdf[2:] - gcdf[0]) / norm
 
-    def _set_rv(self) -> stats.rv_continuous:
+    def generate(self) -> np.ndarray:
+        u0 = self.proper_time / self.period
+        u1 = (self.proper_time + self.dt) / self.period
+        n0 = np.floor(u0)
+        n1 = np.floor(u1)
+        c0 = self._wrapped_cdf(u0 - n0)
+        c1 = self._wrapped_cdf(u1 - n1)
+        return np.maximum((n1 - n0) + (c1 - c0), 0.0)
+
+    def _set_rv(self) -> tuple[stats.rv_continuous, int]:
         if self.shape == "boxcar":
-            rv = stats.uniform(loc=self.pos, scale=self.width)
+            rv = stats.uniform(loc=self.pos - self.width / 2, scale=self.width)
+            nalias = 1
         elif self.shape == "gaussian":
             width = self.width / (2 * np.sqrt(2 * np.log(10)))
             rv = stats.norm(loc=self.pos, scale=width)
+            nalias = 4
         elif self.shape == "von_mises":
-            kappa = np.log(2.0) / (2.0 * np.sin(np.pi * self.width / 2.0) ** 2)
-            rv = stats.vonmises(loc=self.pos, kappa=kappa)
+            kappa = np.log(10.0) / (2.0 * np.sin(np.pi * self.width / 2.0) ** 2)
+            rv = stats.vonmises(loc=self.pos, kappa=kappa, scale=1.0 / (2.0 * np.pi))
+            nalias = 0
         else:
             msg = f"Unknown pulse shape: {self.shape}"
             raise ValueError(msg)
-        return rv
+        return rv, nalias
 
 
 def von_mises_pulse_shape(
@@ -570,7 +582,7 @@ def von_mises_pulse_shape(
     width: float,
     pos: float = 0.5,
 ) -> np.ndarray:
-    kappa = np.log(2.0) / (2.0 * np.sin(np.pi * width / 2.0) ** 2)
+    kappa = np.log(10.0) / (2.0 * np.sin(np.pi * width / 2.0) ** 2)
     phase_radians = (proper_time / period - pos) * (2 * np.pi)
     return np.exp(kappa * (np.cos(phase_radians) - 1.0))
 

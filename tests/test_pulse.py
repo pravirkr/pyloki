@@ -1,7 +1,14 @@
 import numpy as np
 import pytest
 
-from pyloki.simulation.pulse import build_cdf_lut, generate_pulse_template
+from pyloki.detection.scoring import boxcar_snr_1d
+from pyloki.simulation.pulse import (
+    PulseShape,
+    PulseSignalConfig,
+    build_cdf_lut,
+    generate_pulse_template,
+    von_mises_pulse_shape,
+)
 from tests.jit_utils import jit_variants
 
 SHAPES = ["boxcar", "gaussian", "von_mises"]
@@ -163,3 +170,61 @@ class TestGeneratePulseTemplate:
         proper_time = np.array([0.0, 1.0, 2.0])
         prof = generate_pulse_template(proper_time, period, period, cdf_lut)
         np.testing.assert_allclose(prof, np.ones(3), atol=FLUX_TOL)
+
+
+class TestGenerateInitialScale:
+    def test_generate_max_iter_zero_hits_target_snr(self) -> None:
+        """Initial scale alone (max_iter=0) already lands near target S/N."""
+        cfg = PulseSignalConfig(
+            period=0.01,
+            dt=1e-4,
+            nsamps=2**16,
+            snr=20.0,
+            ducy=0.1,
+            seed=7,
+        )
+        ts = cfg.generate(shape="gaussian", max_iter=0)
+        fold = ts.fold_ephem(cfg.freq, cfg.fold_bins_ideal)
+        widths = np.arange(1, cfg.fold_bins_ideal // 2)
+        measured_snr = float(boxcar_snr_1d(fold, widths, 1.0).max())
+        assert abs(measured_snr - 20.0) < 3.0
+
+
+class TestPulseShape:
+    @pytest.mark.parametrize("shape", SHAPES)
+    @pytest.mark.parametrize("phi0", [0.0, 0.25, 0.5, 0.95])
+    def test_matches_cdf_lut_template_and_preserves_flux(
+        self, shape: str, phi0: float
+    ) -> None:
+        nbins = 256
+        period = 1.0
+        dt = period / nbins
+        proper_time = np.arange(nbins) * dt
+        got = PulseShape(
+            proper_time, dt, period, shape=shape, width=DUCY, pos=phi0
+        ).generate()
+        lut = build_cdf_lut(shape, DUCY, phi0, ngrid=16384)
+        want = generate_pulse_template(proper_time, dt, period, lut)
+        np.testing.assert_allclose(got.sum(), 1.0, atol=1e-9)
+        np.testing.assert_allclose(got, want, atol=2e-4)
+
+    @pytest.mark.parametrize("shape", SHAPES)
+    def test_width_is_fwtm(self, shape: str) -> None:
+        nbins = 2048
+        dt = 1.0 / nbins
+        proper_time = np.arange(nbins) * dt
+        prof = PulseShape(
+            proper_time, dt, 1.0, shape=shape, width=DUCY, pos=0.5
+        ).generate()
+        above = np.flatnonzero(prof >= 0.1 * prof.max())
+        fwtm = (above[-1] - above[0] + 1) / nbins
+        np.testing.assert_allclose(fwtm, DUCY, atol=3.0 / nbins)
+
+
+def test_von_mises_pulse_shape_uses_fwtm_convention() -> None:
+    period, width, pos = 1.0, 0.1, 0.5
+    t = np.array(
+        [(pos - width / 2) * period, pos * period, (pos + width / 2) * period],
+    )
+    vals = von_mises_pulse_shape(t, 0.01, period, width, pos=pos)
+    np.testing.assert_allclose(vals, [0.1, 1.0, 0.1], rtol=1e-12)
