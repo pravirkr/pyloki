@@ -62,7 +62,7 @@ def poly_taylor_step_f(
     tobs: float,
     nbins: int,
     eta: float,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
     use_cheby: bool = True,
 ) -> np.ndarray:
     """Grid size for frequency and its derivatives {f_k, ..., f_0}.
@@ -102,7 +102,7 @@ def poly_taylor_step_d_f(
     nbins: int,
     eta: float,
     f_max: float,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
     use_cheby: bool = True,
 ) -> np.ndarray:
     """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion (scalar)."""
@@ -120,7 +120,7 @@ def poly_taylor_step_d(
     nbins: int,
     eta: float,
     f_max: float,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
     use_cheby: bool = True,
 ) -> np.ndarray:
     """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (scalar)."""
@@ -135,7 +135,7 @@ def poly_taylor_step_d_vec(
     nbins: int,
     eta: float,
     f_max: np.ndarray,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
     use_cheby: bool = True,
 ) -> np.ndarray:
     """Parameter grid for {d_k_max,... d_2, d_1} as per Taylor expansion (vector)."""
@@ -150,7 +150,7 @@ def poly_taylor_step_d_f_vec(
     nbins: int,
     eta: float,
     f_max: np.ndarray,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
     use_cheby: bool = True,
 ) -> np.ndarray:
     """Grid for parameters {d_k,... d_2, f} based on the Taylor expansion (vector)."""
@@ -168,7 +168,7 @@ def poly_taylor_shift_d_f_vec(
     tobs_new: float,
     nbins: int,
     f_cur: np.ndarray,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
     use_cheby: bool = True,
 ) -> np.ndarray:
     """Compute the bin shift for parameters {d_k,... d_2, f} (vector)."""
@@ -186,7 +186,7 @@ def poly_taylor_shift_d_f_vec(
     return np.abs(dparam_old - dparam_new) * factors_broadcast
 
 
-@njit
+@njit(cache=True)
 def split_f(
     df_old: float,
     df_new: float,
@@ -194,7 +194,7 @@ def split_f(
     k: int,
     nbins: float,
     eta: float,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
     use_cheby: bool = True,
 ) -> bool:
     """Check if a parameter {f_k} should be split."""
@@ -211,7 +211,7 @@ def poly_taylor_shift_d(
     tobs_new: float,
     nbins: int,
     f_cur: float,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
     use_cheby: bool = True,
 ) -> np.ndarray:
     """Bin shift for parameters {d_k_max,... d_2, d_1} (scalar)."""
@@ -231,7 +231,7 @@ def poly_taylor_shift_d_vec(
     tobs_new: float,
     nbins: int,
     f_cur: np.ndarray,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
     use_cheby: bool = True,
 ) -> np.ndarray:
     """Bin shift for parameters {d_k_max,... d_2, d_1} (vector)."""
@@ -248,7 +248,7 @@ def poly_taylor_shift_d_vec(
     return np.abs(dparam_old - dparam_new) * factors_broadcast
 
 
-@njit
+@njit(cache=True)
 def period_step(tobs: float, nbins: int, p_min: float, tol: float) -> float:
     m_cycle = tobs / p_min
     tsamp_min = p_min / nbins

@@ -503,7 +503,7 @@ class PulsarSearchConfig:
             Array with the step sizes in decreasing derivative order.
         """
         tseg_cur = 2**ffa_level * self.tseg_brute
-        t_ref = 0 if self.nparams == 1 else tseg_cur / 2
+        t_ref = 0.0 if self.nparams == 1 else tseg_cur / 2
         return psr_utils.poly_taylor_step_f(
             self.nparams,
             tseg_cur,
@@ -532,7 +532,7 @@ class PulsarSearchConfig:
             Array with the parameter step sizes.
         """
         tseg_cur = 2**ffa_level * self.tseg_brute
-        t_ref = 0 if self.nparams == 1 else tseg_cur / 2
+        t_ref = 0.0 if self.nparams == 1 else tseg_cur / 2
         return psr_utils.poly_taylor_step_d_f(
             self.nparams,
             tseg_cur,

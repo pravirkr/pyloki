@@ -118,7 +118,7 @@ def brutefold_start(
     segment_len: int,
     nbins: int,
     tsamp: float,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
 ) -> np.ndarray:
     """Fold a time series for a given set of frequencies.
 
@@ -184,7 +184,7 @@ def brutefold_bucketed(
     segment_len: int,
     nbins: int,
     tsamp: float,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
 ) -> np.ndarray:
     """Fold a time series for a given set of frequencies using bucketed folding.
 
@@ -289,7 +289,7 @@ def brutefold_start_complex(
     segment_len: int,
     nbins: int,
     tsamp: float,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
 ) -> np.ndarray:
     """Folds a time series directly into the Fourier domain using harmonic summing.
 
@@ -404,7 +404,7 @@ def brutefold_start_complex_opt(
     segment_len: int,
     nbins: int,
     tsamp: float,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
 ) -> np.ndarray:
     """Brute Force Folds a time series into the complex Fourier domain.
 
@@ -494,7 +494,7 @@ def brutefold_complex_oversampled(
     segment_len: int,
     nbins: int,
     tsamp: float,
-    t_ref: float = 0,
+    t_ref: float = 0.0,
     oversample_factor: int = 4,
 ) -> np.ndarray:
     nfreqs = len(freq_arr)
@@ -557,7 +557,7 @@ def ffa_taylor_init(
     """
     freq_arr = param_arr[-1]
     nparams = len(param_arr)
-    t_ref = 0 if nparams == 1 else bseg_brute * tsamp / 2
+    t_ref = 0.0 if nparams == 1 else bseg_brute * tsamp / 2
     return brutefold_start(
         ts_e,
         ts_v,
@@ -602,7 +602,7 @@ def ffa_taylor_init_complex(
     """
     freq_arr = param_arr[-1]
     nparams = len(param_arr)
-    t_ref = 0 if nparams == 1 else bseg_brute * tsamp / 2
+    t_ref = 0.0 if nparams == 1 else bseg_brute * tsamp / 2
     return brutefold_start_complex_opt(
         ts_e,
         ts_v,

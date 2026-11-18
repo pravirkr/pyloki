@@ -310,8 +310,9 @@ class TestFFASensitivity:
     def _save(self, outpath: Path) -> str:
         outfile = outpath / f"pyloki_ffa_sensitivity_{self.file_id}.h5"
         with h5py.File(outfile, "w") as f:
-            for attr in ["period", "ds", "nsamps", "nbins_ideal", "dt", "snr"]:
+            for attr in ["period", "ds", "nsamps", "dt", "snr"]:
                 f.attrs[attr] = getattr(self.cfg, attr)
+            f.attrs["nbins_ideal"] = self.cfg.fold_bins_ideal
             for arr in [
                 "ducy_arr",
                 "eta_arr",

@@ -412,9 +412,9 @@ class TestBranch:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return the expected (params, steps, origins), in the kernel's order."""
         f0 = leaves[:, -1, 0]
-        dnew = psr_utils.poly_taylor_step_d_vec(5, span, NBINS, 1.0, f0, t_ref=0)
+        dnew = psr_utils.poly_taylor_step_d_vec(5, span, NBINS, 1.0, f0, t_ref=0.0)
         shift = psr_utils.poly_taylor_shift_d_vec(
-            leaves[:, :5, 1], dnew, span, NBINS, f0, t_ref=0
+            leaves[:, :5, 1], dnew, span, NBINS, f0, t_ref=0.0
         )
         needs = shift >= 1.0 - 1e-12
         first = []  # (params, steps, origin)
@@ -465,7 +465,7 @@ class TestBranch:
         leaves = np.concatenate([_snap_leaf(), _hole_leaf(), _taylor_leaf(2e3)])
         f0 = leaves[:, -1, 0]
         dnew = psr_utils.poly_taylor_step_d_vec(
-            5, self.COORD[1], NBINS, 1.0, f0, t_ref=0
+            5, self.COORD[1], NBINS, 1.0, f0, t_ref=0.0
         )
         # Coarse steps on crackle, jerk and velocity so that the leaves branch; the
         # hole leaf keeps a fine jerk step so its jerk stays significant (it is then
@@ -486,7 +486,7 @@ class TestBranch:
         leaves = np.concatenate([_snap_leaf(), _taylor_leaf(2e3)])
         f0 = leaves[:, -1, 0]
         dnew = psr_utils.poly_taylor_step_d_vec(
-            5, self.COORD[1], NBINS, 1.0, f0, t_ref=0
+            5, self.COORD[1], NBINS, 1.0, f0, t_ref=0.0
         )
         leaves[:, :5, 1] = dnew * np.array([0.5, 0.5, 2.4, 0.5, 2.2])
         out, origins = impl(leaves, self.COORD, NBINS, 1.0, 5, 64, SIG)
@@ -602,7 +602,7 @@ class TestBranchingPattern:
         for level in range(1, nsegments):
             _, span = scheme.get_current_coord(level, moving)
             new = psr_utils.poly_taylor_step_d_vec(
-                5, span, nbins, eta, np.array([f0]), t_ref=0
+                5, span, nbins, eta, np.array([f0]), t_ref=0.0
             )[0]
             shift = psr_utils.poly_taylor_shift_d_vec(
                 cur[None],
@@ -610,7 +610,7 @@ class TestBranchingPattern:
                 span,
                 nbins,
                 np.array([f0]),
-                t_ref=0,
+                t_ref=0.0,
             )[0]
             factor, snap_split = 1.0, False
             nxt = cur.copy()

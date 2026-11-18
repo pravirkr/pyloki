@@ -223,7 +223,10 @@ class TestCartesianProd:
         """
         ref = np_utils.cartesian_prod(arrays)
         np.testing.assert_array_equal(np_utils.cartesian_prod_np(arrays), ref)
-        np.testing.assert_array_equal(np_utils.cartesian_prod_st(arrays), ref)
+        cart_st = np_utils.cartesian_prod_st(arrays)
+        np.testing.assert_array_equal(cart_st, ref)
+        # One layout for every arity: an F-ordered result recompiles its consumers.
+        assert cart_st.flags.c_contiguous
 
 
 class TestCartesianProdPadded:

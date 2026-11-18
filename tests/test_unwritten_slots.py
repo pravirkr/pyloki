@@ -434,7 +434,7 @@ def _branch_input(*, expand_crackle: bool) -> np.ndarray:
     leaves = _circular_leaves() if expand_crackle else _circular_leaves()[[0, 2]]
     factors = [3.3, 2.1, 2.4, 0.5, 2.2] if expand_crackle else [0.5, 0.5, 2.4, 0.5, 2.2]
     dnew = psr_utils.poly_taylor_step_d_vec(
-        5, 12.0, NBINS, 1.0, leaves[:, -1, 0], t_ref=0
+        5, 12.0, NBINS, 1.0, leaves[:, -1, 0], t_ref=0.0
     )
     leaves[:, :5, 1] = dnew * np.array(factors)
     if expand_crackle:

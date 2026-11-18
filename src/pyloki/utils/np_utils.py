@@ -106,7 +106,7 @@ def np_apply_along_axis(func1d: Callable, axis: int, arr: np.ndarray) -> np.ndar
     return result
 
 
-@njit(fastmath=True)
+@njit(cache=True, fastmath=True)
 def nb_max(array: np.ndarray, axis: int) -> np.ndarray:
     return np_apply_along_axis(np.max, axis, array)
 
@@ -245,13 +245,17 @@ def cartesian_prod_np(arr_list: list[np.ndarray]) -> np.ndarray:
 
 
 def cartesian_prod_st(arr_list: list[np.ndarray]) -> np.ndarray:
-    """Twice as fast as cartesian_prod_np."""
+    """Twice as fast as cartesian_prod_np.
+
+    Returns a C-contiguous (n_combinations, n_arrays) array, so Numba kernels
+    compile one layout regardless of how many arrays are combined.
+    """
     la = len(arr_list)
     dtype = np.result_type(*arr_list)
     cart = np.empty([la] + [len(arr) for arr in arr_list], dtype=dtype)
     for iarr, arr in enumerate(np.ix_(*arr_list)):
         cart[iarr, ...] = arr
-    return cart.reshape(la, -1).T
+    return np.ascontiguousarray(cart.reshape(la, -1).T)
 
 
 @njit(cache=True, fastmath=True)

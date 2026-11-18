@@ -260,7 +260,7 @@ def circ_taylor_branch_batch(
         nbins,
         eta,
         f0_batch,
-        t_ref=0,
+        t_ref=0.0,
     )
     shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
         dparam_cur_batch,
@@ -268,7 +268,7 @@ def circ_taylor_branch_batch(
         t_obs_minus_t_ref,
         nbins,
         f0_batch,
-        t_ref=0,
+        t_ref=0.0,
     )
 
     # Vectorized Padded Branching ( All params except crackle)
@@ -851,7 +851,7 @@ def generate_bp_circ_taylor(
             nbins,
             eta,
             f0_batch,
-            t_ref=0,
+            t_ref=0.0,
             use_cheby=use_cheby_coarsening,
         )
         shift_bins_batch = psr_utils.poly_taylor_shift_d_vec(
@@ -860,7 +860,7 @@ def generate_bp_circ_taylor(
             t_obs_minus_t_ref,
             nbins,
             f0_batch,
-            t_ref=0,
+            t_ref=0.0,
             use_cheby=use_cheby_coarsening,
         )
 

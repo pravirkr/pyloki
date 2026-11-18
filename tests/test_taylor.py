@@ -252,7 +252,7 @@ class TestBranch:
             NBINS,
             1.0,
             leaves[:, -1, 0],
-            t_ref=0,
+            t_ref=0.0,
         )
         leaves[:, :3, 1] = dnew * np.array([2.5, 3.2, 0.9])
         return leaves
@@ -263,14 +263,14 @@ class TestBranch:
         out, origins = impl(leaves, self.COORD, NBINS, 1.0, 3, 64)
         _, span = self.COORD
         f0 = leaves[:, -1, 0]
-        dnew = psr_utils.poly_taylor_step_d_vec(3, span, NBINS, 1.0, f0, t_ref=0)
+        dnew = psr_utils.poly_taylor_step_d_vec(3, span, NBINS, 1.0, f0, t_ref=0.0)
         shift = psr_utils.poly_taylor_shift_d_vec(
             leaves[:, :3, 1],
             dnew,
             span,
             NBINS,
             f0,
-            t_ref=0,
+            t_ref=0.0,
         )
         # Both the branching and the pass-through path are exercised.
         assert (shift[:, :2] >= 1).all()
