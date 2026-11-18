@@ -23,6 +23,7 @@ import pytest
 from pyloki.io.cands import (
     PruneStats,
     PruneStatsCollection,
+    extract_ref_seg,
     merge_prune_result_files,
 )
 from pyloki.periodogram import PruningStatsPlotter
@@ -217,3 +218,44 @@ def test_merge_without_a_list_globs_in_ref_seg_order(tmp_path, merge_targets) ->
     assert log.read_text() == "Pruning log\nlog 0\nlog 3\nlog 7\nlog 12\n"
     assert _merged(result) == {"dup": 0}  # the lowest ref_seg was merged first
     assert not list(tmp_path.glob("tmp_*"))
+
+
+def test_zero_leaf_and_zero_timer_summaries() -> None:
+    empty_stats = PruneStats(
+        level=1,
+        seg_idx=0,
+        threshold=2.0,
+        threshold_eff=2.0,
+        n_branches=0,
+        n_leaves=0,
+        n_leaves_phy=0,
+        n_leaves_surv=0,
+    )
+    assert empty_stats.lb_leaves == 0.0
+    assert empty_stats.lb_leaves_phys == 0.0
+    assert "inf" not in empty_stats.get_summary().lower()
+
+    coll = PruneStatsCollection()
+    assert coll.get_stats_summary() == "Score: 0.00, Leaves: 0.00"
+    coll.update_stats(empty_stats)
+    timer_summary = coll.get_timer_summary()
+    assert "Timing breakdown: 0.00s" in timer_summary
+
+
+def test_extract_ref_seg_and_merge_prefixed_temporaries(
+    tmp_path: Path, merge_targets: tuple[Path, Path]
+) -> None:
+    assert extract_ref_seg(tmp_path / "tmp_003_01_log.txt") == 3
+    assert extract_ref_seg(tmp_path / "tmp_mine_nstages_8_012_01_results.h5") == 12
+    assert extract_ref_seg(tmp_path / "tmp_foo_1024_12_log.txt") == 1024
+
+    log, result = merge_targets
+    for ref_seg in (12, 3):
+        h5 = tmp_path / f"tmp_mine_pruning_nstages_16_{ref_seg:03d}_01_results.h5"
+        lg = tmp_path / f"tmp_mine_pruning_nstages_16_{ref_seg:03d}_01_log.txt"
+        lg.write_text(f"log {ref_seg}\n")
+        with h5py.File(h5, "w") as f:
+            f.create_group("runs").create_group("dup")["value"] = ref_seg
+    merge_prune_result_files(tmp_path, log, result)
+    assert log.read_text() == "Pruning log\nlog 3\nlog 12\n"
+    assert _merged(result) == {"dup": 3}

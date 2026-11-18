@@ -64,10 +64,14 @@ class PruneStats:
 
     @property
     def lb_leaves(self) -> float:
+        if self.n_leaves <= 0:
+            return 0.0
         return np.round(np.log2(self.n_leaves), 2)
 
     @property
     def lb_leaves_phys(self) -> float:
+        if self.n_leaves_phy <= 0:
+            return 0.0
         return np.round(np.log2(self.n_leaves_phy), 2)
 
     @property
@@ -162,6 +166,8 @@ class PruneStatsCollection:
 
     def get_stats_summary(self) -> str:
         """Get formatted stats summaries for final level."""
+        if not self.stats_list:
+            return "Score: 0.00, Leaves: 0.00"
         return (
             f"Score: {self.stats_list[-1].score_max:.2f}, "
             f"Leaves: {self.stats_list[-1].lb_leaves:.2f}"
@@ -171,7 +177,8 @@ class PruneStatsCollection:
         """Get formatted timer summary for final level."""
         total_time = sum(self.timers.values())
         timer_percent = {
-            name: (time / total_time) * 100 for name, time in self.timers.items()
+            name: (time / total_time) * 100 if total_time > 0 else 0.0
+            for name, time in self.timers.items()
         }
         lines = [f"Timing breakdown: {total_time:.2f}s"]
         lines.extend(
@@ -374,8 +381,11 @@ class PruneResultWriter:
 
 
 def extract_ref_seg(file_path: Path) -> int:
-    # Extracts the ref_seg from the filename, e.g., tmp_003_01_log.txt -> 3
-    match = re.search(r"tmp_(\d{3})_\d{2}_(log\.txt|results\.h5)", file_path.name)
+    # Extracts ref_seg from e.g. tmp_003_01_log.txt or tmp_base_003_01_results.h5
+    match = re.search(
+        r"^tmp_(?:.+_)?(\d+)_\d+_(?:log\.txt|results\.h5)$",
+        file_path.name,
+    )
     if match:
         return int(match.group(1))
     return 0
