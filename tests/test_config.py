@@ -88,6 +88,23 @@ class TestPulsarSearchConfigValidation:
             param_limits=np.array([[99, 101]], dtype=dtype),
         )
         assert cfg.nparams == 1
+        # Numba bundles declare param_limits as f8[:, ::1]; anything else
+        # would pass here and fail later inside FFA/pruning setup.
+        assert cfg.param_limits.dtype == np.float64
+        assert cfg.param_limits.flags.c_contiguous
+
+    def test_non_contiguous_param_limits_are_made_contiguous(self) -> None:
+        limits = np.asfortranarray([[-5.0, 5.0], [99.0, 101.0]])
+        assert not limits.flags.c_contiguous
+        cfg = PulsarSearchConfig(
+            nsamps=1024,
+            tsamp=1e-3,
+            nbins=16,
+            eta=1.0,
+            param_limits=limits,
+        )
+        assert cfg.param_limits.flags.c_contiguous
+        np.testing.assert_array_equal(cfg.param_limits, limits)
 
     def test_rejects_invalid_param_limits_shapes_and_values(self) -> None:
         common_kw = {"nsamps": 1024, "tsamp": 1e-3, "nbins": 16, "eta": 1.0}

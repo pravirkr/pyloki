@@ -454,10 +454,6 @@ def generate_bp_poly_chebyshev_approx(
                 tiling_strategy,
             )
         leaf = leaves_arr[0:1]  # shape: (1, total_size)
-    # Check if any branches is truncated due to branch_max
-    if np.any(branching_pattern >= branch_max):
-        msg = "Branching pattern is truncated due to branch_max. Increase branch_max."
-        raise ValueError(msg)
     return branching_pattern
 
 

@@ -77,7 +77,7 @@ class TimeSeries:
         if mod_tref is None:
             mod_tref = self.tobs / 2
         mod_func = type_to_mods[mod_type](**mod_kwargs)
-        proper_time = mod_func.generate(np.arange(0, self.tobs, self.dt), mod_tref)
+        proper_time = mod_func.generate(np.arange(self.nsamps) * self.dt, mod_tref)
         fold = brutefold(
             self.ts_e,
             self.ts_v,

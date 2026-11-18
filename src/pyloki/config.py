@@ -34,6 +34,24 @@ def _is_power_of_two(
         raise ValueError(msg)
 
 
+def _param_limits_converter(value: np.ndarray) -> np.ndarray:
+    """Store numeric ``param_limits`` as C-contiguous float64.
+
+    The Numba bundles declare ``param_limits`` as ``f8[:, ::1]``, so integer,
+    float32 or non-contiguous inputs would otherwise pass validation and fail
+    later inside FFA/pruning setup. Anything else is passed through unchanged
+    so the validator reports it.
+    """
+    if (
+        isinstance(value, np.ndarray)
+        and value.dtype != np.bool_
+        and np.issubdtype(value.dtype, np.number)
+        and not np.issubdtype(value.dtype, np.complexfloating)
+    ):
+        return np.ascontiguousarray(value, dtype=np.float64)
+    return value
+
+
 def _param_limits_validator(
     instance: PulsarSearchConfig,
     attribute: attrs.Attribute,
@@ -389,6 +407,7 @@ class PulsarSearchConfig:
     )
     eta: float = attrs.field(validator=attrs.validators.gt(0))
     param_limits: np.ndarray = attrs.field(
+        converter=_param_limits_converter,
         validator=_param_limits_validator,
     )
     ducy_max: float = attrs.field(default=0.2, validator=attrs.validators.gt(0.0))

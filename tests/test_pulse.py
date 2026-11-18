@@ -228,3 +228,11 @@ def test_von_mises_pulse_shape_uses_fwtm_convention() -> None:
     )
     vals = von_mises_pulse_shape(t, 0.01, period, width, pos=pos)
     np.testing.assert_allclose(vals, [0.1, 1.0, 0.1], rtol=1e-12)
+
+
+def test_proper_time_length_matches_nsamps() -> None:
+    # np.arange(0, nsamps * dt, dt) returns nsamps + 1 points for some
+    # (nsamps, dt) through float rounding; proper_time must match nsamps.
+    for nsamps, dt in [(1006, 3e-3), (3018, 1e-3)]:
+        cfg = PulseSignalConfig(period=0.1, dt=dt, nsamps=nsamps)
+        assert len(cfg.proper_time) == nsamps

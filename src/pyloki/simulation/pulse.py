@@ -256,7 +256,7 @@ class PulseSignalConfig:
     def proper_time(self) -> np.ndarray:
         """Proper time array."""
         mod_tref = self.mod_tref if self.mod_tref is not None else self.tobs / 2
-        return self.mod_func.generate(np.arange(0, self.tobs, self.dt), mod_tref)
+        return self.mod_func.generate(np.arange(self.nsamps) * self.dt, mod_tref)
 
     def get_updated(self, update_dict: dict) -> PulseSignalConfig:
         new = attrs.asdict(self, filter=attrs.filters.exclude("_mod_func", "_rng"))

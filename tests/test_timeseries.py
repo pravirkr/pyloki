@@ -64,6 +64,21 @@ class TestTimeSeriesDownsample:
             ts.downsample(12)
 
 
+@pytest.mark.parametrize(("nsamps", "dt"), [(1006, 3e-3), (3018, 1e-3), (1000, 1e-3)])
+def test_fold_ephem_time_grid_matches_nsamps(nsamps: int, dt: float) -> None:
+    # np.arange(0, nsamps * dt, dt) can return nsamps + 1 points through float
+    # rounding (e.g. nsamps=1006, dt=3e-3), which made brutefold reject the
+    # series as a length mismatch.
+    ts = TimeSeries(np.zeros(nsamps, np.float32), np.ones(nsamps, np.float32), dt)
+    assert ts.fold_ephem(freq=10.0, nbins=16).shape == (16,)
+
+
+def test_downsampled_series_folds() -> None:
+    x = np.random.default_rng(0).standard_normal(3018).astype(np.float32)
+    ds = TimeSeries(x, np.ones_like(x), 1e-3).downsample(3)
+    assert ds.fold_ephem(freq=10.0, nbins=32).shape == (32,)
+
+
 def test_fold_ephem_period_longer_than_tobs_message() -> None:
     ts = TimeSeries(np.zeros(100, np.float32), np.ones(100, np.float32), 0.1)
     with pytest.raises(ValueError, match="greater than the total data length"):
