@@ -13,6 +13,8 @@
 All three share one FFA run over eight segments, so the prune kernels compile once.
 """
 
+from pathlib import Path
+
 import h5py
 import numpy as np
 import pytest
@@ -20,6 +22,7 @@ import pytest
 from pyloki.config import ParamLimits, PulsarSearchConfig
 from pyloki.ffa import DynamicProgramming
 from pyloki.io.cands import PruneResultWriter
+from pyloki.io.timeseries import TimeSeries
 from pyloki.prune import Pruning, prune_dyp_tree, sliding_arc_windows
 from pyloki.simulation.pulse import PulseSignalConfig
 from pyloki.utils.np_utils import determine_ref_segs_pareto
@@ -217,3 +220,101 @@ def test_trace_ep_hypothesis_and_resolve_stability(search: DynamicProgramming) -
     assert report.is_stable
     assert report.max_param_idx_diff <= 1
     assert report.max_phase_shift_diff <= 1.0
+
+
+@pytest.mark.parametrize("poly_basis", ["taylor", "chebyshev"])
+@pytest.mark.parametrize("use_moving_grid", [True, False])
+def test_trace_ep_hypothesis_and_stability_bases_and_backtrack(
+    search: DynamicProgramming,
+    poly_basis: str,
+    use_moving_grid: bool,
+    tmp_path: Path,
+) -> None:
+    """Trace & stability checks on Taylor, Chebyshev, moving grid & Pruning."""
+    from pyloki.prune import trace_ep_hypothesis, verify_resolve_stability  # noqa: PLC0415
+
+    dyp = search
+    freq = 1.0 / 0.007
+    param_vec = np.array([6.0, 500.0, freq], dtype=np.float64)
+    ref_seg = dyp.nsegments // 2
+
+    trace = trace_ep_hypothesis(
+        dyp,
+        param_vec,
+        ref_seg=ref_seg,
+        poly_basis=poly_basis,
+        use_moving_grid=use_moving_grid,
+    )
+    assert np.all(np.isfinite(trace.scores))
+    assert float(trace.scores[-1]) > float(trace.scores[0])
+
+    report = verify_resolve_stability(
+        dyp,
+        param_vec,
+        ref_seg=ref_seg,
+        poly_basis=poly_basis,
+        use_moving_grid=use_moving_grid,
+    )
+    assert report.is_stable
+    assert report.max_param_idx_diff <= 1
+    assert report.max_phase_shift_diff <= 1.0
+
+    # Also test verify_resolve_stability against a real Pruning run's backtracked path
+    if poly_basis == "taylor" and use_moving_grid:
+        prn = Pruning(
+            dyp=dyp,
+            threshold_scheme=_thresholds(dyp),
+            poly_basis=poly_basis,
+            use_moving_grid=use_moving_grid,
+        )
+        prn.execute(ref_seg=ref_seg, outdir=tmp_path)
+        assert prn.world_tree.valid_size > 0
+        best_idx = int(np.argmax(prn.world_tree.scores[: prn.world_tree.valid_size]))
+        bt_report = verify_resolve_stability(
+            dyp,
+            param_vec,
+            poly_basis=poly_basis,
+            use_moving_grid=use_moving_grid,
+            prn=prn,
+            survivor_idx=best_idx,
+            max_grid_step_tol=3,
+            max_phase_tol=3.0,
+        )
+        assert bt_report.param_idx_diffs.size == dyp.nsegments
+
+
+def test_trace_ep_hypothesis_circular_crackle() -> None:
+    """trace_ep_hypothesis supports prune_poly_order=5 (circ-crackle)."""
+    from pyloki.prune import trace_ep_hypothesis, verify_resolve_stability  # noqa: PLC0415
+
+    rng = np.random.default_rng(5)
+    n = 2**12
+    ts = TimeSeries(rng.standard_normal(n), np.ones(n), 1e-3)
+    cfg = PulsarSearchConfig(
+        nsamps=n,
+        tsamp=1e-3,
+        nbins=16,
+        eta=1.0,
+        param_limits=np.array(
+            [
+                [-1e-4, 1e-4],
+                [-1e-2, 1e-2],
+                [-1.0, 1.0],
+                [-50.0, 50.0],
+                [19.9, 20.1],
+            ],
+        ),
+        bseg_brute=2**9,
+        bseg_ffa=2**10,
+        prune_poly_order=5,
+        p_orb_min=100.0,
+    )
+    dyp = DynamicProgramming(ts, cfg)
+    dyp.initialize()
+    dyp.execute(show_progress=False)
+    param_vec = np.array([0.0, 0.0, 0.0, 0.0, 20.0], dtype=np.float64)
+    trace = trace_ep_hypothesis(dyp, param_vec, ref_seg=0, poly_basis="taylor")
+    assert trace.final_leaf.shape == (7, 2)
+    assert np.all(np.isfinite(trace.scores))
+    report = verify_resolve_stability(dyp, param_vec, ref_seg=0, poly_basis="taylor")
+    assert report.is_stable

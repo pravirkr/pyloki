@@ -252,4 +252,8 @@ def test_waterfall_lab_state_shifts_and_renders() -> None:
     rendered_snr, _ = state.render(fig)
     assert rendered_snr == snr_corrected
     assert len(fig.axes) == 2
+    # Overlay is shifted by slider shifts and breaks across wraps with NaN
+    overlay_line = fig.axes[1].lines[0]
+    x_data = np.asarray(overlay_line.get_xdata(), dtype=np.float64)
+    assert np.any(np.isnan(x_data)) or np.all(np.abs(np.diff(x_data)) <= 0.5)
     plt.close(fig)

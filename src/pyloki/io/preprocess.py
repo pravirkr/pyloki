@@ -646,8 +646,11 @@ def apply_dm0_rfi_mask(
         )
         raise ValueError(msg)
 
+    combined_mask = v <= 0.0
     if rfi_mask.mask_t.size > 0:
-        e[rfi_mask.mask_t] = 0.0
+        combined_mask[rfi_mask.mask_t] = True
+    if np.any(combined_mask):
+        e[combined_mask] = 0.0
     if rfi_mask.mask_f.size > 0:
         spec = np.fft.rfft(e)
         if zap_mode == "zero":
@@ -665,8 +668,8 @@ def apply_dm0_rfi_mask(
                 spec[-1] = math.sqrt(2.0) * sigma_f * rng.standard_normal()
         e = np.fft.irfft(spec, n=e.size)
 
-    if rfi_mask.mask_t.size > 0:
-        e[rfi_mask.mask_t] = 0.0
-        v[rfi_mask.mask_t] = 0.0
+    if np.any(combined_mask):
+        e[combined_mask] = 0.0
+        v[combined_mask] = 0.0
 
     return e.astype(np.float32), v.astype(np.float32)

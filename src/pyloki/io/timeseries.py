@@ -363,10 +363,16 @@ class TimeSeries:
             raise ValueError(msg)
 
         if start_sample > 0 or stop_sample < total_nsamps:
-            tim_load = sigTimeSeries(
-                tim_load.data[start_sample:stop_sample],
-                header,
+            sliced_data = np.asarray(tim_load.data[start_sample:stop_sample])
+            new_hdr_kwargs: dict[str, int | float] = {"nsamples": int(sliced_data.size)}
+            if metadata.start_mjd is not None:
+                new_hdr_kwargs["tstart"] = metadata.start_mjd
+            sliced_header = (
+                header.new_header(new_hdr_kwargs)
+                if hasattr(header, "new_header")
+                else header
             )
+            tim_load = sigTimeSeries(sliced_data, sliced_header)
         tim_load = tim_load.deredden(method="median", window=filter_window, fast=True)
         tim_load = tim_load.normalise(loc_method="mean", scale_method=norm_scale_method)  # ty:ignore[invalid-argument-type]
         signal = tim_load.data
@@ -443,10 +449,21 @@ def fold_subbands(
     nsamps : int | None, optional
         Number of time samples to read when ``source`` is a file.
     """
+    if start_sample < 0:
+        msg = f"start_sample must be >= 0, got {start_sample}"
+        raise ValueError(msg)
+    if nsamps is not None and nsamps <= 0:
+        msg = f"nsamps must be > 0, got {nsamps}"
+        raise ValueError(msg)
+
+    t_offset = 0.0
     if isinstance(source, (str, Path)):
         reader = FilReader(str(source))
         hdr = reader.header
         total = int(hdr.nsamples)
+        if start_sample >= total:
+            msg = f"start_sample ({start_sample}) exceeds total nsamples ({total})"
+            raise ValueError(msg)
         count = (
             total - start_sample
             if nsamps is None
@@ -456,6 +473,7 @@ def fold_subbands(
         data = np.ascontiguousarray(block.data, dtype=np.float32)
         dt = float(hdr.tsamp)
         freqs = np.asarray(hdr.chan_freqs, dtype=np.float64)
+        t_offset = float(start_sample) * dt
     else:
         data = np.ascontiguousarray(source, dtype=np.float32)
         if data.ndim != 2:
@@ -494,7 +512,7 @@ def fold_subbands(
     delays_s = K_DM_CONST * float(dm) * (freqs**-2 - nu_ref**-2)
     delay_samps = np.rint(delays_s / dt).astype(np.int64)
 
-    times = np.arange(n_samp, dtype=np.float64) * dt
+    times = t_offset + np.arange(n_samp, dtype=np.float64) * dt
     phases = np.mod(np.asarray(phase_func(times), dtype=np.float64), 1.0)
     sample_bins = np.floor(phases * n_bins).astype(np.int64) % n_bins
 

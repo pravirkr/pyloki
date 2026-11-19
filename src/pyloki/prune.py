@@ -1037,15 +1037,16 @@ def _build_single_leaf(
     dyp: DynamicProgramming,
     param_vec: np.ndarray,
     poly_basis: str,
+    coord_init: tuple[float, float],
 ) -> np.ndarray:
     """Build a ``(1, n_slots, 2)`` initial leaf at ``coord_init`` from ``param_vec``.
 
-    Follows the Taylor leaf convention:
-    ``leaf[0, :-3, 0]`` holds ``[..., jerk, accel]``,
-    ``leaf[0, -3, 0] = 0`` (velocity offset),
-    ``leaf[0, -2, 0] = 0`` (delay offset),
-    ``leaf[0, -1, 0] = f0`` (reference spin frequency).
+    Follows the Taylor leaf convention for ``poly_basis == "taylor"`` (including
+    ``prune_poly_order == 5`` circular-Taylor, which also uses ``n_order + 2``
+    slots) and converts to Chebyshev coefficients via ``taylor_to_cheby_full``
+    when ``poly_basis == "chebyshev"``.
     """
+    from pyloki.utils import transforms  # noqa: PLC0415
     from pyloki.utils.misc import C_VAL  # noqa: PLC0415
 
     p = np.asarray(param_vec, dtype=np.float64).ravel()
@@ -1056,7 +1057,7 @@ def _build_single_leaf(
             f"got {p.size}"
         )
         raise ValueError(msg)
-    n_slots = n_order + 3 if poly_basis == "circular" else n_order + 2
+    n_slots = n_order + 2
     leaf = np.zeros((1, n_slots, 2), dtype=np.float64)
     dparams = np.asarray(
         dyp.cfg.get_dparams(dyp.cfg.niters_ffa),
@@ -1078,6 +1079,10 @@ def _build_single_leaf(
     leaf[0, -2, 0] = 0.0
     leaf[0, -1, 0] = f0
     leaf[0, -1, 1] = 0.0
+
+    if poly_basis == "chebyshev":
+        _, scale_init = coord_init
+        leaf[:, :-1] = transforms.taylor_to_cheby_full(leaf[:, :-1], scale_init)
     return leaf
 
 
@@ -1087,7 +1092,7 @@ def trace_ep_hypothesis(
     *,
     ref_seg: int = 0,
     poly_basis: str = "taylor",
-    use_moving_grid: bool = False,
+    use_moving_grid: bool = True,
 ) -> HypothesisTrace:
     """Trace a single EP hypothesis forward across all segments without branching.
 
@@ -1095,6 +1100,8 @@ def trace_ep_hypothesis(
     chain from ``ref_seg`` through every segment of ``dyp`` and records per-level
     S/N, resolved grid indices, and phase shifts for debugging signal loss.
     """
+    from pyloki.utils import transforms  # noqa: PLC0415
+
     prn = Pruning(
         dyp=dyp,
         threshold_scheme=np.zeros(dyp.nsegments, dtype=np.float32),
@@ -1108,7 +1115,7 @@ def trace_ep_hypothesis(
         stride=1,
     )
     coord_init = scheme.get_coord(0)
-    cur_leaf = _build_single_leaf(dyp, param_vec, poly_basis)
+    cur_leaf = _build_single_leaf(dyp, param_vec, poly_basis, coord_init)
 
     # Seed fold from the initial reference segment
     init_pidx, _ = prn.prune_funcs.resolve(cur_leaf, coord_init, coord_init, coord_init)
@@ -1131,9 +1138,19 @@ def trace_ep_hypothesis(
     orig = np.array([0], dtype=np.int64)
     for lvl in range(1, n_levels):
         seg_idx = scheme.get_segment_idx(lvl)
+        coord_prev = scheme.get_previous_coord(lvl, use_moving_grid)
         coord_cur = scheme.get_current_coord(lvl, use_moving_grid)
         coord_next = scheme.get_coord(lvl)
         coord_add = scheme.get_segment_coord(lvl)
+
+        if poly_basis == "chebyshev" and coord_cur != coord_prev:
+            cur_leaf = cur_leaf.copy()
+            cur_leaf[:, :-1] = transforms.shift_cheby_full(
+                cur_leaf[:, :-1],
+                coord_cur,
+                coord_prev,
+                dyp.cfg.tiling_strategy,
+            )
 
         pidx, pshift = prn.prune_funcs.resolve(
             cur_leaf, coord_add, coord_cur, coord_init
@@ -1168,53 +1185,70 @@ def verify_resolve_stability(
     *,
     ref_seg: int = 0,
     poly_basis: str = "taylor",
-    use_moving_grid: bool = False,
+    use_moving_grid: bool = True,
     max_grid_step_tol: int = 1,
     max_phase_tol: float = 1.0,
+    prn: Pruning | None = None,
+    survivor_idx: int = 0,
 ) -> ResolveStabilityReport:
     """Verify chained-transform EP resolution stays within ``<= 1`` grid step of direct.
 
     Compares the discrete ``(param_idx, phase_shift)`` resolved after chaining
-    ``transform`` through every EP tree level against direct resolution from the
-    untransformed initial leaf at ``coord_init``.
+    ``transform`` through every EP tree level (or from a completed ``Pruning``
+    run's backtracked integration path when ``prn`` is supplied) against direct
+    resolution from the untransformed initial leaf at ``coord_init``.
     """
-    trace = trace_ep_hypothesis(
-        dyp,
-        param_vec,
-        ref_seg=ref_seg,
-        poly_basis=poly_basis,
-        use_moving_grid=use_moving_grid,
-    )
-    prn = Pruning(
+    prn_ref = Pruning(
         dyp=dyp,
         threshold_scheme=np.zeros(dyp.nsegments, dtype=np.float32),
         poly_basis=poly_basis,
         use_moving_grid=use_moving_grid,
     )
-    scheme = MiddleOutScheme(
-        nsegments=dyp.nsegments,
-        ref_idx=ref_seg,
-        tsegment=dyp.tseg,
-        stride=1,
-    )
-    coord_init = scheme.get_coord(0)
-    leaf_init = _build_single_leaf(dyp, param_vec, poly_basis)
+    if prn is not None:
+        ref_seg = prn.scheme.ref_idx
+        scheme = prn.scheme
+        bt_steps = prn.trace_integration_path(survivor_idx)
+        n_levels = len(bt_steps) + 1
+        traced_pidx = np.zeros((n_levels, len(bt_steps[0].param_idx)), dtype=np.int64)
+        traced_pshift = np.zeros(n_levels, dtype=np.float64)
+        for step in bt_steps:
+            traced_pidx[step.level] = step.param_idx
+            traced_pshift[step.level] = float(step.phase_shift)
+    else:
+        trace = trace_ep_hypothesis(
+            dyp,
+            param_vec,
+            ref_seg=ref_seg,
+            poly_basis=poly_basis,
+            use_moving_grid=use_moving_grid,
+        )
+        scheme = MiddleOutScheme(
+            nsegments=dyp.nsegments,
+            ref_idx=ref_seg,
+            tsegment=dyp.tseg,
+            stride=1,
+        )
+        n_levels = dyp.nsegments
+        traced_pidx = trace.param_indices
+        traced_pshift = trace.phase_shifts
 
-    n_levels = dyp.nsegments
+    coord_init = scheme.get_coord(0)
+    leaf_init = _build_single_leaf(dyp, param_vec, poly_basis, coord_init)
+
     nbins = float(dyp.cfg.nbins)
     pidx_diffs = np.zeros(n_levels, dtype=np.int64)
     pshift_diffs = np.zeros(n_levels, dtype=np.float64)
 
     for lvl in range(1, n_levels):
         coord_add = scheme.get_segment_coord(lvl)
-        ref_pidx, ref_pshift = prn.prune_funcs.resolve(
+        ref_pidx, ref_pshift = prn_ref.prune_funcs.resolve(
             leaf_init,
             coord_add,
             coord_init,
             coord_init,
         )
-        pidx_diffs[lvl] = int(np.max(np.abs(trace.param_indices[lvl] - ref_pidx[0])))
-        raw_dp = abs(float(trace.phase_shifts[lvl]) - float(ref_pshift[0])) % nbins
+        pidx_diffs[lvl] = int(np.max(np.abs(traced_pidx[lvl] - ref_pidx[0])))
+        raw_dp = abs(float(traced_pshift[lvl]) - float(ref_pshift[0])) % nbins
         pshift_diffs[lvl] = min(raw_dp, nbins - raw_dp)
 
     max_pidx = int(np.max(pidx_diffs))

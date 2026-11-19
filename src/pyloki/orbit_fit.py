@@ -712,17 +712,33 @@ def fit_keplerian_periods_winsorized(
         starts.append(u0)
 
     best_res: optimize.OptimizeResult | None = None
+    simplex_steps = np.array([0.05, 0.02, 0.05, 0.05, 0.1, 0.1], dtype=np.float64)
     for s in starts:
+        init_simplex = np.vstack([s, s + np.diag(simplex_steps)])
         opt = optimize.minimize(
             _objective,
             s,
             method="Nelder-Mead",
-            options={"maxiter": 6000, "xatol": 1e-9, "fatol": 1e-14},
+            options={
+                "initial_simplex": init_simplex,
+                "maxiter": 6000,
+                "xatol": 1e-9,
+                "fatol": 1e-14,
+            },
         )
         if best_res is None or float(opt.fun) < float(best_res.fun):
             best_res = opt
 
     assert best_res is not None  # noqa: S101
+    # Polish with Powell + tight Nelder-Mead to escape adaptive MAD kinks
+    polish_powell = optimize.minimize(
+        _objective,
+        np.asarray(best_res.x, dtype=np.float64),
+        method="Powell",
+        options={"maxiter": 2000, "xtol": 1e-9, "ftol": 1e-14},
+    )
+    if float(polish_powell.fun) < float(best_res.fun):
+        best_res = polish_powell
     p_best = _unpack(np.asarray(best_res.x, dtype=np.float64))
     p_best[4] %= 2.0 * math.pi
     p_best[5] %= 2.0 * math.pi
@@ -752,6 +768,7 @@ def fit_keplerian_multistart(
     fit_mask: npt.NDArray[np.bool_] | None = None,
     n_restarts: int = 5,
     seed: int | None = None,
+    f0_ref: float | None = None,
 ) -> KeplerianFitResult:
     r"""Multi-start exact Keplerian phase-delay polisher.
 
@@ -824,8 +841,12 @@ def fit_keplerian_multistart(
         cand[0] *= 1.0 + rng.normal(0.0, 0.02)
         cand[1] = max(1e-6, cand[1] * (1.0 + rng.normal(0.0, 0.05)))
         cand[2] = float(np.clip(cand[2] + rng.normal(0.0, 0.05), 0.0, 0.95))
-        cand[3] = float(rng.uniform(0.0, 2.0 * math.pi))
-        cand[4] = float((cand[4] + rng.normal(0.0, 0.25)) % (2.0 * math.pi))
+        delta_aop = float(rng.uniform(0.0, 2.0 * math.pi))
+        cand[3] = float((cand[3] + delta_aop) % (2.0 * math.pi))
+        # Preserve circular phase anchor (phi + aop) when randomizing aop
+        cand[4] = float(
+            (cand[4] - delta_aop + rng.normal(0.0, 0.25)) % (2.0 * math.pi),
+        )
         starts.append(cand)
 
     best_res: optimize.OptimizeResult | None = None
@@ -845,9 +866,10 @@ def fit_keplerian_multistart(
     p_best[4] %= 2.0 * math.pi
     residuals, slope = _residuals(p_best)
     rms = math.sqrt(float(np.mean(residuals * residuals)))
+    f0_est = float(f0_ref) * (1.0 - slope) if f0_ref is not None else float("nan")
 
     return KeplerianFitResult(
-        f0=-slope,
+        f0=f0_est,
         p_orb=float(p_best[0]),
         x_orb=float(p_best[1]),
         ecc=float(p_best[2]),

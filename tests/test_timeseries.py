@@ -500,3 +500,126 @@ class TestSubbandFolding:
         assert res.spectrum.shape == (8,)
         assert float(np.max(res.integrated_profile)) > 10.0
         assert np.all(res.spectrum > 2.0)
+
+
+def test_apply_dm0_rfi_mask_preserves_preexisting_zero_variance_holes() -> None:
+    """Ensure irfft birdie zapping does not leak into pre-existing v == 0 samples."""
+    from pyloki.io.preprocess import DM0RfiMask, apply_dm0_rfi_mask  # noqa: PLC0415
+
+    rng = np.random.default_rng(12)
+    n = 1024
+    ts_e = rng.standard_normal(n).astype(np.float32)
+    ts_v = np.ones(n, dtype=np.float32)
+    # Pre-existing target-DM masked hole outside DM=0 mask_t
+    hole = slice(100, 140)
+    ts_e[hole] = 0.0
+    ts_v[hole] = 0.0
+
+    rfi_mask = DM0RfiMask(
+        mask_t=np.array([10, 11, 12], dtype=np.int64),
+        mask_f=np.array([50, 100, 150], dtype=np.int64),
+        nsamps=n,
+        dt=1e-3,
+    )
+    out_e, out_v = apply_dm0_rfi_mask(ts_e, ts_v, rfi_mask, zap_mode="noise", seed=7)
+    assert np.all(out_e[hole] == 0.0)
+    assert np.all(out_v[hole] == 0.0)
+    assert np.all(out_e[rfi_mask.mask_t] == 0.0)
+    assert np.all(out_v[rfi_mask.mask_t] == 0.0)
+
+
+def test_from_tim_zscore_slice_updates_real_sigpyproc_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sliced TimeSeries.from_tim(..., 'zscore') must update header.nsamples."""
+    from sigpyproc.header import Header  # noqa: PLC0415
+    from sigpyproc.timeseries import TimeSeries as SigTS  # noqa: PLC0415
+
+    rng = np.random.default_rng(21)
+    n_total = 4096
+    dt = 1e-3
+    data = rng.standard_normal(n_total).astype(np.float32)
+    hdr = Header(
+        filename="fake.dat",
+        data_type="timeseries",
+        nchans=1,
+        foff=-1.0,
+        fch1=1500.0,
+        nbits=32,
+        tsamp=dt,
+        tstart=60000.0,
+        nsamples=n_total,
+        dm=25.0,
+    )
+    real_sig = SigTS(data, hdr)
+    monkeypatch.setattr(SigTS, "from_dat", staticmethod(lambda _path: real_sig))
+
+    ts_zs = TimeSeries.from_tim(
+        "fake.dat",
+        start_sample=512,
+        nsamps=1024,
+        preprocess_method="zscore",
+    )
+    assert ts_zs.nsamps == 1024
+    assert ts_zs.metadata is not None
+    assert ts_zs.metadata.start_mjd == pytest.approx(60000.0 + 512 * dt / 86400.0)
+
+
+def test_fold_subbands_fil_start_sample_time_offset_and_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """.fil fold_subbands must shift times by start_sample*dt and validate."""
+    from pyloki.io.timeseries import fold_subbands  # noqa: PLC0415
+
+    n_chan, n_total = 4, 2048
+    dt = 1e-3
+    freqs = np.linspace(1500.0, 1400.0, n_chan, dtype=np.float64)
+    f0 = 10.0
+    times_full = np.arange(n_total, dtype=np.float64) * dt
+    # Pulse at phase 0.25 (time-locked to full observation t)
+    phase_full = np.mod(f0 * times_full, 1.0)
+    full_data = np.where(np.abs(phase_full - 0.25) < 0.05, 5.0, 0.0).astype(np.float32)
+    full_block = np.tile(full_data[None, :], (n_chan, 1))
+
+    class _FakeBlock:
+        def __init__(self, arr: np.ndarray) -> None:
+            self.data = arr
+
+    class _FakeFilHdr:
+        nsamples = n_total
+        tsamp = dt
+        chan_freqs = freqs
+
+    class _FakeFilReader:
+        header = _FakeFilHdr()
+
+        def __init__(self, _path: str) -> None:
+            pass
+
+        def read_block(self, start: int, nsamp: int) -> _FakeBlock:
+            return _FakeBlock(full_block[:, start : start + nsamp])
+
+    monkeypatch.setattr("pyloki.io.timeseries.FilReader", _FakeFilReader)
+
+    # Non-integer-period start_sample=50 (0.05s = 0.5 cycles at f0=10Hz)
+    res = fold_subbands(
+        "fake.fil",
+        dm=0.0,
+        phase_func=lambda t: f0 * t,
+        n_subbands=2,
+        n_bins=16,
+        start_sample=50,
+        nsamps=1000,
+    )
+    # Peak bin must stay at phase 0.25 -> bin 4 (not shifted to bin 12!)
+    peak_bin = int(np.argmax(res.integrated_profile))
+    assert peak_bin == 4
+
+    with pytest.raises(ValueError, match="start_sample"):
+        fold_subbands("fake.fil", dm=0.0, phase_func=lambda t: f0 * t, start_sample=-1)
+    with pytest.raises(ValueError, match="start_sample"):
+        fold_subbands(
+            "fake.fil", dm=0.0, phase_func=lambda t: f0 * t, start_sample=n_total
+        )
+    with pytest.raises(ValueError, match="nsamps"):
+        fold_subbands("fake.fil", dm=0.0, phase_func=lambda t: f0 * t, nsamps=0)

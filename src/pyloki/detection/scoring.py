@@ -400,6 +400,23 @@ def snr_glrt_score_batch_func(
     return scores
 
 
+@njit("f4[::1](f4[:], f4[:])", cache=True, fastmath=True)
+def _standardize_ev_1d(
+    ts_e: npt.NDArray[np.float32],
+    ts_v: npt.NDArray[np.float32],
+) -> npt.NDArray[np.float32]:
+    """Standardize ``ts_e / sqrt(ts_v)`` safely, zeroing bins with ``ts_v <= 0``."""
+    n = ts_e.size
+    out = np.empty(n, dtype=np.float32)
+    for i in range(n):
+        v = ts_v[i]
+        if v > np.float32(0.0):
+            out[i] = ts_e[i] / np.sqrt(v)
+        else:
+            out[i] = np.float32(0.0)
+    return out
+
+
 @njit("f4(f4[:, ::1], i8[::1])", cache=True, fastmath=True)
 def snr_score_func(
     combined_res: npt.NDArray[np.float32],
@@ -407,7 +424,7 @@ def snr_score_func(
 ) -> float:
     """Compute the SNR score for a folded suggestion."""
     ts_e, ts_v = combined_res
-    fold = ts_e / np.sqrt(ts_v)
+    fold = _standardize_ev_1d(ts_e, ts_v)
     return float(np.max(boxcar_snr_1d(fold, widths, 1.0)))
 
 
@@ -440,7 +457,11 @@ def snr_score_batch_func(
         ts_e = combined_res_batch[i, 0, :]
         ts_v = combined_res_batch[i, 1, :]
         for j in range(nbins):
-            fold_norm[j] = ts_e[j] / np.sqrt(ts_v[j])
+            v = ts_v[j]
+            if v > np.float32(0.0):
+                fold_norm[j] = ts_e[j] / np.sqrt(v)
+            else:
+                fold_norm[j] = np.float32(0.0)
         # Compute prefix sum
         circular_prefix_sum(fold_norm, prefix_sum)
         total_sum = prefix_sum[nbins - 1]
@@ -863,7 +884,7 @@ def harmonic_summing_score_func(combined_res: np.ndarray, n_harmonics: int) -> f
     is subtracted across the harmonic cutoffs.
     """
     ts_e, ts_v = combined_res
-    fold = ts_e / np.sqrt(ts_v)
+    fold = _standardize_ev_1d(ts_e, ts_v)
     nbins = len(fold)
     max_h = min(n_harmonics, (nbins - 1) // 2, 32)
     if max_h < 1:
@@ -1415,17 +1436,18 @@ def markov_hmm_posterior_on(
         alpha0[i] = _logaddexp(alpha0[i - 1] + log_t00, alpha1[i - 1] + log_t10)
         alpha1[i] = _logaddexp(alpha0[i - 1] + log_t01, alpha1[i - 1] + log_t11) + llr_i
 
-    log_z = _logaddexp(alpha0[n - 1], alpha1[n - 1])
+    log_z_last = _logaddexp(alpha0[n - 1], alpha1[n - 1])
     b0 = 0.0
     b1 = 0.0
-    post[n - 1] = math.exp(alpha1[n - 1] - log_z)
+    post[n - 1] = math.exp(alpha1[n - 1] - log_z_last)
     for i in range(n - 2, -1, -1):
         llr_next = amp * float(z_arr[i + 1]) - half_a2
         nb0 = _logaddexp(log_t00 + b0, log_t01 + llr_next + b1)
         nb1 = _logaddexp(log_t10 + b0, log_t11 + llr_next + b1)
         b0 = nb0
         b1 = nb1
-        post[i] = math.exp(alpha1[i] + b1 - log_z)
+        log_z_i = _logaddexp(alpha0[i] + b0, alpha1[i] + b1)
+        post[i] = math.exp(alpha1[i] + b1 - log_z_i)
     return post
 
 

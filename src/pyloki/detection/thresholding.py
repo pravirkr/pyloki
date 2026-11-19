@@ -1199,6 +1199,7 @@ class DynamicThresholdScheme:
                 continue
             cur = self.states[0, ithres, iprob]
             if cur["threshold"] < 0 or rank_cost < float(cur["cost"]):
+                cur["is_empty"] = False
                 cur["success_h0"] = h0_rate
                 cur["success_h1"] = pd_c
                 cur["complexity"] = nleaves_surv
@@ -1304,6 +1305,7 @@ class DynamicThresholdScheme:
                         continue
                     cur = self.states[istage, ithres, iprob]
                     if cur["threshold"] < 0 or rank_cost < float(cur["cost"]):
+                        cur["is_empty"] = False
                         cur["success_h0"] = h0_rate
                         cur["success_h1"] = pd_c / max(prev_pd, 1e-12)
                         cur["complexity"] = nleaves_surv

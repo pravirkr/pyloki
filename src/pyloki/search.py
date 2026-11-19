@@ -77,6 +77,8 @@ class EPSearchResult:
     best_score: float
     best_fold: npt.NDArray[np.float32]
     pre_ascend_score: float
+    t_ref: float = 0.0
+    arc_slice: tuple[int, int] | None = None
 
 
 @attrs.frozen(auto_attribs=True, kw_only=True)
@@ -188,6 +190,8 @@ def ep_search(
         best_fold = np.empty((2, search_cfg.nbins), dtype=np.float32)
         best_seg = segs[0]
         best_prn: Pruning | None = None
+        t_arc_offset = float(arc_slice[0]) * dyp.tseg if arc_slice is not None else 0.0
+        best_t_ref = t_arc_offset + 0.5 * dyp_run.nsegments * dyp_run.tseg
         all_names = ("crackle", "snap", "jerk", "accel", "freq")
 
         with tempfile.TemporaryDirectory(prefix="pyloki_ep_") as tmpdir:
@@ -247,6 +251,7 @@ def ep_search(
                     best_fold = fold_t
                     best_seg = seg
                     best_prn = prn
+                    best_t_ref = t_arc_offset + float(coord_report[0])
                 if stop_snr is not None and best_score >= stop_snr:
                     break
 
@@ -264,6 +269,8 @@ def ep_search(
         best_score=best_score,
         best_fold=best_fold,
         pre_ascend_score=best_pre_ascend,
+        t_ref=best_t_ref,
+        arc_slice=arc_slice,
     )
 
 
@@ -435,7 +442,7 @@ def measure_snr_retention(
             ep_res.best_params[np.newaxis, :],
             search_cfg.nbins,
             param_names=ep_res.param_names,
-            mod_tref=tref,
+            mod_tref=ep_res.t_ref,
             widths=search_cfg.score_widths,
             score_mode=score_mode,
         )

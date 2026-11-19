@@ -1,8 +1,9 @@
+from . import epicyclic, svd_kepler
 from .chebyshev import (
     generate_bp_poly_chebyshev,
     generate_bp_poly_chebyshev_approx,
 )
-from .circular import generate_bp_circ_taylor
+from .circular import cir_physical_branch_batch, generate_bp_circ_taylor
 from .common import set_ffa_load_func, set_prune_load_func
 from .fold import brutefold, brutefold_single
 from .taylor import (
@@ -13,6 +14,8 @@ from .taylor import (
 __all__ = [
     "brutefold",
     "brutefold_single",
+    "cir_physical_branch_batch",
+    "epicyclic",
     "generate_bp_circ_taylor",
     "generate_bp_poly_chebyshev",
     "generate_bp_poly_chebyshev_approx",
@@ -20,4 +23,5 @@ __all__ = [
     "generate_bp_poly_taylor_approx",
     "set_ffa_load_func",
     "set_prune_load_func",
+    "svd_kepler",
 ]

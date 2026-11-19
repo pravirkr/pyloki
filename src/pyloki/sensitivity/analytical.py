@@ -90,9 +90,10 @@ def profile_fourier_powers(
         return np.zeros(n_harmonics, dtype=np.float64)
     arr = arr / norm
     fft_c = np.fft.rfft(arr) / float(arr.size)
-    max_avail = min(n_harmonics, fft_c.size - 1)
+    max_avail = min(n_harmonics, (arr.size - 1) // 2)
     powers = np.zeros(n_harmonics, dtype=np.float64)
-    powers[:max_avail] = 2.0 * (np.abs(fft_c[1 : max_avail + 1]) ** 2)
+    if max_avail > 0:
+        powers[:max_avail] = 2.0 * (np.abs(fft_c[1 : max_avail + 1]) ** 2)
     return powers
 
 
@@ -186,8 +187,10 @@ def z2m_statistic(
     if n < 2:
         return 0.0
     fft_c = np.fft.rfft(arr)
-    max_k = min(m, fft_c.size - 1)
-    # Normalization: E[|X_k|^2] = (n / 2) * noise_var for k != 0, n/2
+    max_k = min(m, (n - 1) // 2)
+    if max_k < 1:
+        return 0.0
+    # Normalization: E[|X_k|^2] = (n / 2) * noise_var for 1 <= k <= (n - 1) // 2
     power = (2.0 / (float(n) * noise_var)) * np.sum(np.abs(fft_c[1 : max_k + 1]) ** 2)
     return float(power)
 
@@ -208,7 +211,7 @@ def h_test_statistic(
     if n < 2 or m_max < 1:
         return 0.0, 1
     fft_c = np.fft.rfft(arr)
-    eff_m = min(m_max, fft_c.size - 1)
+    eff_m = min(m_max, (n - 1) // 2)
     if eff_m < 1:
         return 0.0, 1
     harm_p = (2.0 / (float(n) * noise_var)) * (np.abs(fft_c[1 : eff_m + 1]) ** 2)
@@ -248,22 +251,25 @@ def compare_ffa_vs_fft_flux_ratio(
     snr_min_ffa = max(0.0, (z_fap - z_det) / max(eta_bin * rho_ep, 1e-12))
 
     # FFT minimum ideal S/N via root finding on ncx2.sf(thresh, 2*N_h, nc) = target_pdet
-    lo, hi = 0.0, max(10.0, snr_min_ffa * 2.0)
-    while fft_detection_prob(hi, hp, fap, scalloping=scalloping) < target_pdet:
-        hi *= 2.0
-        if hi > 1e6:
-            break
-    snr_min_fft = float(
-        optimize.brentq(
-            lambda s: (
-                fft_detection_prob(float(s), hp, fap, scalloping=scalloping)
-                - target_pdet
+    if target_pdet <= fap:
+        snr_min_fft = 0.0
+    else:
+        lo, hi = 0.0, max(10.0, snr_min_ffa * 2.0)
+        while fft_detection_prob(hi, hp, fap, scalloping=scalloping) < target_pdet:
+            hi *= 2.0
+            if hi > 1e6:
+                break
+        snr_min_fft = float(
+            optimize.brentq(
+                lambda s: (
+                    fft_detection_prob(float(s), hp, fap, scalloping=scalloping)
+                    - target_pdet
+                ),
+                lo,
+                hi,
+                xtol=1e-9,
             ),
-            lo,
-            hi,
-            xtol=1e-9,
-        ),
-    )
+        )
     ratio = snr_min_ffa / max(snr_min_fft, 1e-12)
     return SensitivityComparisonResult(
         duty_cycle=duty_cycle,

@@ -376,6 +376,12 @@ class DynamicProgramming:
         )
         n_iters = self.cfg.niters_ffa
         if n_iters == 0:
+            if self.nsegments != 1:
+                msg = (
+                    f"execute_scored requires a single final segment (nsegments=1), "
+                    f"got nsegments={self.nsegments}"
+                )
+                raise ValueError(msg)
             fold_t = (
                 np.fft.irfft(self.fold, n=self.cfg.nbins).astype(np.float32)
                 if self.cfg.use_fourier
@@ -395,12 +401,19 @@ class DynamicProgramming:
         ):
             self._execute_iter()
 
+        if self.nsegments != 2:
+            msg = (
+                "execute_scored requires nsegments == 2 before the final FFA merge "
+                f"(so final output has 1 segment), got nsegments={self.nsegments}"
+            )
+            raise ValueError(msg)
+
         final_level = self._ffa_level + 1
         dparams = self.cfg.get_dparams(final_level)
         param_arr_cur = self.cfg.get_param_arr(dparams)
         param_cart_cur = np_utils.cartesian_prod_st(param_arr_cur)
         n_total = len(param_cart_cur)
-        n_seg_out = self.nsegments // 2
+        n_seg_out = 1
 
         hit_indices_list: list[npt.NDArray[np.int64]] = []
         hit_scores_list: list[npt.NDArray[np.float32]] = []
@@ -433,6 +446,15 @@ class DynamicProgramming:
             if local_hits.size > 0:
                 hit_indices_list.append((local_hits + i0).astype(np.int64))
                 hit_scores_list.append(scores[local_hits].astype(np.float32))
+
+        # Advance internal FFA grid metadata to final_level so returned hit_idx
+        # aligns with self.param_arr / self.param_grid_count / self.dparams.
+        self._ffa_level = final_level
+        self._param_arr = param_arr_cur
+        self._param_grid_count = self.cfg.get_param_grid_count(final_level)
+        self._dparams = dparams
+        self._dparams_actual = self.cfg.get_dparams_actual(final_level)
+        self._tseg *= 2
 
         if not hit_indices_list:
             return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float32)

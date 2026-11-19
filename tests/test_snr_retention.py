@@ -113,3 +113,57 @@ def test_ep_search_and_refold_candidates_with_arc_slice() -> None:
     )
     assert empty_snrs.size == 0
     assert empty_profs.shape == (0, 2, search_cfg.nbins)
+
+
+def test_ep_search_asymmetric_arc_slice_preserves_t_ref() -> None:
+    """Asymmetric arc_slice exposes t_ref so refold stays coherent."""
+    nsamps = 2**15
+    dt = 1e-3
+    tobs = nsamps * dt
+    true_freq = 1.0 / 0.015
+    true_accel = -45.0
+    sig = PulseSignalConfig(
+        period=1.0 / true_freq,
+        dt=dt,
+        nsamps=nsamps,
+        snr=30.0,
+        ducy=0.1,
+        mod_type="derivative",
+        mod_kwargs={"acc": true_accel},
+        seed=99,
+    )
+    tseries = sig.generate(shape="gaussian")
+    search_cfg = PulsarSearchConfig(
+        nsamps=nsamps,
+        tsamp=dt,
+        nbins=32,
+        eta=1.0,
+        param_limits=np.array([[-80.0, 80.0], [true_freq - 0.15, true_freq + 0.15]]),
+        bseg_brute=2**10,
+        bseg_ffa=2**12,
+        use_fourier=False,
+    )
+    res = ep_search(
+        tseries,
+        search_cfg,
+        n_runs=1,
+        ref_segs=[2],
+        arc_slice=(0, 4),
+        poly_basis="taylor",
+        use_moving_grid=True,
+        snr_final=8.0,
+        seed=11,
+        quiet=True,
+    )
+    assert res.arc_slice == (0, 4)
+    # First 4 of 8 segments -> midpoint is tobs / 4 (not tobs / 2)
+    assert res.t_ref == pytest.approx(0.25 * tobs, rel=1e-6)
+    snrs_good, _ = refold_candidates(
+        tseries,
+        res.best_params[np.newaxis, :],
+        search_cfg.nbins,
+        param_names=res.param_names,
+        mod_tref=res.t_ref,
+        widths=search_cfg.score_widths,
+    )
+    assert float(snrs_good[0]) > 15.0

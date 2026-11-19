@@ -1959,6 +1959,130 @@ def build_phase_model(
     raise ValueError(msg)
 
 
+def _evaluate_phase_and_derivatives(
+    model: PhaseModelKind,
+    params: Sequence[float] | None,
+    t: np.ndarray,
+    *,
+    t_ref: float = 0.0,
+    t_span: tuple[float, float] | None = None,
+    phase_func: Callable[[np.ndarray], np.ndarray] | None = None,
+    dt_seg: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Evaluate ``(phase, freq_hz, f1_hz_s)`` analytically for built-in models."""
+    t_arr = np.asarray(t, dtype=np.float64)
+
+    if model == "callable":
+        if phase_func is None:
+            msg = "phase_func must be provided when model='callable'"
+            raise ValueError(msg)
+        phi_0 = np.asarray(phase_func(t_arr), dtype=np.float64)
+        # Use a larger step than 1e-4 to avoid float64 cancellation on large total phase
+        h = min(0.25 * dt_seg, max(1e-2, 1e-2 * dt_seg))
+        phi_p = np.asarray(phase_func(t_arr + h), dtype=np.float64)
+        phi_m = np.asarray(phase_func(t_arr - h), dtype=np.float64)
+        freq_hz = (phi_p - phi_m) / (2.0 * h)
+        # Center around linear carrier to reduce catastrophic cancellation
+        dp_p = (phi_p - phi_0) - freq_hz * h
+        dp_m = (phi_m - phi_0) + freq_hz * h
+        f1_hz_s = (dp_p + dp_m) / (h * h)
+        return phi_0, freq_hz, f1_hz_s
+
+    if params is None:
+        msg = f"params must be provided for model={model!r}"
+        raise ValueError(msg)
+    p = np.asarray(params, dtype=np.float64)
+
+    if model == "taylor":
+        f0 = float(p[-1])
+        kin = p[:-1][::-1]  # [accel, jerk, snap, crackle, ...]
+        dt = t_arr - t_ref
+        phi = f0 * dt
+        freq = np.full_like(dt, f0)
+        f1 = np.zeros_like(dt)
+        for order_idx, a_k in enumerate(kin, start=1):
+            coeff = f0 * float(a_k) / C_VAL
+            phi = phi - (coeff / math.factorial(order_idx + 1)) * (
+                dt ** (order_idx + 1)
+            )
+            freq = freq - (coeff / math.factorial(order_idx)) * (dt**order_idx)
+            f1 = f1 - (coeff / math.factorial(order_idx - 1)) * (dt ** (order_idx - 1))
+        return phi, freq, f1
+
+    if model == "chebyshev":
+        if t_span is None or t_span[1] <= t_span[0]:
+            msg = (
+                "t_span=(t_start, t_end) with t_end > t_start is required "
+                "for model='chebyshev'"
+            )
+            raise ValueError(msg)
+        t_lo, t_hi = t_span
+        half_span = 0.5 * (t_hi - t_lo)
+        mid = 0.5 * (t_lo + t_hi)
+        int_coeffs = np_cheb.chebint(p) * half_span
+        u_ref = (t_ref - mid) / half_span
+        phi_ref = float(np_cheb.chebval(u_ref, int_coeffs))
+        u = (t_arr - mid) / half_span
+        phi = np_cheb.chebval(u, int_coeffs) - phi_ref
+        freq = np_cheb.chebval(u, p)
+        f1_coeffs = np_cheb.chebder(p) / half_span
+        f1 = np_cheb.chebval(u, f1_coeffs)
+        return (
+            np.asarray(phi, dtype=np.float64),
+            np.asarray(freq, dtype=np.float64),
+            np.asarray(f1, dtype=np.float64),
+        )
+
+    if model == "circular":
+        if p.size != 4:
+            msg = "circular params must be [omega, freq, x_sin_phi, x_cos_phi]"
+            raise ValueError(msg)
+        omega, f0, x_sin_phi, x_cos_phi = (float(v) for v in p)
+        dt = t_arr - t_ref
+        sin_wt = np.sin(omega * dt)
+        cos_wt = np.cos(omega * dt)
+        z_c = x_cos_phi * sin_wt + x_sin_phi * cos_wt
+        dz_dt = omega * (x_cos_phi * cos_wt - x_sin_phi * sin_wt)
+        d2z_dt2 = -(omega * omega) * z_c
+        phi = f0 * (dt - (z_c - x_sin_phi))
+        freq = f0 * (1.0 - dz_dt)
+        f1 = -f0 * d2z_dt2
+        return phi, freq, f1
+
+    if model == "keplerian":
+        if p.size != 6:
+            msg = "keplerian params must be [f0, p_orb, x_orb, ecc, aop, phi]"
+            raise ValueError(msg)
+        f0, p_orb, x_orb, ecc, aop, phi0 = (float(v) for v in p)
+        z_ref = float(
+            kepler.keplerian_z(
+                np.array([t_ref], dtype=np.float64),
+                p_orb,
+                ecc,
+                phi0,
+                x_orb,
+                aop,
+                0.5 * math.pi,
+            )[0],
+        )
+        z_sec, dz_dt, d2z_dt2 = kepler.keplerian_z_derivatives_exact(
+            t_arr,
+            p_orb,
+            ecc,
+            phi0,
+            x_orb,
+            aop,
+            0.5 * math.pi,
+        )
+        phi = f0 * ((t_arr - t_ref) - (z_sec - z_ref))
+        freq = f0 * (1.0 - dz_dt)
+        f1 = -f0 * d2z_dt2
+        return phi, freq, f1
+
+    msg = f"Unsupported phase model: {model!r}"
+    raise ValueError(msg)
+
+
 def export_segment_ephemeris(
     output: str | Path,
     *,
@@ -1980,22 +2104,17 @@ def export_segment_ephemeris(
     if n_segments < 1 or t_end <= t_start:
         msg = "n_segments must be >= 1 and t_end > t_start"
         raise ValueError(msg)
-    phi_fn = build_phase_model(
+    dt_seg = (t_end - t_start) / n_segments
+    t_mid = t_start + (np.arange(n_segments, dtype=np.float64) + 0.5) * dt_seg
+    phi_0, freq_hz, f1_hz_s = _evaluate_phase_and_derivatives(
         model,
         params,
+        t_mid,
         t_ref=t_ref,
         t_span=(t_start, t_end),
         phase_func=phase_func,
+        dt_seg=dt_seg,
     )
-    dt_seg = (t_end - t_start) / n_segments
-    t_mid = t_start + (np.arange(n_segments, dtype=np.float64) + 0.5) * dt_seg
-    eps = max(1e-4, 1e-4 * dt_seg)
-
-    phi_0 = phi_fn(t_mid)
-    phi_p = phi_fn(t_mid + eps)
-    phi_m = phi_fn(t_mid - eps)
-    freq_hz = (phi_p - phi_m) / (2.0 * eps)
-    f1_hz_s = (phi_p - 2.0 * phi_0 + phi_m) / (eps * eps)
 
     rows: list[dict[str, float]] = []
     for i in range(n_segments):
@@ -2092,9 +2211,9 @@ def export_tempo2_predictor(
     """Export an arbitrary-order candidate trajectory as a TEMPO2 ``t2pred.dat`` file.
 
     Automatically subdivides ``[mjd_start, mjd_end]`` into Chebyshev time blocks
-    (``ncoeff <= 15`` per block, TEMPO2 Clenshaw convention with ``c_0 = 2 * a_0``)
-    until the maximum phase error across every block is below ``max_phase_err``
-    cycles (default ``1e-4``).
+    (``ncoeff <= 15`` per block, TEMPO2 ``Cheby2D`` convention with
+    ``c_0 = 4 * a_0`` and ``c_k = 2 * a_k`` for ``k >= 1``) until the maximum
+    phase error across every block is below ``max_phase_err`` cycles (default ``1e-4``).
     """
     if mjd_end <= mjd_start:
         msg = "mjd_end must be greater than mjd_start"
@@ -2128,10 +2247,11 @@ def export_tempo2_predictor(
     blocks.sort(key=lambda b: b[0])
     out = Path(output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"ChebyModelSet {len(blocks)}"]
+    lines = [f"ChebyModelSet {len(blocks)} segments"]
     for lo, hi, coeffs, _ in blocks:
-        # TEMPO2 Cheby2D uses phi(x) = 0.5 * c_0 + sum_{k>=1} c_k T_k(x)
-        t2_coeffs = coeffs.copy()
+        # TEMPO2 Cheby2D_Evaluate applies 0.5 along BOTH frequency (NCOEFF_FREQ=1)
+        # and time (k=0), so phi(u) = 0.25*c_0 + 0.5*sum_{k>=1} c_k*T_k(u).
+        t2_coeffs = coeffs * 2.0
         t2_coeffs[0] *= 2.0
         lines.extend(
             [
@@ -2174,8 +2294,9 @@ def evaluate_tempo2_predictor(
             in_block = True
             coeffs = []
         elif line == "ChebyModel END":
-            arr = np.asarray(coeffs, dtype=np.float64)
-            arr[0] *= 0.5  # Convert TEMPO2 Clenshaw c_0 back to standard Chebyshev a_0
+            # Reverse TEMPO2 Cheby2D scaling: a_0 = 0.25*c_0, a_k = 0.5*c_k (k >= 1)
+            arr = np.asarray(coeffs, dtype=np.float64) * 0.5
+            arr[0] *= 0.5
             blocks.append((lo, hi, arr))
             in_block = False
         elif in_block:

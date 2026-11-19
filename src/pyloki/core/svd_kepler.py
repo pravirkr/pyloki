@@ -17,7 +17,7 @@ import numpy as np
 from numba import njit
 from scipy.interpolate import CubicSpline
 
-from pyloki import kepler
+from pyloki.utils.kepler_math import keplerian_z
 from pyloki.utils.misc import C_VAL
 
 if TYPE_CHECKING:
@@ -78,7 +78,7 @@ def _simulate_delay_ensemble(
 
     delays = np.empty((n_examples, t_axis.size), dtype=np.float64)
     for m in range(n_examples):
-        z_sec = kepler.keplerian_z(
+        z_sec = keplerian_z(
             t_axis,
             float(p_orbs[m]),
             float(eccs[m]),
@@ -315,8 +315,13 @@ def svd_branch_batch(
     trans_matrix: np.ndarray,
     novelties: np.ndarray,
     delta_next: np.ndarray,
+    parent_group_ids: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Expand parent SVD coordinates along the novelty cloud with O(N log N) dedup.
+
+    When ``parent_group_ids`` (e.g. quantized ``f0`` bucket IDs per parent) is
+    provided, deduplication is scoped per group so distinct-``f0`` parents that
+    share orbital coordinates never collapse into one another.
 
     Returns ``(child_coords, parent_origins)`` with unique lattice-snapped rows.
     """
@@ -332,12 +337,14 @@ def svd_branch_batch(
         )
 
     raw_keys = np.empty((total, d_next), dtype=np.int64)
+    raw_groups = np.empty(total, dtype=np.int64)
     hashes = np.empty(total, dtype=np.uint64)
     raw_origins = np.empty(total, dtype=np.int64)
     base_c = np.empty(d_next, dtype=np.float64)
 
     out_idx = 0
     for p in range(n_parents):
+        grp = int(parent_group_ids[p]) if parent_group_ids is not None else 0
         for r in range(d_next):
             acc = 0.0
             for c in range(d_prev):
@@ -348,11 +355,15 @@ def svd_branch_batch(
                 raw_keys[out_idx, r] = round(
                     (base_c[r] + novelties[nv, r]) / delta_next[r],
                 )
-            hashes[out_idx] = _hash_int_row(raw_keys[out_idx])
+            raw_groups[out_idx] = grp
+            h = _hash_int_row(raw_keys[out_idx])
+            h ^= np.uint64(grp + 2147483648)
+            h *= np.uint64(1099511628211)
+            hashes[out_idx] = h
             raw_origins[out_idx] = p
             out_idx += 1
 
-    # Sort by hash for O(N log N) deduplication (verify exact row match on collisions)
+    # Sort by hash for O(N log N) deduplication (verify exact group + row match)
     order = np.argsort(hashes)
     keep = np.zeros(total, dtype=np.bool_)
     n_keep = 0
@@ -362,14 +373,15 @@ def svd_branch_batch(
         back = pos - 1
         while back >= 0 and hashes[order[back]] == hashes[cur]:
             prev = order[back]
-            same = True
-            for r in range(d_next):
-                if raw_keys[cur, r] != raw_keys[prev, r]:
-                    same = False
+            if raw_groups[cur] == raw_groups[prev]:
+                same = True
+                for r in range(d_next):
+                    if raw_keys[cur, r] != raw_keys[prev, r]:
+                        same = False
+                        break
+                if same:
+                    is_dup = True
                     break
-            if same:
-                is_dup = True
-                break
             back -= 1
         if not is_dup:
             keep[cur] = True
@@ -462,11 +474,16 @@ def svd_resolve_batch(
             tau_tol,
         )
         f0 = f0_batch[i]
+        # f0 is the observed spin frequency at t_ref: f0 = f_rest * (1 - v_ref / c)
+        f_rest = f0 / (1.0 - v_ref / C_VAL)
         acc_out[i] = a_cur
-        freq_out[i] = f0 * (1.0 - (v_cur - v_ref) / C_VAL)
+        freq_out[i] = f_rest * (1.0 - v_cur / C_VAL)
         proper_dt = dt - (d_cur - d_ref)
-        cyc = (proper_dt * f0) % 1.0
+        cyc = (proper_dt * f_rest) % 1.0
         if cyc < 0.0:
             cyc += 1.0
-        phase_out[i] = cyc * nbins
+        pbin = cyc * nbins
+        if pbin >= nbins:
+            pbin = 0.0
+        phase_out[i] = pbin
     return acc_out, freq_out, phase_out
