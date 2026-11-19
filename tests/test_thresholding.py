@@ -352,3 +352,98 @@ class TestThresholdingEdgeGuardsAndAnalyserIO:
             plt.close(fig10)
 
         schemes.StatesInfo([]).print_summary()
+
+
+class TestSharedAndRobustScheme:
+    @pytest.mark.parametrize("mode", ["shared", "robust"])
+    def test_shared_and_robust_solve_delivers_target_pd(self, mode: str) -> None:
+        bp = np.array([2.0, 2.0, 1.0, 2.0, 1.0, 2.0], dtype=float)
+        opts = thresholding.SharedOptions(
+            min_pd=0.2,
+            w_terminal=1.0,
+            beam_sigma=3.0,
+            reach_sigma=1.0,
+            ntrials_pilot=1024,
+            ntrials_sig_bank=2048,
+            ntrials_noise_bank=512,
+        )
+        scheme = DynamicThresholdScheme(
+            bp,
+            ref_ducy=0.1,
+            nbins=32,
+            ntrials=256,
+            nprobs=8,
+            snr_final=8.0,
+            nthresholds=30,
+            ducy_max=0.25,
+            wtsp=1.5,
+            mode=mode,  # type: ignore[arg-type]
+            seed=SEED,
+            shared_options=opts,
+        )
+        scheme.run()
+        sol = scheme.solve(seed=SEED + 1)
+
+        assert sol.thresholds.shape == (len(bp),)
+        assert np.all(np.isfinite(sol.thresholds))
+        assert sol.pd >= 0.9 * opts.min_pd
+        assert sol.delivery in ("met", "within_tolerance")
+        assert sol.pd_se > 0.0
+        assert np.isfinite(sol.c)
+        assert np.isfinite(sol.cost)
+
+        # Deterministic with fixed seed
+        sol2 = scheme.solve(seed=SEED + 1)
+        np.testing.assert_array_equal(sol.thresholds, sol2.thresholds)
+        assert sol.pd == sol2.pd
+
+    def test_solve_works_after_improved_mode(self) -> None:
+        scheme = _small_scheme("improved")
+        scheme.run(thres_neigh=5)
+        sol = scheme.solve(min_pd=0.2, seed=SEED)
+        assert sol.thresholds.shape == (scheme.nstages,)
+        assert sol.pd >= 0.9 * 0.2
+
+
+class TestThresholdSimulation:
+    @pytest.mark.parametrize(
+        "score_mode",
+        ["boxcar", "boxcar_glrt", "double_boxcar", "harmonic_z2", "combined", "kadane"],
+    )
+    def test_empirical_simulation_modes(self, score_mode: str) -> None:
+        bp = np.array([2.0, 2.0, 1.0, 2.0], dtype=float)
+        sp, _, _ = schedule_survive_probs(bp, protect=1)
+        thresh, info = thresholding.threshold_simulation(
+            sp,
+            bp,
+            ref_ducy=0.1,
+            nbins=32,
+            ntrials=256,
+            snr_final=8.0,
+            score_mode=score_mode,  # type: ignore[arg-type]
+            n_harmonics=8,
+            seed=SEED,
+        )
+        assert thresh.shape == (len(bp),)
+        assert np.all(np.isfinite(thresh))
+        assert len(info.entries) == len(bp)
+        for st, target_p in zip(info.entries, sp, strict=True):
+            assert st.success_h0 == pytest.approx(target_p, abs=0.02)
+
+    def test_custom_score_fn_and_validation(self) -> None:
+        bp = np.array([2.0, 2.0], dtype=float)
+        sp = np.array([0.5, 0.5], dtype=float)
+
+        def custom_scorer(folds_ev: np.ndarray) -> np.ndarray:
+            return np.max(folds_ev[:, 0, :] / np.sqrt(folds_ev[:, 1, :]), axis=1)
+
+        t1, _ = thresholding.threshold_simulation(
+            sp, bp, nbins=16, ntrials=128, score_fn=custom_scorer, seed=42
+        )
+        t2, _ = thresholding.threshold_simulation(
+            sp, bp, nbins=16, ntrials=128, score_fn=custom_scorer, seed=42
+        )
+        np.testing.assert_array_equal(t1, t2)
+
+        with pytest.raises(ValueError, match="same length"):
+            thresholding.threshold_simulation(sp[:1], bp)
