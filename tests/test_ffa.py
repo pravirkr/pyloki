@@ -181,3 +181,44 @@ def test_slice_segments_shares_buffer() -> None:
     assert np.shares_memory(sub.fold, dyp.fold)
     with pytest.raises(ValueError, match="Invalid segment slice"):
         dyp.slice_segments(2, 2)
+
+
+def test_execute_scored_advances_state_and_rejects_multi_segment() -> None:
+    """execute_scored must advance metadata to final_level & guard nsegments."""
+    rng = np.random.default_rng(13)
+    n = 2**12
+    ts = TimeSeries(rng.standard_normal(n), np.ones(n), 1e-3)
+
+    # Full-obs FFA (n_seg_out == 1) must advance metadata so hit_idx fits param_arr
+    cfg_full = PulsarSearchConfig(
+        nsamps=n,
+        tsamp=1e-3,
+        nbins=16,
+        eta=1.0,
+        param_limits=np.array([[10.0, 10.2]]),
+        bseg_brute=2**9,
+        bseg_ffa=n,
+    )
+    dyp_scored = DynamicProgramming(ts, cfg_full)
+    dyp_scored.initialize()
+    hit_idx, hit_scores = dyp_scored.execute_scored(threshold=-100.0, tile_size=13)
+    assert dyp_scored.ffa_level == cfg_full.niters_ffa
+    expected_vol = int(np.prod([len(a) for a in dyp_scored.param_arr]))
+    assert hit_idx.size == expected_vol
+    assert int(np.max(hit_idx)) == expected_vol - 1
+    assert hit_scores.size == expected_vol
+
+    # Multi-segment P-FFA (bseg_ffa < nsamps => n_seg_out > 1) must raise ValueError
+    cfg_multi = PulsarSearchConfig(
+        nsamps=n,
+        tsamp=1e-3,
+        nbins=16,
+        eta=1.0,
+        param_limits=np.array([[10.0, 10.2]]),
+        bseg_brute=2**9,
+        bseg_ffa=2**10,
+    )
+    dyp_multi = DynamicProgramming(ts, cfg_multi)
+    dyp_multi.initialize()
+    with pytest.raises(ValueError, match="nsegments"):
+        dyp_multi.execute_scored(threshold=0.0)

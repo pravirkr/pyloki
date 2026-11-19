@@ -447,3 +447,37 @@ class TestThresholdSimulation:
 
         with pytest.raises(ValueError, match="same length"):
             thresholding.threshold_simulation(sp[:1], bp)
+
+
+class TestSharedRobustAnalyser:
+    @pytest.mark.parametrize("mode", ["shared", "robust"])
+    def test_shared_and_robust_clear_is_empty_for_analyser(
+        self,
+        mode: str,
+        tmp_path: Path,
+    ) -> None:
+        """shared/robust DTS must set is_empty=False for Analyser."""
+        from pyloki.detection import schemes  # noqa: PLC0415
+
+        bp = np.array([2.0, 2.0, 2.0, 2.0], dtype=np.float64)
+        dts = thresholding.DynamicThresholdScheme(
+            bp,
+            ref_ducy=0.1,
+            nbins=16,
+            ntrials=64,
+            nprobs=4,
+            prob_min=0.05,
+            snr_final=8.0,
+            mode=mode,  # type: ignore[arg-type]
+            seed=42,
+        )
+        dts.run()
+        assert np.any(~dts.states[-1]["is_empty"])
+        from matplotlib import pyplot as plt  # noqa: PLC0415
+
+        saved_path = dts.save(str(tmp_path))
+        analyser = schemes.DynamicThresholdSchemeAnalyser.from_file(saved_path)
+        assert analyser._final_cloud().size > 0  # noqa: SLF001
+        fig = analyser.plot_pareto()
+        assert fig is not None
+        plt.close(fig)

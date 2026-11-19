@@ -593,3 +593,47 @@ class TestMarkovNullingHMM:
         snr_unweighted = float(np.sum(z) / np.sqrt(n_seg))
         snr_hmm_eq = float(np.sqrt(max(2.0 * best_llr, 0.0)))
         assert snr_hmm_eq > snr_unweighted + 2.0
+
+    def test_markov_hmm_posterior_bounded_long_high_snr(self) -> None:
+        """Forward-backward posterior stays in [0, 1] on long arrays."""
+        rng = np.random.default_rng(77)
+        n = 10_000
+        z = rng.normal(0.0, 1.0, size=n)
+        z[2000:5000] += 5.0
+        post = scoring.markov_hmm_posterior_on(z, amp=5.0, p_on_off=0.01, p_off_on=0.01)
+        assert np.all(np.isfinite(post))
+        assert float(np.min(post)) >= 0.0
+        assert float(np.max(post)) <= 1.0
+
+
+class TestScoreProfilesMaskedBins:
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "boxcar",
+            "boxcar_glrt",
+            "harmonic_z2",
+            "combined",
+            "double_boxcar",
+            "double_matched",
+            "kadane",
+        ],
+    )
+    def test_zero_variance_bins_do_not_produce_nan_or_sentinel(
+        self,
+        mode: str,
+    ) -> None:
+        """Masked ts_v == 0 bins must return finite valid S/N for all modes."""
+        nbins = 32
+        folds_ev = np.zeros((2, 2, nbins), dtype=np.float32)
+        folds_ev[:, 1, :] = 1.0
+        # Inject a clean pulse at bin 10
+        folds_ev[0, 0, 10] = 12.0
+        # Mask bins 0, 1, 2 (ts_v == 0, ts_e == 0)
+        folds_ev[:, 0, :3] = 0.0
+        folds_ev[:, 1, :3] = 0.0
+        widths = np.array([1, 2, 4], dtype=np.int64)
+        scores = scoring.score_profiles(folds_ev, widths, mode=mode)  # type: ignore[arg-type]
+        assert np.all(np.isfinite(scores))
+        assert float(scores[0]) > 3.0
+        assert float(scores[1]) > -100.0

@@ -639,3 +639,129 @@ def test_bin2d_waterfall_and_diagnostic_card() -> None:
     )
     assert len(fig.axes) == 4
     plt.close(fig)
+
+
+def test_tempo2_predictor_cheby2d_scaling_and_header(tmp_path: Path) -> None:
+    """Verify TEMPO2 Cheby2D 0.25*c_0 + 0.5*sum_{k>=1} c_k T_k(u) & header."""
+    from numpy.polynomial import chebyshev as np_cheb  # noqa: PLC0415
+
+    ref_mjd = 60000.0
+    span_s = 1800.0
+    params = [-15.0, 200.0]
+    pred_path = tmp_path / "t2pred_cheby2d.dat"
+    info = export_tempo2_predictor(
+        pred_path,
+        model="taylor",
+        params=params,
+        ref_mjd=ref_mjd,
+        mjd_start=ref_mjd,
+        mjd_end=ref_mjd + span_s / SECONDS_PER_DAY,
+        max_phase_err=1e-4,
+    )
+    lines = pred_path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == f"ChebyModelSet {info['n_blocks']} segments"
+
+    # Independently parse raw COEFFS and apply real TEMPO2 Cheby2D_Evaluate formula
+    blocks: list[tuple[float, float, np.ndarray]] = []
+    lo = hi = 0.0
+    raw_coeffs: list[float] = []
+    for raw_line in lines:
+        parts = raw_line.strip().split()
+        if not parts:
+            continue
+        if parts[0] == "TIME_RANGE":
+            lo, hi = float(parts[1]), float(parts[2])
+        elif parts[0] == "COEFFS":
+            raw_coeffs.append(float(parts[1]))
+        elif raw_line.strip() == "ChebyModel END":
+            blocks.append((lo, hi, np.asarray(raw_coeffs, dtype=np.float64)))
+            raw_coeffs = []
+
+    test_t = np.linspace(0.0, span_s, 100, dtype=np.float64)
+    test_mjd = ref_mjd + test_t / SECONDS_PER_DAY
+    phi_true = build_phase_model("taylor", params, t_ref=0.0)(test_t)
+
+    phi_indep = np.empty_like(test_mjd)
+    for idx, m in enumerate(test_mjd):
+        b_lo, b_hi, c = next(
+            (blk for blk in blocks if blk[0] <= m <= blk[1]),
+            blocks[-1],
+        )
+        u = ((m - b_lo) - (b_hi - m)) / (b_hi - b_lo)
+        # Cheby2D_Evaluate with NCOEFF_FREQ=1: 0.25*c[0] + 0.5*sum_{k>=1} c[k]*T_k(u)
+        t_vals = np.array(
+            [float(np_cheb.chebval(u, np.eye(c.size)[k])) for k in range(c.size)],
+            dtype=np.float64,
+        )
+        phi_indep[idx] = 0.25 * c[0] + 0.5 * float(np.dot(c[1:], t_vals[1:]))
+
+    assert float(np.max(np.abs(phi_indep - phi_true))) < 1e-4
+
+
+def test_export_segment_ephemeris_no_cancellation(tmp_path: Path) -> None:
+    """Analytical f1 & accel avoid float64 cancellation at dt_seg=1s."""
+    from pyloki.utils.psr_utils import C_VAL  # noqa: PLC0415
+
+    ref_mjd = 60000.0
+    accel_true = -15.0
+    f0_true = 200.0
+    f1_true = -f0_true * accel_true / C_VAL
+
+    for n_seg in (180, 1800):
+        rows = export_segment_ephemeris(
+            tmp_path / f"ephem_{n_seg}.json",
+            model="taylor",
+            params=[accel_true, f0_true],
+            ref_mjd=ref_mjd,
+            t_start=0.0,
+            t_end=1800.0,
+            n_segments=n_seg,
+            fmt="json",
+        )
+        accels = np.array([r["accel_mss"] for r in rows])
+        freqs = np.array([r["freq_hz"] for r in rows])
+        f1s = np.array([r["f1_hz_s"] for r in rows])
+        assert np.allclose(f1s, f1_true, rtol=1e-10, atol=0.0)
+        assert np.allclose(accels, -f1_true / freqs * C_VAL, rtol=1e-10, atol=0.0)
+        assert np.allclose(accels, accel_true, rtol=1e-3, atol=0.0)
+
+    # Also verify circular, chebyshev, and keplerian models produce accurate f1_hz_s
+    omega = 2.0 * np.pi / 3600.0
+    rows_circ = export_segment_ephemeris(
+        tmp_path / "ephem_circ.json",
+        model="circular",
+        params=[omega, 250.0, 0.8, 0.6],
+        ref_mjd=ref_mjd,
+        t_start=0.0,
+        t_end=1800.0,
+        n_segments=180,
+        fmt="json",
+    )
+    t_mid0 = rows_circ[0]["t_offset_s"]
+    z0 = 0.6 * np.sin(omega * t_mid0) + 0.8 * np.cos(omega * t_mid0)
+    assert rows_circ[0]["f1_hz_s"] == pytest.approx(250.0 * omega**2 * z0, rel=1e-10)
+
+    rows_cheb = export_segment_ephemeris(
+        tmp_path / "ephem_cheb.json",
+        model="chebyshev",
+        params=[200.0, 1e-3, 0.0],
+        ref_mjd=ref_mjd,
+        t_start=0.0,
+        t_end=1800.0,
+        n_segments=180,
+        fmt="json",
+    )
+    # f(u) = 200 + 1e-3 * u with half_span = 900 => df/dt = 1e-3 / 900
+    assert rows_cheb[50]["f1_hz_s"] == pytest.approx(1e-3 / 900.0, rel=1e-10)
+
+    rows_kep = export_segment_ephemeris(
+        tmp_path / "ephem_kep.json",
+        model="keplerian",
+        params=[150.0, 3000.0, 1.5, 0.25, 0.7, 0.4],
+        ref_mjd=ref_mjd,
+        t_start=0.0,
+        t_end=1800.0,
+        n_segments=180,
+        fmt="json",
+    )
+    assert all(np.isfinite(r["f1_hz_s"]) and r["f1_hz_s"] != 0.0 for r in rows_kep)

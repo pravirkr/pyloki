@@ -323,3 +323,54 @@ class TestNonlinearKeplerianFits:
         assert res.x_orb == pytest.approx(x_true, rel=5e-3)
         assert res.ecc == pytest.approx(ecc_true, abs=0.02)
         assert res.rms_residual < 1e-3
+        assert math.isnan(res.f0)
+
+        # Providing f0_ref converts slope to Hz properly
+        res_with_f0 = orbit_fit.fit_keplerian_multistart(
+            t,
+            delays,
+            fourier_seed=fourier_fit,
+            n_restarts=4,
+            seed=11,
+            f0_ref=200.0,
+        )
+        assert res_with_f0.f0 == pytest.approx(200.0 * (1.0 - 2.0e-6), rel=1e-6)
+
+    def test_winsorized_fit_no_zero_simplex_stall(self) -> None:
+        """Single start (n_restarts=0) must not stall on 0.00025 simplex."""
+        t = np.linspace(0.0, 6000.0, 80, dtype=np.float64)
+        f0_true, p_orb_true, x_true, ecc_true, aop_true, phi_true = (
+            200.0,
+            3000.0,
+            1.5,
+            0.25,
+            1.1,
+            0.8,
+        )
+        _, v_arr, _ = kepler.keplerian_z_derivatives_exact(
+            t,
+            p_orb_true,
+            ecc_true,
+            phi_true,
+            x_true * C_VAL,
+            aop_true,
+            0.5 * math.pi,
+        )
+        freqs = f0_true * (1.0 - v_arr / C_VAL)
+        seed_guess = [
+            f0_true * 1.00001,
+            p_orb_true * 1.01,
+            x_true * 0.96,
+            ecc_true + 0.03,
+            aop_true + 0.1,
+            phi_true - 0.1,
+        ]
+        res = orbit_fit.fit_keplerian_periods_winsorized(
+            t,
+            freqs,
+            seed_guess,
+            n_restarts=0,
+            seed=7,
+        )
+        assert res.p_orb == pytest.approx(p_orb_true, rel=1e-3)
+        assert res.x_orb == pytest.approx(x_true, rel=1e-2)

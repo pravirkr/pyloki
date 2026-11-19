@@ -8,18 +8,21 @@ that way. This is descriptive guidance, not enforced by import checks in CI.
 Modules under [`src/pyloki/`](../src/pyloki) follow a strict layered layout
 (lower layers never import higher layers):
 
-- `utils/` (`maths`, `transforms`, `psr_utils`, `np_utils`, `snail`,
-  `world_tree`, `timing`, `misc`): stateless mathematical helpers, Taylor /
-  Chebyshev / circular-Taylor coordinate transforms, `MiddleOutScheme` segment
-  traversal, Numba `structref` candidate trees (`WorldTree`, `WorldTreeComplex`),
-  and logging, timing, and multiprocessing utilities. Must not import from
-  `core`, `dynamic`, or top-level search modules.
-- `core/` (`fold`, `common`, `taylor`, `chebyshev`, `circular`): stateless
-  `@njit` kernels for brute-force folding, FFA shift-add, tree seeding,
-  branching, validation, resolution, basis re-centring, and branching-pattern
-  generation. Must not hold search state or import `dynamic`.
-- `detection/` (`scoring`, `thresholding`, `schemes`): boxcar S/N kernels
-  (`boxcar_snr_*`) and dynamic pruning threshold scheme generation and analysis
+- `utils/` (`maths`, `kepler_math`, `transforms`, `psr_utils`, `np_utils`, `snail`,
+  `world_tree`, `timing`, `misc`): stateless mathematical helpers, low-level
+  Kepler anomaly/delay kernels, Taylor / Chebyshev / circular-Taylor coordinate
+  transforms, `MiddleOutScheme` segment traversal, Numba `structref` candidate
+  trees (`WorldTree`, `WorldTreeComplex`), and logging, timing, and
+  multiprocessing utilities. Must not import from `core`, `dynamic`, or top-level
+  search modules.
+- `core/` (`fold`, `common`, `taylor`, `chebyshev`, `circular`, `svd_kepler`,
+  `epicyclic`): stateless `@njit` kernels for brute-force folding, FFA
+  shift-add, tree seeding, branching, validation, resolution, basis re-centring,
+  branching-pattern generation, and Keplerian/epicyclic prototype kernels. Must
+  not hold search state or import `dynamic` or higher-level modules.
+- `detection/` (`scoring`, `thresholding`, `schemes`): boxcar, heteroscedastic
+  GLRT, double-peak, harmonic-$Z^2_m$, Kadane, and 2-state Markov HMM S/N
+  kernels and dynamic pruning threshold scheme generation and analysis
   (`DynamicThresholdScheme`, `schedule_survive_probs`).
 - `dynamic/` (`dyn_pffa`, `dyn_poly_taylor`, `dyn_poly_cheby`,
   `dyn_circular_taylor`): Numba `structref` function bundles (`*DPFuncts`)
@@ -27,10 +30,13 @@ Modules under [`src/pyloki/`](../src/pyloki) follow a strict layered layout
   kernels.
 - Top-level and supporting modules: `config.py` (`ParamLimits`,
   `PulsarSearchConfig`), `ffa.py` (`FFAPlan`, `DynamicProgramming`), `prune.py`
-  (`Pruning`, `prune_dyp_tree`), `search.py` (`ffa_search`), `periodogram.py`
-  (`Periodogram`, `ScatteredPeriodogram`), `kepler.py`, `io/` (`timeseries`,
-  `cands`), `simulation/` (`pulse`, `modulate`), `sensitivity/` (`sim_ffa`),
-  and `apps/` (`pyloki_viewer`).
+  (`Pruning`, `prune_dyp_tree`, `trace_ep_hypothesis`,
+  `verify_resolve_stability`), `search.py` (`ffa_search`, `ep_search`,
+  `refold_candidates`, `measure_snr_retention`), `periodogram.py` (`Periodogram`,
+  `ScatteredPeriodogram`), `kepler.py`, `orbit_fit.py`, `io/` (`timeseries`,
+  `preprocess`, `preprocess_kernels`, `cands`), `simulation/` (`pulse`,
+  `modulate`), `sensitivity/` (`sim_ffa`, `analytical`, `heavy_tail`), and
+  `apps/` (`pyloki_viewer`, including `WaterfallLabState` / `WaterfallLabApp`).
 
 ## Public API
 

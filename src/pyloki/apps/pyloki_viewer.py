@@ -521,10 +521,22 @@ class WaterfallLabState:
                     float(self.orbit_overlay.aop),
                     0.5 * math.pi,
                 )
-            overlay_phase = np.mod(
-                0.5 + self.f0_ref * (delay_s - float(delay_s[0])), 1.0
+            shifts_phase = self.phase_shifts_bins().astype(np.float64) / float(
+                self.nbins,
             )
-            ax_wf.plot(overlay_phase, t_arr, color="tab:red", lw=1.2, ls="--")
+            overlay_phase = np.mod(
+                0.5 + self.f0_ref * (delay_s - float(delay_s[0])) + shifts_phase,
+                1.0,
+            )
+            # Break line segments across phase wraps to avoid horizontal jump artifacts
+            jumps = np.flatnonzero(np.abs(np.diff(overlay_phase)) > 0.5) + 1
+            if jumps.size > 0:
+                plot_phase = np.insert(overlay_phase, jumps, np.nan)
+                plot_t = np.insert(t_arr, jumps, np.nan)
+            else:
+                plot_phase = overlay_phase
+                plot_t = t_arr
+            ax_wf.plot(plot_phase, plot_t, color="tab:red", lw=1.2, ls="--")
 
         ax_wf.set_xlabel("Pulse Phase")
         ax_wf.set_ylabel("Time (s)")
@@ -548,10 +560,13 @@ class WaterfallLabApp:
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
+        plot_frame = ttk.Frame(main_frame)
+        plot_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         self.fig = plt.Figure(figsize=(9, 6), dpi=100)
-        self.canvas = FigureCanvasTkAgg(self.fig, main_frame)
-        self.canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        toolbar = NavigationToolbar2Tk(self.canvas, main_frame)
+        self.canvas = FigureCanvasTkAgg(self.fig, plot_frame)
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        toolbar = NavigationToolbar2Tk(self.canvas, plot_frame)
         toolbar.update()
 
         slider_frame = ttk.Frame(main_frame)

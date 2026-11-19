@@ -10,6 +10,11 @@ from numba import njit
 from scipy import optimize
 
 from pyloki.utils import maths
+from pyloki.utils.kepler_math import (
+    keplerian_ecc_anomaly,
+    keplerian_nu,  # noqa: F401
+    keplerian_z,
+)
 from pyloki.utils.misc import C_VAL
 
 if TYPE_CHECKING:
@@ -72,118 +77,6 @@ def mass_function(
     omega = 2.0 * np.pi / p_orb
     f = (av**3 / (omega * constants.G)) * ((1.0 - ecc**2) ** 1.5) / constants.M_sun
     return float(f.value)
-
-
-@njit(cache=True, fastmath=True)
-def keplerian_ecc_anomaly(
-    t_arr: np.ndarray,
-    p_orb: float,
-    ecc: float,
-    phi: float,
-    n_iters: int = 8,
-) -> np.ndarray:
-    """Solve Kepler's equation for the eccentric anomaly E at given times.
-
-    Parameters
-    ----------
-    t_arr : np.ndarray
-        Array of time values for the Keplerian orbit to be evaluated.
-    p_orb : float
-        Orbital period, in the same units as t_arr.
-    ecc : float
-        Orbital eccentricity (0 <= ecc < 1).
-    phi : float
-        Orbital phase (mean anomaly at t=0), in radians.
-    n_iters : int, optional
-        Number of Newton iterations to solve Kepler's equation, by default 8.
-
-    Returns
-    -------
-    np.ndarray
-        Array of eccentric anomalies E, in radians.
-    """
-    t_norm = (t_arr % p_orb) / p_orb
-    m_arr = 2.0 * np.pi * t_norm + phi
-    e_arr = m_arr + ecc * np.sin(m_arr)
-    for _ in range(n_iters):
-        e_arr += (m_arr + ecc * np.sin(e_arr) - e_arr) / (1.0 - ecc * np.cos(e_arr))
-    return e_arr
-
-
-@njit(cache=True, fastmath=True)
-def keplerian_nu(
-    t_arr: np.ndarray,
-    p_orb: float,
-    ecc: float,
-    phi: float,
-    n_iters: int = 8,
-) -> np.ndarray:
-    """Solves the kepler equation and calculates the true anomaly Nu at given times.
-
-    Parameters
-    ----------
-    t_arr : np.ndarray
-        Array of time values for the keplerian orbit to be evaluated.
-    p_orb : float
-        Orbital period, in the same units as t_arr.
-    ecc : float
-        Orbital eccentricity (0 <= ecc < 1).
-    phi : float
-        Orbital phase (mean anomaly at t=0), in radians.
-    n_iters : int, optional
-        Number of iterations for Newton's method to solve Kepler's equation,
-        by default 8.
-
-    Returns
-    -------
-    np.ndarray
-        Array of the Keplerian true anomaly Nu, in radians at the given times.
-    """
-    e_arr = keplerian_ecc_anomaly(t_arr, p_orb, ecc, phi, n_iters=n_iters)
-    return 2.0 * np.arctan2(
-        np.sqrt(1.0 + ecc) * np.sin(0.5 * e_arr),
-        np.sqrt(1.0 - ecc) * np.cos(0.5 * e_arr),
-    )
-
-
-@njit(cache=True, fastmath=True)
-def keplerian_z(
-    t_arr: np.ndarray,
-    p_orb: float,
-    ecc: float,
-    phi: float,
-    a: float,
-    aop: float,
-    inc: float,
-) -> np.ndarray:
-    """Calculate the projected z-coordinate of an orbiting body at given times.
-
-    Parameters
-    ----------
-    t_arr : np.ndarray
-        Array of time values for the keplerian orbit to be evaluated.
-    p_orb : float
-        Orbital period, in the same units as t_arr.
-    ecc : float
-        Orbital eccentricity (0 <= ecc < 1).
-    phi : float
-        Orbital phase (mean anomaly at t=0), in radians.
-    a : float
-        Semi-major axis, in arbitrary units; determines the output length units.
-    aop : float
-        Argument of periastron, in radians.
-    inc : float
-        Inclination of the orbit, in radians.
-
-    Returns
-    -------
-    np.ndarray
-        Array of the z coordinate of the orbiting body at the given times.
-    """
-    ecc = abs(ecc)
-    nu = keplerian_nu(t_arr, p_orb, ecc, phi)
-    r = a * (1 - ecc**2) / (1 + ecc * np.cos(nu))
-    return r * np.sin(nu + aop) * np.sin(inc)
 
 
 def keplerian_z_derivatives(
@@ -926,6 +819,18 @@ class PredictionTableGenerator:
         off0 = int(np.min(i0))
         off1 = int(np.min(i1))
         off2 = int(np.min(i2))
+        max_21bit = 0x1FFFFF
+        spans = (
+            int(np.max(i0)) - off0,
+            int(np.max(i1)) - off1,
+            int(np.max(i2)) - off2,
+        )
+        if any(s > max_21bit for s in spans):
+            msg = (
+                f"Voxel index spans {spans} exceed 21-bit limit ({max_21bit}); "
+                "increase bin_sizes to prevent key aliasing"
+            )
+            raise ValueError(msg)
 
         n = self.data.shape[0]
         raw_keys = np.empty(n, dtype=np.uint64)
@@ -1002,10 +907,18 @@ def dimensionless_kepler_key(
     Estimates ``omega_hat = sqrt(-z4 / z2)`` (falling back to ``sqrt(-z5 / z3)``
     when ``|z2|`` is small) and amplitude ``A = hypot(z2 / om^2, z3 / om^3)``.
     """
+    ok1 = abs(z2) > eps and (-z4 / z2) > 0.0
+    ok2 = abs(z3) > eps and (-z5 / z3) > 0.0
     om_sq = -1.0
-    if abs(z2) > eps and (-z4 / z2) > 0.0:
+    if ok1 and ok2:
+        om2_sq = -z5 / z3
+        om2 = math.sqrt(om2_sq)
+        # Near a z2 zero crossing (|z2| << |z3| / om), -z4/z2 is ill-conditioned;
+        # use the well-conditioned -z5/z3 branch instead.
+        om_sq = om2_sq if abs(z2) < 1e-2 * abs(z3) / om2 else -z4 / z2
+    elif ok1:
         om_sq = -z4 / z2
-    elif abs(z3) > eps and (-z5 / z3) > 0.0:
+    elif ok2:
         om_sq = -z5 / z3
     if om_sq <= 0.0:
         return False, 0.0, 0.0, 0.0
@@ -1037,11 +950,11 @@ class PackedVoxelTable:
         i0 = math.floor(v0 / float(self.bin_sizes[0]))
         i1 = math.floor(v1 / float(self.bin_sizes[1]))
         i2 = math.floor(v2 / float(self.bin_sizes[2]))
-        if (
-            i0 < int(self.offsets[0])
-            or i1 < int(self.offsets[1])
-            or i2 < int(self.offsets[2])
-        ):
+        max_21bit = 0x1FFFFF
+        u0 = i0 - int(self.offsets[0])
+        u1 = i1 - int(self.offsets[1])
+        u2 = i2 - int(self.offsets[2])
+        if not (0 <= u0 <= max_21bit and 0 <= u1 <= max_21bit and 0 <= u2 <= max_21bit):
             return False, 0.0, 0.0
         qkey = pack_voxel_key_3d(
             i0,

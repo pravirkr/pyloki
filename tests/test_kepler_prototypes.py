@@ -246,3 +246,77 @@ class TestKEP04PackedVoxelAndDimensionlessKey:
         found2, lo2, hi2 = fn(table.keys, table.d_min, table.d_max, table.keys[0])
         assert found2
         assert lo2 <= hi2
+
+        # Upper-bound 21-bit aliasing check in PackedVoxelTable.query
+        aliased_v0 = float(row[2]) + (1 << 21) * bins[0]
+        found_alias, _, _ = table.query(aliased_v0, float(row[3]), float(row[4]))
+        assert not found_alias
+
+    def test_dimensionless_key_near_z2_zero_crossing(self) -> None:
+        """Near z2 == 0, dimensionless_kepler_key must fall back to -z5/z3."""
+        om = 2.0e-3
+        amp = 1.5 * C_VAL
+        # Tiny phase angle -> z2 is tiny (~1e-10), z3 is large (~1e-4)
+        phi = 1e-6
+        s, c = math.sin(phi), math.cos(phi)
+        z2 = -amp * (om**2) * s
+        z3 = -amp * (om**3) * c
+        # Slightly perturb z4 as happens in eccentric/noisy trajectories
+        z4 = amp * (om**4) * s * 10.0
+        z5 = amp * (om**5) * c
+        z6 = -amp * (om**6) * s
+        ok, angle, z5_hat, _ = kepler.dimensionless_kepler_key(z2, z3, z4, z5, z6)
+        assert ok
+        assert z5_hat == pytest.approx(1.0, rel=1e-4)
+        assert abs(angle - math.atan2(-s, -c)) < 1e-4
+
+    def test_svd_doppler_gauge_and_group_preservation(self) -> None:
+        """Verify svd_resolve_batch Doppler gauge & svd_branch_batch groups."""
+        # Constant non-zero velocity v_ref = v_cur = 3e6 m/s (0.01 c)
+        t_axis = np.linspace(0.0, 100.0, 11, dtype=np.float64)
+        v_const = 3.0e6
+        # d(t) = (v_const / C_VAL) * t -> d'(t) = v_const / C_VAL
+        tau_tol = 1.0
+        v_phase = ((v_const / C_VAL) * t_axis)[None, :]
+        v_vel = np.full((1, t_axis.size), v_const, dtype=np.float64)
+        v_acc = np.zeros((1, t_axis.size), dtype=np.float64)
+        coords = np.array([[1.0]], dtype=np.float64)
+        f0 = np.array([100.0], dtype=np.float64)
+
+        _, freq_out, phase_out = svd_kepler.svd_resolve_batch(
+            coords,
+            f0,
+            0.0,
+            1.003,
+            t_axis,
+            v_phase,
+            v_vel,
+            v_acc,
+            tau_tol,
+            1000,
+        )
+        # Constant velocity means f_obs(t) == f0 identically!
+        assert float(freq_out[0]) == pytest.approx(100.0, rel=1e-12)
+        # Over dt=1.003s at constant observed freq 100Hz: 100.3 cycles -> bin 300
+        assert float(phase_out[0]) == pytest.approx(300.0, abs=1e-6)
+
+        # Cross-parent f0 group preservation in svd_branch_batch
+        parents = np.zeros((2, 1), dtype=np.float64)
+        trans = np.ones((1, 1), dtype=np.float64)
+        novs = np.array([[0.0], [1.0]], dtype=np.float64)
+        delta = np.array([1.0], dtype=np.float64)
+        groups = np.array([10, 20], dtype=np.int64)
+        children, origins = svd_kepler.svd_branch_batch(
+            parents, trans, novs, delta, groups
+        )
+        assert children.shape == (4, 1)
+        assert set(origins.tolist()) == {0, 1}
+
+    def test_core_exports_and_layering(self) -> None:
+        """Verify core/__init__.py exports & core/svd_kepler layering."""
+        from pyloki import core  # noqa: PLC0415
+
+        assert "svd_kepler" in core.__all__
+        assert "epicyclic" in core.__all__
+        assert "cir_physical_branch_batch" in core.__all__
+        assert not hasattr(svd_kepler, "kepler")

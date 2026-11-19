@@ -137,3 +137,49 @@ class TestHeavyTailSensitivity:
         assert model.kl_divergence() > model.linear_kl_baseline()
         # Positive tail samples yield positive LLR
         assert model.score_samples(np.array([4.0, 5.0, 6.0])) > 0.0
+
+    @pytest.mark.parametrize("sigma_n", [1.0, 0.5])
+    def test_heavy_tail_default_range_strictly_monotonic_no_underflow(
+        self,
+        sigma_n: float,
+    ) -> None:
+        """Default x_range=(-8, 40) must not underflow/invert LLR."""
+        model = heavy_tail.HeavyTailLikelihood(
+            distribution="pareto",
+            mean_s=2.0,
+            shape_param=2.5,
+            sigma_n=sigma_n,
+        )
+        assert np.all(np.isfinite(model.llr_grid))
+        # LLR must remain strictly increasing past x=37.14 up to x=40.0
+        tail_mask = model.x_grid >= 5.0
+        diffs = np.diff(model.llr_grid[tail_mask])
+        assert np.all(diffs > 0.0)
+        # Extrapolation beyond x_max must not be clipped flat
+        assert float(model.llr(45.0)) > float(model.llr(40.0))
+
+
+def test_even_n_z2m_excludes_nyquist_and_compare_handles_target_le_fap() -> None:
+    """Exclude Nyquist on even-n & handle target_pdet <= fap."""
+    # Even n=16 has 7 independent complex harmonics (k=1..7), not 8 (k=8 is Nyquist)
+    rng = np.random.default_rng(1234)
+    noise = rng.standard_normal((4000, 16))
+    z2_vals = np.array([analytical.z2m_statistic(row, m=8) for row in noise])
+    # With k=1..7 (14 DOF), mean=14, var=28 (vs doubled Nyquist giving mean=16, var=36)
+    assert float(np.mean(z2_vals)) == pytest.approx(14.0, abs=0.4)
+    assert float(np.var(z2_vals)) == pytest.approx(28.0, abs=2.5)
+
+    # profile_fourier_powers must also not double Nyquist bin
+    alt = np.array([1.0, -1.0] * 8, dtype=np.float64)
+    hp = analytical.profile_fourier_powers(alt, n_harmonics=8)
+    assert float(np.sum(hp)) == 0.0
+
+    # target_pdet <= fap must return 0.0 without crashing inside optimize.brentq
+    cmp_res = analytical.compare_ffa_vs_fft_flux_ratio(
+        duty_cycle=0.05,
+        n_harmonics=8,
+        fap=0.5,
+        target_pdet=0.25,
+    )
+    assert cmp_res.snr_min_ffa == 0.0
+    assert cmp_res.snr_min_fft == 0.0

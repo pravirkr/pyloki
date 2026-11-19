@@ -13,7 +13,7 @@ import math
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-from scipy import integrate, interpolate, stats
+from scipy import integrate, interpolate, special, stats
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -108,6 +108,43 @@ def convolve_gaussian_signal(
     return out
 
 
+def _log_convolve_gaussian_signal(
+    x_grid: npt.ArrayLike,
+    signal_pdf: Callable[[np.ndarray], np.ndarray],
+    *,
+    sigma_n: float = 1.0,
+    s_min: float = 0.0,
+    s_max: float = 200.0,
+    n_quad: int = 2048,
+) -> npt.NDArray[np.float64]:
+    r"""Evaluate :math:`\ln p_{H_1}(x)` via log-sum-exp quadrature without underflow."""
+    if sigma_n <= 0.0:
+        msg = f"sigma_n must be positive, got {sigma_n}"
+        raise ValueError(msg)
+    x = np.asarray(x_grid, dtype=np.float64)
+    lo = max(s_min, 1e-12)
+    s_nodes = np.geomspace(lo, max(s_max, lo * 10.0), n_quad, dtype=np.float64)
+    ps = np.asarray(signal_pdf(s_nodes), dtype=np.float64)
+    ds = np.empty_like(s_nodes)
+    ds[0] = 0.5 * (s_nodes[1] - s_nodes[0])
+    ds[-1] = 0.5 * (s_nodes[-1] - s_nodes[-2])
+    ds[1:-1] = 0.5 * (s_nodes[2:] - s_nodes[:-2])
+    weights = ps * ds
+    pos = weights > 0.0
+    s_nodes = s_nodes[pos]
+    log_weights = np.log(weights[pos])
+    log_norm = -math.log(sigma_n * math.sqrt(2.0 * math.pi))
+
+    out = np.empty_like(x, dtype=np.float64)
+    chunk = 256
+    for i0 in range(0, x.size, chunk):
+        i1 = min(x.size, i0 + chunk)
+        diff = (x[i0:i1, None] - s_nodes[None, :]) / sigma_n
+        log_terms = log_norm - 0.5 * diff * diff + log_weights[None, :]
+        out[i0:i1] = special.logsumexp(log_terms, axis=1)
+    return out
+
+
 class HeavyTailLikelihood:
     """Tabulated Neyman-Pearson LLR model for Pareto or lognormal giant pulses."""
 
@@ -158,22 +195,24 @@ class HeavyTailLikelihood:
             raise ValueError(msg)
 
         self.x_grid = np.linspace(self.x_min, self.x_max, n_grid, dtype=np.float64)
-        self.p_h1_grid = convolve_gaussian_signal(
+        self.log_p_h1_grid = _log_convolve_gaussian_signal(
             self.x_grid,
             pdf_fn,
             sigma_n=self.sigma_n,
             s_min=s_min,
             s_max=s_max,
         )
-        self.p_h0_grid = stats.norm.pdf(self.x_grid, loc=0.0, scale=self.sigma_n)
-        floor = 1e-300
-        self.llr_grid = np.log(np.maximum(self.p_h1_grid, floor)) - np.log(
-            np.maximum(self.p_h0_grid, floor),
+        self.log_p_h0_grid = np.asarray(
+            stats.norm.logpdf(self.x_grid, loc=0.0, scale=self.sigma_n),
+            dtype=np.float64,
         )
+        self.p_h1_grid = np.exp(self.log_p_h1_grid)
+        self.p_h0_grid = np.exp(self.log_p_h0_grid)
+        self.llr_grid = self.log_p_h1_grid - self.log_p_h0_grid
         self._llr_spline = interpolate.CubicSpline(
             self.x_grid,
             self.llr_grid,
-            bc_type="natural",
+            bc_type="not-a-knot",
             extrapolate=True,
         )
         self._h1_spline = interpolate.CubicSpline(
@@ -189,7 +228,7 @@ class HeavyTailLikelihood:
         return np.where(np.isfinite(vals), np.maximum(vals, 0.0), 0.0)
 
     def llr(self, x: npt.ArrayLike) -> npt.NDArray[np.float64]:
-        arr = np.clip(np.asarray(x, dtype=np.float64), self.x_min, self.x_max)
+        arr = np.asarray(x, dtype=np.float64)
         return np.asarray(self._llr_spline(arr), dtype=np.float64)
 
     def score_samples(self, x: npt.ArrayLike) -> float:

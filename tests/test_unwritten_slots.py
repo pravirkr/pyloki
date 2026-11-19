@@ -510,3 +510,124 @@ def test_branching_pattern_generators(
         **kwargs,
     )
     assert np.isfinite(pattern).all()
+
+
+# -------------------------------------------------------------- PR #61 kernels
+
+
+def test_pr61_svd_kepler_and_epicyclic_unwritten_slots(monkeypatch) -> None:
+    from pyloki.core import epicyclic, svd_kepler  # noqa: PLC0415
+
+    # svd_branch_batch
+    parents = np.array([[0.1, -0.2], [0.3, 0.4]], dtype=np.float64)
+    trans = np.array([[1.0, 0.0], [0.0, 1.0], [0.5, -0.5]], dtype=np.float64)
+    novs = np.array([[0.0, 0.0, 0.0], [0.2, -0.1, 0.3]], dtype=np.float64)
+    delta = np.array([0.25, 0.25, 0.25], dtype=np.float64)
+    groups = np.array([0, 1], dtype=np.int64)
+    check(
+        monkeypatch,
+        svd_kepler,
+        svd_kepler.svd_branch_batch.py_func,
+        parents,
+        trans,
+        novs,
+        delta,
+        groups,
+    )
+
+    # svd_resolve_batch
+    t_axis = np.linspace(0.0, 100.0, 8, dtype=np.float64)
+    v_phase = np.ones((2, 8), dtype=np.float64) * 0.1
+    v_vel = np.ones((2, 8), dtype=np.float64) * 100.0
+    v_acc = np.ones((2, 8), dtype=np.float64) * 1.0
+    check(
+        monkeypatch,
+        svd_kepler,
+        svd_kepler.svd_resolve_batch.py_func,
+        parents,
+        np.array([100.0, 150.0], dtype=np.float64),
+        0.0,
+        50.0,
+        t_axis,
+        v_phase,
+        v_vel,
+        v_acc,
+        1e-3,
+        32,
+    )
+
+    # epicyclic_min_residual_batch
+    z_batch = np.ones((3, 6), dtype=np.float64)
+    projectors = np.broadcast_to(np.eye(6, dtype=np.float64), (4, 6, 6)).copy()
+    check(
+        monkeypatch,
+        epicyclic,
+        epicyclic.epicyclic_min_residual_batch.py_func,
+        z_batch,
+        projectors,
+    )
+
+
+def test_pr61_scoring_and_orbit_fit_unwritten_slots(monkeypatch) -> None:
+    from pyloki import orbit_fit  # noqa: PLC0415
+    from pyloki.detection import scoring  # noqa: PLC0415
+    from pyloki.io import preprocess_kernels as pk  # noqa: PLC0415
+
+    # boxcar_snr_glrt_1d & markov_hmm_posterior_on
+    ts_e = np.linspace(-1.0, 2.0, 16, dtype=np.float32)
+    ts_v = np.ones(16, dtype=np.float32)
+    widths = np.array([1, 2, 4], dtype=np.int64)
+    check(monkeypatch, scoring, scoring.boxcar_snr_glrt_1d.py_func, ts_e, ts_v, widths)
+    check(
+        monkeypatch,
+        scoring,
+        scoring.markov_hmm_posterior_on.py_func,
+        np.linspace(-1.0, 3.0, 16, dtype=np.float64),
+        1.5,
+        0.1,
+        0.05,
+    )
+
+    # resolve_keplerian_trajectory
+    check(
+        monkeypatch,
+        orbit_fit,
+        orbit_fit.resolve_keplerian_trajectory.py_func,
+        np.linspace(0.0, 600.0, 6, dtype=np.float64),
+        100.0,
+        3000.0,
+        1.0,
+        0.1,
+        0.5,
+        0.3,
+        np.linspace(-20.0, 20.0, 9, dtype=np.float64),
+        np.linspace(99.5, 100.5, 9, dtype=np.float64),
+        32,
+    )
+
+    # preprocess_kernels.interpolate_blocks
+    check(
+        monkeypatch,
+        pk,
+        pk.interpolate_blocks.py_func,
+        12,
+        4,
+        np.array([1.0, 2.0, 3.0], dtype=np.float64),
+    )
+
+    # cir_physical_branch_batch
+    leaf = np.zeros((1, 6, 2), dtype=np.float64)
+    leaf[0, 0, :] = [2.0 * np.pi / 3600.0, 2.0e-4]
+    leaf[0, 1, :] = [100.0, 5.0e-3]
+    leaf[0, 2, :] = [0.6, 0.05]
+    leaf[0, 3, :] = [0.8, 0.05]
+    check(
+        monkeypatch,
+        circular,
+        circular.cir_physical_branch_batch.py_func,
+        leaf,
+        (0.0, 5400.0),
+        (0.0, 1800.0),
+        64,
+        1.0,
+    )
