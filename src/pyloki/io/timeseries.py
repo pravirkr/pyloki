@@ -40,9 +40,16 @@ class TimeSeries:
         return self.nsamps * self.dt
 
     def downsample(self, factor: int) -> TimeSeries:
-        ts_e = np_utils.downsample_1d(self.ts_e, factor)
-        ts_v = np_utils.downsample_1d(self.ts_v, factor)
-        return TimeSeries(ts_e, ts_v, self.dt)
+        if factor < 1:
+            msg = f"factor must be >= 1, got {factor}"
+            raise ValueError(msg)
+        n_keep = (self.nsamps // factor) * factor
+        if n_keep == 0:
+            msg = f"factor ({factor}) exceeds nsamps ({self.nsamps})"
+            raise ValueError(msg)
+        ts_e = np_utils.downsample_1d(self.ts_e[:n_keep], factor)
+        ts_v = np_utils.downsample_1d(self.ts_v[:n_keep], factor) / factor
+        return TimeSeries(ts_e, ts_v, self.dt * factor)
 
     def fold_ephem(
         self,
@@ -58,7 +65,8 @@ class TimeSeries:
         cycles = int(self.tobs * freq)
         if cycles < 1:
             msg = (
-                f"Period ({1 / freq}) is less than the total data length ({self.tobs})"
+                f"Period ({1 / freq}) is greater than the "
+                f"total data length ({self.tobs})"
             )
             raise ValueError(msg)
         if nsubints < 1 or nsubints > cycles:
@@ -69,7 +77,7 @@ class TimeSeries:
         if mod_tref is None:
             mod_tref = self.tobs / 2
         mod_func = type_to_mods[mod_type](**mod_kwargs)
-        proper_time = mod_func.generate(np.arange(0, self.tobs, self.dt), mod_tref)
+        proper_time = mod_func.generate(np.arange(self.nsamps) * self.dt, mod_tref)
         fold = brutefold(
             self.ts_e,
             self.ts_v,
@@ -111,6 +119,8 @@ class TimeSeries:
             freq,
             nbins,
             nsubints=nsubints,
+            mod_type=mod_type,
+            mod_kwargs=mod_kwargs,
             mod_tref=mod_tref,
         )
         sig_boxcar = sig_filters.MatchedFilter(

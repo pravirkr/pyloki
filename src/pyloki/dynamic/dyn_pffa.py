@@ -169,6 +169,7 @@ def ffa_taylor_dp_functs_init(
     self.tsamp = tsamp
     self.nbins = nbins
     self.bseg_brute = bseg_brute
+    self.use_fourier = False
     return self
 
 
@@ -184,6 +185,7 @@ def ffa_taylor_complex_dp_functs_init(
     self.tsamp = tsamp
     self.nbins = nbins
     self.bseg_brute = bseg_brute
+    self.use_fourier = True
     return self
 
 
@@ -304,7 +306,7 @@ def ol_resolve(
         param_grid_count_prev: np.ndarray,
         ffa_level: int,
         latter: int,
-    ) -> tuple[np.ndarray, int]:
+    ) -> tuple[np.ndarray, float]:
         return resolve_func(self, pset_cur, param_grid_count_prev, ffa_level, latter)
 
     return impl

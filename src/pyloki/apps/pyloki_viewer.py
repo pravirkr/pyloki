@@ -6,7 +6,6 @@ from tkinter import filedialog, messagebox, ttk
 
 import rich_click as click
 from matplotlib import pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from sigpyproc.viz.styles import set_seaborn
 
 from pyloki.detection.schemes import DynamicThresholdSchemeAnalyser, StatesInfo
@@ -71,6 +70,11 @@ class ThresholdAnalyzerApp:
 
     def create_figure(self) -> None:
         """Create the matplotlib figure and canvas."""
+        from matplotlib.backends.backend_tkagg import (  # noqa: PLC0415
+            FigureCanvasTkAgg,
+            NavigationToolbar2Tk,
+        )
+
         self.fig = plt.Figure(figsize=(12, 8), dpi=100, constrained_layout=True)
         self.axes = self.fig.subplots(2, 2)
 
@@ -188,39 +192,46 @@ class ThresholdAnalyzerApp:
         if not filename:
             return
         try:
-            self.analyzer = DynamicThresholdSchemeAnalyser.from_file(filename)
+            analyzer = DynamicThresholdSchemeAnalyser.from_file(filename)
             logger.info(f"File loaded: {filename}")
         except Exception as e:
             logger.exception("Error loading file")
             messagebox.showerror("Error", f"Failed to load file: {e!s}")
-
-        if self.analyzer is None:
             return
-        self.current_file = filename
-        self.file_label_var.set(f"File: {Path(filename).name}")
-        # Update window title
-        self.root.title(f"Dynamic Threshold Scheme Analyzer - {Path(filename).name}")
-        # Set initial min_prob to the smallest available probability
-        self.min_prob = self.analyzer.probs[0]
-        if self.min_prob is None:
+
+        if len(analyzer.probs) == 0:
             logger.error("No probabilities found in analyzer")
             messagebox.showerror("Error", "No probabilities found in analyzer")
             return
 
+        min_prob = float(analyzer.probs[0])
+        best_prob = float(analyzer.probs[0])
+        try:
+            _, best_path = analyzer.plot_paths(
+                best_prob,
+                min_prob=min_prob,
+                fig=self.fig,
+            )
+        except Exception as e:
+            logger.exception("Error plotting threshold paths")
+            messagebox.showerror("Error", f"Failed to plot threshold paths: {e!s}")
+            return
+
+        self.analyzer = analyzer
+        self.min_prob = min_prob
+        self.best_path = best_path
+        self.current_file = filename
+        self.file_label_var.set(f"File: {Path(filename).name}")
+        # Update window title
+        self.root.title(f"Dynamic Threshold Scheme Analyzer - {Path(filename).name}")
+
         # Populate combobox
         self.best_prob_combo["values"] = [f"{prob:.4f}" for prob in self.analyzer.probs]
         self.best_prob_var.set(f"{self.analyzer.probs[0]:.4f}")
+        self.best_prob_combo.current(0)
 
         # Enable controls
         self.toggle_controls(enabled=True)
-
-        # Generate initial plots
-        best_prob = self.analyzer.probs[0]
-        _, self.best_path = self.analyzer.plot_paths(
-            best_prob,
-            min_prob=self.min_prob,
-            fig=self.fig,
-        )
         self.canvas.draw()
 
     def unload_file(self) -> None:
@@ -256,8 +267,11 @@ class ThresholdAnalyzerApp:
             return
 
         try:
-            # Get the selected probability
-            best_prob = float(self.best_prob_var.get())
+            idx = self.best_prob_combo.current()
+            if 0 <= idx < len(self.analyzer.probs):
+                best_prob = float(self.analyzer.probs[idx])
+            else:
+                best_prob = float(self.best_prob_var.get())
             _, self.best_path = self.analyzer.update_best_path(best_prob, self.fig)
             logger.info(f"Best path updated with best_prob={best_prob}")
 

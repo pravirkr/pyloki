@@ -14,8 +14,11 @@ the construct itself, and the scheme tests pin the consequence.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pytest
+from matplotlib import pyplot as plt
 from numba import njit
 from scipy import stats
 
@@ -24,6 +27,10 @@ from pyloki.detection.thresholding import (
     DynamicThresholdScheme,
     schedule_survive_probs,
 )
+from tests.jit_utils import jit_variants
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 RECORD_DTYPE = np.dtype([("a", np.float32), ("b", np.float32), ("flag", np.bool_)])
 
@@ -260,3 +267,88 @@ class TestScheduleSurviveProbs:
         # No cut at the protected stages: thresholds there are the minimum over trials,
         # below the later cutting stages' thresholds.
         assert thresholds[:4].max() < thresholds[4]
+
+
+class TestThresholdingEdgeGuardsAndAnalyserIO:
+    @pytest.mark.parametrize("impl", jit_variants(thresholding.prune_folds_survival))
+    def test_prune_folds_survival_zero_and_empty(self, impl) -> None:
+        rng = np.random.default_rng(77)
+        folds = rng.standard_normal((16, 32)).astype(np.float32)
+        thresh_zero, kept_zero = impl(folds, 1.0, 0.0, 0.2, 1.0)
+        assert np.isfinite(thresh_zero)
+        assert kept_zero.shape == (0, 32)
+
+        empty = np.empty((0, 32), dtype=np.float32)
+        thresh_empty, kept_empty = impl(empty, 1.0, 0.5, 0.2, 1.0)
+        assert thresh_empty == np.inf
+        assert kept_empty.shape == (0, 32)
+
+    @pytest.mark.parametrize("impl", jit_variants(thresholding.get_next_state))
+    def test_get_next_state_zero_h1_survival(self, impl) -> None:
+        state_cur = np.ones(1, dtype=thresholding.state_dtype)[0]
+        state_next = impl(state_cur, 3.0, 0.5, 0.0, 2.0)
+        assert state_next[0]["cost"] == np.inf
+
+    def test_folds_constructor_defaults_and_int_variance(self) -> None:
+        h0 = np.ones((4, 16), dtype=np.float32)
+        h1 = np.ones((4, 16), dtype=np.float32)
+        f_default = thresholding.Folds(h0, h1)
+        assert f_default.variance == 1.0
+        f_int = thresholding.Folds(h0, h1, 2)
+        assert f_int.variance == 2.0
+        with pytest.raises(TypeError, match="variance"):
+            thresholding.Folds(h0, h1, third=True)
+
+    def test_narrow_beam_snaps_instead_of_empty_list(self) -> None:
+        scheme = DynamicThresholdScheme(
+            np.array([1.0, 4.0, 2.0]),
+            ref_ducy=0.1,
+            nbins=32,
+            ntrials=128,
+            nprobs=6,
+            snr_final=8.0,
+            nthresholds=20,
+            beam_width=0.01,
+            mode="improved",
+            seed=SEED,
+        )
+        assert len(scheme.get_current_thresholds_idx(0)) >= 1
+        scheme.run(thres_neigh=3)
+
+    def test_analyser_save_load_roundtrip_and_pareto_scaling(
+        self, tmp_path: Path
+    ) -> None:
+        scheme = _small_scheme("improved")
+        scheme.run(thres_neigh=5)
+        analyser = schemes.DynamicThresholdSchemeAnalyser(
+            scheme.states,
+            scheme.thresholds,
+            scheme.probs,
+            scheme.branching_pattern,
+            scheme.guess_path,
+            scheme.beam_width,
+        )
+        out_path = tmp_path / "scheme.h5"
+        analyser.save(out_path)
+        loaded = schemes.DynamicThresholdSchemeAnalyser.from_file(out_path)
+        np.testing.assert_array_equal(loaded.states, analyser.states)
+        np.testing.assert_allclose(loaded.thresholds, analyser.thresholds)
+        np.testing.assert_allclose(loaded.probs, analyser.probs)
+        np.testing.assert_allclose(loaded.branching_pattern, analyser.branching_pattern)
+        np.testing.assert_allclose(loaded.guess_path, analyser.guess_path)
+        assert loaded.beam_width == pytest.approx(analyser.beam_width)
+
+        fig1 = analyser.plot_pareto(nparam_vol=1.0)
+        fig10 = analyser.plot_pareto(nparam_vol=10.0)
+        try:
+            y1 = fig1.axes[0].lines[0].get_ydata()
+            y10 = fig10.axes[0].lines[0].get_ydata()
+            np.testing.assert_allclose(y10, y1 * 10.0)
+            s1 = fig1.axes[0].collections[0].get_offsets()[:, 1]
+            s10 = fig10.axes[0].collections[0].get_offsets()[:, 1]
+            np.testing.assert_allclose(s10, s1 * 10.0)
+        finally:
+            plt.close(fig1)
+            plt.close(fig10)
+
+        schemes.StatesInfo([]).print_summary()

@@ -132,16 +132,22 @@ class Periodogram:
         figsize: tuple[float, float] = (10, 8),
         dpi: int = 100,
     ) -> plt.Figure:
-        if param_x not in self.param_names or param_y not in self.param_names:
-            msg = f"Invalid parameter: {param_x} or {param_y}"
-            raise ValueError(msg)
         fixed_param_idx = fixed_param_idx or {}
+        if (
+            param_x not in self.param_names
+            or param_y not in self.param_names
+            or param_x == param_y
+            or param_x in fixed_param_idx
+            or param_y in fixed_param_idx
+        ):
+            msg = f"Invalid 2D parameter selection: {param_x}, {param_y}"
+            raise ValueError(msg)
 
         x = self.data[param_x].to_numpy()
         y = self.data[param_y].to_numpy()
         sliced_data = self.get_slice(fixed_param_idx)
         other_dims = [dim for dim in sliced_data.dims if dim not in [param_x, param_y]]
-        z = sliced_data.max(dim=other_dims).to_numpy()
+        z = sliced_data.max(dim=other_dims).transpose(param_y, param_x).to_numpy()
 
         set_seaborn()
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
@@ -167,9 +173,11 @@ class Periodogram:
 
     @classmethod
     def load(cls, filename: str) -> Periodogram:
-        data = xr.open_dataarray(filename)
-        params = {str(dim): data[dim].to_numpy() for dim in data.dims}
-        return cls(params=params, snrs=data.to_numpy(), tobs=float(data.attrs["tobs"]))
+        with xr.open_dataarray(filename) as data:
+            params = {str(dim): data[dim].to_numpy() for dim in data.dims}
+            snrs = data.to_numpy()
+            tobs = float(data.attrs["tobs"])
+        return cls(params=params, snrs=snrs, tobs=tobs)
 
     def _validate_inputs(self) -> None:
         if not all(param in self.params for param in self.REQUIRED_PARAMS):
@@ -438,7 +446,8 @@ class ScatteredPeriodogram:
         sm.set_array([])
         label = "Score (EP)" if score_type == "score_ep" else "Score (Integrated)"
         fig.colorbar(sm, ax=ax, pad=0.02, aspect=30, label=label)
-        scatter.legend_.remove()
+        if scatter.legend_ is not None:
+            scatter.legend_.remove()
 
         if true_values:
             if param_x in true_values:
@@ -549,15 +558,16 @@ class ScatteredPeriodogram:
                     ax=ax,
                 )
                 ax.set_title(f"{label} Distribution Across Runs")
-                sns.move_legend(
-                    ax,
-                    "upper right",
-                    ncol=3,
-                    fontsize="xx-small",
-                    frameon=False,
-                    title="run",
-                    title_fontsize="xx-small",
-                )
+                if ax.get_legend() is not None:
+                    sns.move_legend(
+                        ax,
+                        "upper right",
+                        ncol=3,
+                        fontsize="xx-small",
+                        frameon=False,
+                        title="run",
+                        title_fontsize="xx-small",
+                    )
             ax.set_yscale("log")
             ax.set_xlabel("Score (S/N)")
             ax.set_ylabel("Count")
@@ -725,15 +735,28 @@ class PruningStatsPlotter:
 
     def plot_level_stats(
         self,
-        run_id: int | None = None,
+        run_id: str | None = None,
         figsize: tuple[float, float] = (10, 5),
         dpi: int = 100,
     ) -> plt.Figure:
         """Plot level statistics for a specific run."""
         data = self.data if run_id is None else self.data[self.data["run_id"] == run_id]
-        n_runs = self.n_runs if run_id is None else 1
         set_seaborn()
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        if data.empty:
+            ax.text(
+                0.5,
+                0.5,
+                "No level stats to plot",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+            ax.set_title("Pruning Complexity")
+            ax.set_xlabel("Level")
+            ax.set_ylabel("Number of Leaves Surviving")
+            return fig
+        n_runs = max(data["run_id"].nunique(), 1)
         sns.lineplot(
             data=data,
             x="level",
@@ -742,15 +765,16 @@ class PruningStatsPlotter:
             palette=sns.color_palette("colorblind", n_colors=n_runs),
             ax=ax,
         )
-        sns.move_legend(
-            ax,
-            "lower center",
-            ncol=3,
-            fontsize="xx-small",
-            frameon=False,
-            title="run",
-            title_fontsize="xx-small",
-        )
+        if ax.get_legend() is not None:
+            sns.move_legend(
+                ax,
+                "lower center",
+                ncol=3,
+                fontsize="xx-small",
+                frameon=False,
+                title="run",
+                title_fontsize="xx-small",
+            )
         ax.set_yscale("log")
         ax.set_title("Pruning Complexity")
         ax.set_xlabel("Level")

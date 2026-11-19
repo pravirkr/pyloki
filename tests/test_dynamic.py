@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from numba import typed
+from numba import njit, typed
 
 from pyloki.core import chebyshev, circular, common, fold, taylor
 from pyloki.detection import scoring
@@ -30,7 +30,7 @@ from pyloki.dynamic import (
 )
 from pyloki.utils import transforms
 from pyloki.utils.misc import C_VAL
-from pyloki.utils.world_tree import WorldTree
+from pyloki.utils.world_tree import WorldTree, WorldTreeComplex
 
 NBINS = 32
 COUNTS = np.array([4, 8])
@@ -418,16 +418,18 @@ class TestCircularRouting:
         )
 
     def test_report_fixed_grid_recentres(self) -> None:
-        """The fixed-grid report must re-centre, as for `dyn_poly_taylor` (#34)."""
+        """The fixed-grid report must re-centre circularly before reporting."""
         leaves = _circ_leaves()
         got = _circ(moving=False).report(leaves.copy(), (T_ADD, 20.0), (T_INIT, 5.0))
-        recentred = taylor.poly_taylor_transform_batch(
+        recentred = circular.circ_taylor_transform_batch(
             leaves,
             (T_ADD, 20.0),
             (T_INIT, 5.0),
             "aggressive",
+            2.0,
         )
         np.testing.assert_allclose(got, taylor.poly_taylor_report_batch(recentred))
+        assert not np.allclose(got, taylor.poly_taylor_report_batch(leaves))
 
 
 PRUNE_BUNDLES = [
@@ -588,6 +590,67 @@ class TestAscend:
         assert np.all(np.abs(expected) < 1e6), "scores must be real, not the sentinel"
         np.testing.assert_allclose(many.scores, expected, rtol=1e-6)
 
+    @pytest.mark.parametrize(
+        ("make", "make_leaves"),
+        [
+            pytest.param(_taylor, lambda: _taylor_leaves(3), id="taylor"),
+            pytest.param(_cheby, _cheby_leaves, id="chebyshev"),
+            pytest.param(_circ, _circ_leaves, id="circular"),
+        ],
+    )
+    @pytest.mark.parametrize("complex_", [False, True])
+    def test_ascend_compiles_inside_njit(
+        self, make, make_leaves, complex_: bool
+    ) -> None:
+        """All pruning bundles' ``.ascend`` must compile cleanly inside ``@njit``."""
+        funcs = make(moving=False, complex_=complex_)
+        leaves = make_leaves()
+        n = len(leaves)
+        rng = np.random.default_rng(11)
+        dyp_real = rng.standard_normal((2, 4, 8, 2, NBINS)).astype(np.float32)
+        dyp_real[..., 1, :] = np.abs(dyp_real[..., 1, :]) + 1.0
+        if complex_:
+            dyp = np.ascontiguousarray(
+                np.fft.rfft(dyp_real, axis=-1).astype(np.complex64)
+            )
+            folds = np.zeros((n, 2, NBINS // 2 + 1), np.complex64)
+            tree = WorldTreeComplex(
+                leaves.copy(),
+                folds,
+                np.zeros(n, np.float32),
+                np.zeros((n, leaves.shape[1]), np.int32),
+            )
+        else:
+            dyp = dyp_real
+            folds = np.zeros((n, 2, NBINS), np.float32)
+            tree = WorldTree(
+                leaves.copy(),
+                folds,
+                np.zeros(n, np.float32),
+                np.zeros((n, leaves.shape[1]), np.int32),
+            )
+
+        @njit
+        def call_ascend(dp, wt, arr, idx_seg, coord_seg):
+            dp.ascend(
+                wt,
+                arr,
+                common.load_prune_folds_2d,
+                idx_seg,
+                coord_seg,
+                (T_INIT, 5.0),
+                2,
+            )
+
+        call_ascend(
+            funcs,
+            tree,
+            dyp,
+            np.array([0, 1]),
+            np.array([[5.0, 5.0], [15.0, 5.0]]),
+        )
+        assert np.all(np.isfinite(tree.scores))
+
 
 class TestFFARouting:
     TSAMP, BSEG = 1e-3, 64
@@ -599,6 +662,14 @@ class TestFFARouting:
             else dyn_pffa.ffa_taylor_dp_functs_init
         )
         return init(_limits(2), self.TSAMP, NBINS, self.BSEG)
+
+    @pytest.mark.parametrize("complex_", [False, True])
+    def test_use_fourier_field_initialized(self, complex_: bool) -> None:
+        @njit
+        def get_flag(funcs) -> bool:
+            return funcs.use_fourier
+
+        assert bool(get_flag(self._funcs(complex_=complex_))) is complex_
 
     @pytest.mark.parametrize("complex_", [False, True])
     def test_init_folds_the_series(self, complex_: bool) -> None:

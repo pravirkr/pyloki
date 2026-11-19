@@ -11,6 +11,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  UV_PYTHON_PREFERENCE: only-managed
+
 jobs:
   static-checks:
     name: Ruff & ty

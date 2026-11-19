@@ -458,6 +458,15 @@ class MultiprocessProgressTracker:
         return results, errors
 
 
+def _rebuild_structref_wrapper[T](
+    cls: type[PicklableStructRefWrapper[T]],
+    constructor: Callable[..., T],
+    args: tuple,
+    kwargs: dict,
+) -> PicklableStructRefWrapper[T]:
+    return cls(constructor, *args, **kwargs)
+
+
 class PicklableStructRefWrapper[T]:
     """A generic wrapper to make Numba structref objects picklable.
 
@@ -486,6 +495,9 @@ class PicklableStructRefWrapper[T]:
             self._instance = self._constructor(*self._args, **self._kwargs)
         return getattr(self._instance, name)
 
-    def __reduce__(self) -> tuple[type, tuple, dict]:
+    def __reduce__(self) -> tuple[Callable, tuple]:
         """Implement a custom reducer for pickling."""
-        return (self.__class__, (self._constructor, *self._args), self._kwargs)
+        return (
+            _rebuild_structref_wrapper,
+            (self.__class__, self._constructor, self._args, self._kwargs),
+        )

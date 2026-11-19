@@ -124,6 +124,11 @@ def norm_isf_func(minus_logsf: float) -> float:
 
 @njit(cache=True, fastmath=True)
 def chi_sq_minus_logsf_func(chi_sq_score: float, df: int) -> float:
+    if df < 1 or df >= chi_sq_minus_logsf_table.shape[0]:
+        msg = "df must be in [1, 64]."
+        raise ValueError(msg)
+    if chi_sq_score <= 0.0:
+        return 0.0
     tab_pos = chi_sq_score / chi_sq_res
     frac_pos = tab_pos % 1
     if chi_sq_score < chi_sq_x_max:
@@ -135,6 +140,9 @@ def chi_sq_minus_logsf_func(chi_sq_score: float, df: int) -> float:
 
 
 def gen_chebyshev_polys_table_np(order_max: int, n_derivs: int) -> np.ndarray:
+    if order_max < 0 or n_derivs < 0:
+        msg = "order_max and n_derivs must be non-negative."
+        raise ValueError(msg)
     tab = np.zeros((n_derivs + 1, order_max + 1, order_max + 1))
     basis = [polynomial.chebyshev.Chebyshev.basis(i) for i in range(order_max + 1)]
 
@@ -178,9 +186,13 @@ def gen_chebyshev_polys_table(order_max: int, n_derivs: int) -> np.ndarray:
     The derivatives are computed using the chain rule and the properties of Chebyshev
     polynomials.
     """
+    if order_max < 0 or n_derivs < 0:
+        msg = "order_max and n_derivs must be non-negative."
+        raise ValueError(msg)
     tab = np.zeros((n_derivs + 1, order_max + 1, order_max + 1), dtype=np.float32)
     tab[0, 0, 0] = 1.0
-    tab[0, 1, 1] = 1.0
+    if order_max >= 1:
+        tab[0, 1, 1] = 1.0
 
     for jorder in range(2, order_max + 1):
         tab[0, jorder] = 2 * np.roll(tab[0, jorder - 1], 1) - tab[0, jorder - 2]
@@ -258,6 +270,9 @@ def poly_taylor_transform_matrix(
     # / powers = np.tril(np.arange(n_params)[:, np.newaxis] - np.arange(n_params))
     # / t_mat = delta_t**powers / maths.fact(powers) * np.tril(np.ones_like(powers))
 
+    if poly_order < 0:
+        msg = "poly_order must be non-negative."
+        raise ValueError(msg)
     size = poly_order + 1
     t_mat = np.zeros((size, size), dtype=np.float64)
 
@@ -290,13 +305,13 @@ def circ_taylor_transform_matrix(
     p_orb_min : float
         Minimum orbital period in the search range.
     coeff_order : int
-        0 → coefficients stored [a0, a1, ..., a5]
-        1 → coefficients stored [a5, ..., a1, a0]
+        0 → coefficients stored [a1, ..., a5]
+        1 → coefficients stored [a5, ..., a1]
 
     Returns
     -------
     np.ndarray
-        6x6 lattice transport matrix L_circ.
+        5x5 lattice transport matrix L_circ.
     """
     omega = 2.0 * np.pi / p_orb_min
     omega_sq = omega * omega
@@ -393,14 +408,20 @@ def generalized_cheb_pols(poly_order: int, t0: float, scale: float) -> np.ndarra
     T*_n(y) = T_n((x - t0) / scale)
     where :math: y in [-1, 1] and x in [t0 - scale, t0 + scale].
     """
-    cheb_pols = gen_chebyshev_polys_table(poly_order, 0)[0]
+    if poly_order < 0:
+        msg = "poly_order must be non-negative."
+        raise ValueError(msg)
+    if scale == 0.0:
+        msg = "scale must be non-zero."
+        raise ValueError(msg)
+    cheb_pols = gen_chebyshev_polys_table(poly_order, 0)[0].astype(np.float64)
 
-    # scale the polynomials
-    scale_factor = (1.0 / scale) ** np.arange(poly_order + 1, dtype=np.float32)
+    # scale the polynomials in float64 to avoid cancellation when |t0| >> scale
+    scale_factor = (1.0 / scale) ** np.arange(poly_order + 1, dtype=np.float64)
     scaled_pols = cheb_pols * scale_factor
 
     # Shift the origin to t0
-    shifted_pols = np.zeros_like(scaled_pols)
+    shifted_pols = np.zeros_like(scaled_pols, dtype=np.float64)
     for iorder in range(poly_order + 1):
         for iterm in range(iorder + 1):
             shifted = nbinom(iorder, iterm) * (-t0) ** (iorder - iterm)
@@ -557,6 +578,9 @@ def compute_connection_matrix_r(k_max: int) -> np.ndarray:
         Shape is (k_max + 1, k_max + 1).
         Lower triangular matrix since R_{k,m} = 0 for m > k.
     """
+    if k_max < 0:
+        msg = "k_max must be a non-negative integer."
+        raise ValueError(msg)
     r_mat = np.zeros((k_max + 1, k_max + 1), dtype=np.float64)
     for k in range(k_max + 1):
         for m in range(k + 1):

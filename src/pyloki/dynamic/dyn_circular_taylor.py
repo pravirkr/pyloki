@@ -731,11 +731,12 @@ def report_func(
 ) -> np.ndarray:
     if not self.use_moving_grid:
         # Shift to the middle of the segment
-        leaves_batch = taylor.poly_taylor_transform_batch(
+        leaves_batch = circular.circ_taylor_transform_batch(
             leaves_batch,
             coord_report,
             coord_end,
             self.tiling_strategy,
+            self.propagator_significance,
         )
     return taylor.poly_taylor_report_batch(leaves_batch)
 

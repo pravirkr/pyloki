@@ -145,6 +145,8 @@ def prune_folds_survival(
     ducy_max: float = 0.2,
     wtsp: float = 1.0,
 ) -> tuple[float, npt.NDArray[np.float32]]:
+    if folds.shape[0] == 0:
+        return np.inf, np.empty((0, folds.shape[1]), dtype=np.float32)
     folds_var = var_cur * np.ones_like(folds)
     folds_norm = folds / np.sqrt(folds_var)
     folds_norm = folds_norm.astype(np.float32)
@@ -157,9 +159,15 @@ def prune_folds_survival(
         scoring.boxcar_snr_2d_serial(folds_norm, widths, 1.0),
         axis=1,
     )
-    n_surviving = int(survive_prob * len(scores_arr))
-    good_scores_idx = np.flip(np.argsort(scores_arr))[: int(n_surviving)]
-    threshold = scores_arr[good_scores_idx[-1]]
+    n_total = len(scores_arr)
+    n_surviving = min(n_total, int(survive_prob * n_total))
+    if n_surviving <= 0:
+        return (
+            float(np.max(scores_arr)),
+            np.empty((0, folds.shape[1]), dtype=np.float32),
+        )
+    good_scores_idx = np.flip(np.argsort(scores_arr))[:n_surviving]
+    threshold = float(scores_arr[good_scores_idx[-1]])
     return threshold, np.ascontiguousarray(folds[good_scores_idx])
 
 
@@ -189,20 +197,30 @@ class Folds(structref.StructRefProxy):
         cls,
         folds_h0: npt.NDArray[np.float32],
         folds_h1: npt.NDArray[np.float32],
-        third: npt.NDArray[np.float32] | float,
+        third: npt.NDArray[np.float32] | float = 1.0,
         fourth: npt.NDArray[np.float32] | None = None,
         fifth: float | None = None,
     ) -> Self:
         """Create a new instance of Folds."""
         if fourth is None:
-            if not isinstance(third, (float, np.floating)):
+            if isinstance(third, bool) or not isinstance(
+                third,
+                (int, float, np.integer, np.floating),
+            ):
                 msg = "Legacy Folds expects variance as the third argument"
                 raise TypeError(msg)
             return folds_init_legacy(folds_h0, folds_h1, float(third))
-        if fifth is None:
+        if (
+            fifth is None
+            or isinstance(fifth, bool)
+            or not isinstance(fifth, (int, float, np.integer, np.floating))
+        ):
             msg = "Scored Folds requires variance as the fifth argument"
             raise TypeError(msg)
-        return folds_init(folds_h0, folds_h1, third, fourth, fifth)
+        if not isinstance(third, np.ndarray):
+            msg = "Scored Folds expects score arrays as third and fourth arguments"
+            raise TypeError(msg)
+        return folds_init(folds_h0, folds_h1, third, fourth, float(fifth))
 
     @property
     @njit(cache=True, fastmath=True)
@@ -375,7 +393,9 @@ def get_next_state(
     state_next[0]["success_h1_cumul"] = success_h1_cumul
     state_next[0]["nbranches"] = nbranches
     state_next[0]["threshold"] = threshold
-    state_next[0]["cost"] = complexity_cumul / success_h1_cumul
+    state_next[0]["cost"] = (
+        complexity_cumul / success_h1_cumul if success_h1_cumul > 0.0 else np.inf
+    )
     # For backtracking
     state_next[0]["threshold_prev"] = state_cur["threshold"]
     state_next[0]["success_h1_cumul_prev"] = state_cur["success_h1_cumul"]
@@ -809,128 +829,159 @@ class DynamicThresholdScheme:
         half_extent = self.beam_width
         lower_bound = max(0, guess - half_extent)
         upper_bound = min(self.snr_final, guess + half_extent)
-        return np.where(
+        idx = np.where(
             (self.thresholds >= lower_bound) & (self.thresholds <= upper_bound),
         )[0]
+        if len(idx) == 0:
+            target = np.clip(guess, 0.0, self.snr_final)
+            nearest = int(np.argmin(np.abs(self.thresholds - target)))
+            return np.array([nearest], dtype=np.int64)
+        return idx
 
-    @Timer(name="DynamicThresholdScheme init", logger=logger.info)
     def _init_legacy(self) -> None:
-        var_init = 1.0
-        folds = np.zeros((self.ntrials, self.nbins), dtype=np.float32)
-        folds_h0, _ = simulate_folds(
-            folds,
-            0,
-            self.profile,
-            self.rng,
-            bias_snr=0,
-            var_add=var_init,
-            ntrials_min=self.ntrials,
-        )
-        folds_h1, _ = simulate_folds(
-            folds,
-            0,
-            self.profile,
-            self.rng,
-            bias_snr=self.bias_snr,
-            var_add=var_init,
-            ntrials_min=self.ntrials,
-        )
-        state = np.ones(1, dtype=state_dtype)[0]
-        state["threshold"] = -1.0
-        state["threshold_prev"] = -1.0
-        fold_state = Folds(folds_h0, folds_h1, var_init)
-        thresholds_idx = self.get_current_thresholds_idx(0)
-        for ithres in thresholds_idx:
-            cur_state, cur_fold_state = gen_next_using_thresh(
-                state,
-                fold_state,
-                self.thresholds[ithres],
-                self.branching_pattern[0],
-                self.bias_snr,
+        with Timer(name="DynamicThresholdScheme init", logger=logger.info):
+            var_init = 1.0
+            folds = np.zeros((self.ntrials, self.nbins), dtype=np.float32)
+            folds_h0, _ = simulate_folds(
+                folds,
+                0,
                 self.profile,
                 self.rng,
-                self.ntrials,
+                bias_snr=0,
+                var_add=var_init,
+                ntrials_min=self.ntrials,
+            )
+            folds_h1, _ = simulate_folds(
+                folds,
+                0,
+                self.profile,
+                self.rng,
+                bias_snr=self.bias_snr,
+                var_add=var_init,
+                ntrials_min=self.ntrials,
+            )
+            state = np.ones(1, dtype=state_dtype)[0]
+            state["threshold"] = -1.0
+            state["threshold_prev"] = -1.0
+            fold_state = Folds(folds_h0, folds_h1, var_init)
+            thresholds_idx = self.get_current_thresholds_idx(0)
+            for ithres in thresholds_idx:
+                cur_state, cur_fold_state = gen_next_using_thresh(
+                    state,
+                    fold_state,
+                    self.thresholds[ithres],
+                    self.branching_pattern[0],
+                    self.bias_snr,
+                    self.profile,
+                    self.rng,
+                    self.ntrials,
+                    self.ducy_max,
+                    self.wtsp,
+                )
+                cur_state = cur_state[0]  # Get record from array
+                iprob = (
+                    int(
+                        np.digitize(
+                            float(cur_state["success_h1_cumul"]),
+                            self.probs,
+                        ),
+                    )
+                    - 1
+                )
+                if iprob < 0 or iprob >= self.nprobs:
+                    continue
+                self.states[0, ithres, iprob] = cur_state
+                folds_idx = int(ithres * self.nprobs + iprob)
+                self.folds_in[folds_idx] = cur_fold_state
+
+    def _init_improved(self) -> None:
+        with Timer(name="DynamicThresholdScheme init", logger=logger.info):
+            var_init = 1.0
+            folds = np.zeros((self.ntrials, self.nbins), dtype=np.float32)
+            folds_h0, _ = simulate_folds(
+                folds,
+                0,
+                self.profile,
+                self.rng,
+                bias_snr=0,
+                var_add=var_init,
+                ntrials_min=self.ntrials,
+            )
+            folds_h1, _ = simulate_folds(
+                folds,
+                0,
+                self.profile,
+                self.rng,
+                bias_snr=self.bias_snr,
+                var_add=var_init,
+                ntrials_min=self.ntrials,
+            )
+            state = np.ones(1, dtype=state_dtype)[0]
+            state["threshold"] = -1.0
+            state["threshold_prev"] = -1.0
+
+            sim_folds_h0, var_next = simulate_folds(
+                folds_h0,
+                var_init,
+                self.profile,
+                self.rng,
+                bias_snr=0.0,
+                var_add=1.0,
+                ntrials_min=self.ntrials,
+            )
+            sim_folds_h1, var_next = simulate_folds(
+                folds_h1,
+                var_init,
+                self.profile,
+                self.rng,
+                bias_snr=self.bias_snr,
+                var_add=1.0,
+                ntrials_min=self.ntrials,
+            )
+            scores_h0 = fold_max_scores(
+                sim_folds_h0,
+                var_next,
                 self.ducy_max,
                 self.wtsp,
             )
-            cur_state = cur_state[0]  # Get record from array
-            iprob = np.digitize(cur_state["success_h1_cumul"], self.probs) - 1
-            if iprob < 0:
-                continue
-            self.states[0, ithres, iprob] = cur_state
-            folds_idx = int(ithres * self.nprobs + iprob)
-            self.folds_in[folds_idx] = cur_fold_state
-
-    @Timer(name="DynamicThresholdScheme init", logger=logger.info)
-    def _init_improved(self) -> None:
-        var_init = 1.0
-        folds = np.zeros((self.ntrials, self.nbins), dtype=np.float32)
-        folds_h0, _ = simulate_folds(
-            folds,
-            0,
-            self.profile,
-            self.rng,
-            bias_snr=0,
-            var_add=var_init,
-            ntrials_min=self.ntrials,
-        )
-        folds_h1, _ = simulate_folds(
-            folds,
-            0,
-            self.profile,
-            self.rng,
-            bias_snr=self.bias_snr,
-            var_add=var_init,
-            ntrials_min=self.ntrials,
-        )
-        state = np.ones(1, dtype=state_dtype)[0]
-        state["threshold"] = -1.0
-        state["threshold_prev"] = -1.0
-
-        sim_folds_h0, var_next = simulate_folds(
-            folds_h0,
-            var_init,
-            self.profile,
-            self.rng,
-            bias_snr=0.0,
-            var_add=1.0,
-            ntrials_min=self.ntrials,
-        )
-        sim_folds_h1, var_next = simulate_folds(
-            folds_h1,
-            var_init,
-            self.profile,
-            self.rng,
-            bias_snr=self.bias_snr,
-            var_add=1.0,
-            ntrials_min=self.ntrials,
-        )
-        scores_h0 = fold_max_scores(sim_folds_h0, var_next, self.ducy_max, self.wtsp)
-        scores_h1 = fold_max_scores(sim_folds_h1, var_next, self.ducy_max, self.wtsp)
-        fold_sim_state = Folds(
-            sim_folds_h0,
-            sim_folds_h1,
-            scores_h0,
-            scores_h1,
-            var_next,
-        )
-
-        thresholds_idx = self.get_current_thresholds_idx(0)
-        for ithres in thresholds_idx:
-            cur_state, cur_fold_state = transition_state(
-                state,
-                fold_sim_state,
-                self.thresholds[ithres],
-                self.branching_pattern[0],
+            scores_h1 = fold_max_scores(
+                sim_folds_h1,
+                var_next,
+                self.ducy_max,
+                self.wtsp,
             )
-            cur_state = cur_state[0]
+            fold_sim_state = Folds(
+                sim_folds_h0,
+                sim_folds_h1,
+                scores_h0,
+                scores_h1,
+                var_next,
+            )
 
-            iprob = np.digitize(cur_state["success_h1_cumul"], self.probs) - 1
-            if iprob < 0:
-                continue
-            self.states[0, ithres, iprob] = cur_state
-            folds_idx = int(ithres * self.nprobs + iprob)
-            self.folds_in[folds_idx] = cur_fold_state
+            thresholds_idx = self.get_current_thresholds_idx(0)
+            for ithres in thresholds_idx:
+                cur_state, cur_fold_state = transition_state(
+                    state,
+                    fold_sim_state,
+                    self.thresholds[ithres],
+                    self.branching_pattern[0],
+                )
+                cur_state = cur_state[0]
+
+                iprob = (
+                    int(
+                        np.digitize(
+                            float(cur_state["success_h1_cumul"]),
+                            self.probs,
+                        ),
+                    )
+                    - 1
+                )
+                if iprob < 0 or iprob >= self.nprobs:
+                    continue
+                self.states[0, ithres, iprob] = cur_state
+                folds_idx = int(ithres * self.nprobs + iprob)
+                self.folds_in[folds_idx] = cur_fold_state
 
     def _stage_rngs(self, istage: int, n: int) -> typed.List:
         """One generator per parallel-loop iteration of `istage`.
@@ -942,67 +993,67 @@ class DynamicThresholdScheme:
         seq = np.random.SeedSequence(self._entropy, spawn_key=(istage,))
         return typed.List([np.random.default_rng(child) for child in seq.spawn(n)])
 
-    @Timer(name="DynamicThresholdScheme run", logger=logger.info)
     def run(self, thres_neigh: int = 11) -> None:
-        logger.info("Running dynamic threshold scheme (%s mode)", self.mode)
-        for istage in track(
-            range(1, self.nstages),
-            description="Running stages",
-            console=CONSOLE,
-            transient=True,
-        ):
-            beam_idx_cur = self.get_current_thresholds_idx(istage)
-            beam_idx_prev = self.get_current_thresholds_idx(istage - 1)
-            if self.mode == "improved":
-                sim_folds = pre_simulate_stage_folds(
-                    self.states[istage - 1],
-                    self.folds_in,
-                    beam_idx_prev,
-                    self.bias_snr,
-                    self.profile,
-                    self._stage_rngs(istage, len(beam_idx_prev) * self.nprobs),
-                    self.ntrials,
-                    self.nthresholds,
-                    self.nprobs,
-                    self.ducy_max,
-                    self.wtsp,
-                )
-                run_stage_improved(
-                    istage,
-                    beam_idx_cur,
-                    beam_idx_prev,
-                    self.states,
-                    sim_folds,
-                    self.folds_out,
-                    self.probs,
-                    self.branching_pattern[istage],
-                    self.thresholds,
-                    self.nprobs,
-                    thres_neigh,
-                )
-            else:
-                run_stage_legacy(
-                    istage,
-                    beam_idx_cur,
-                    beam_idx_prev,
-                    self.states,
-                    self.folds_in,
-                    self.folds_out,
-                    self.probs,
-                    self.branching_pattern[istage],
-                    self.thresholds,
-                    self.bias_snr,
-                    self.profile,
-                    self._stage_rngs(istage, len(beam_idx_cur)),
-                    self.ntrials,
-                    self.ducy_max,
-                    self.wtsp,
-                    thres_neigh,
-                )
-            self.folds_in = self.folds_out
-            self.folds_out = typed.List.empty_list(FoldsType)
-            for _ in range(self.nthresholds * self.nprobs):
-                self.folds_out.append(create_empty_folds())
+        with Timer(name="DynamicThresholdScheme run", logger=logger.info):
+            logger.info("Running dynamic threshold scheme (%s mode)", self.mode)
+            for istage in track(
+                range(1, self.nstages),
+                description="Running stages",
+                console=CONSOLE,
+                transient=True,
+            ):
+                beam_idx_cur = self.get_current_thresholds_idx(istage)
+                beam_idx_prev = self.get_current_thresholds_idx(istage - 1)
+                if self.mode == "improved":
+                    sim_folds = pre_simulate_stage_folds(
+                        self.states[istage - 1],
+                        self.folds_in,
+                        beam_idx_prev,
+                        self.bias_snr,
+                        self.profile,
+                        self._stage_rngs(istage, len(beam_idx_prev) * self.nprobs),
+                        self.ntrials,
+                        self.nthresholds,
+                        self.nprobs,
+                        self.ducy_max,
+                        self.wtsp,
+                    )
+                    run_stage_improved(
+                        istage,
+                        beam_idx_cur,
+                        beam_idx_prev,
+                        self.states,
+                        sim_folds,
+                        self.folds_out,
+                        self.probs,
+                        self.branching_pattern[istage],
+                        self.thresholds,
+                        self.nprobs,
+                        thres_neigh,
+                    )
+                else:
+                    run_stage_legacy(
+                        istage,
+                        beam_idx_cur,
+                        beam_idx_prev,
+                        self.states,
+                        self.folds_in,
+                        self.folds_out,
+                        self.probs,
+                        self.branching_pattern[istage],
+                        self.thresholds,
+                        self.bias_snr,
+                        self.profile,
+                        self._stage_rngs(istage, len(beam_idx_cur)),
+                        self.ntrials,
+                        self.ducy_max,
+                        self.wtsp,
+                        thres_neigh,
+                    )
+                self.folds_in = self.folds_out
+                self.folds_out = typed.List.empty_list(FoldsType)
+                for _ in range(self.nthresholds * self.nprobs):
+                    self.folds_out.append(create_empty_folds())
 
     def save(self, outdir: str = ".") -> str:
         """Save the StatesInfo object to an hdf5 file."""

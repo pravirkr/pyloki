@@ -117,6 +117,37 @@ class TestResolve:
         assert idx[0, 1] == grid_cell(freq, LIMITS[1], 64)
 
     @pytest.mark.parametrize(
+        "impl",
+        jit_variants(chebyshev.poly_chebyshev_fixed_resolve_batch),
+    )
+    def test_fixed_grid_subtracts_reference_position_offset(self, impl) -> None:
+        """Nonzero initial offset P(t_init) is subtracted from P(t_add)."""
+        leaf = _cheby_leaf([2e-3, 5.0, 0.0, 1.3e5], 100.0)
+        idx_fix, phase_fix = impl(
+            leaf,
+            (T_ADD, 1.0),
+            (0.0, SCALE),
+            (T_INIT, 1.0),
+            COUNTS,
+            LIMITS,
+            NBINS,
+        )
+        p = _series(leaf[0, :4, 0], T_INIT, SCALE)
+        delay = (p(T_ADD) - p(T_INIT)) / C_VAL
+        assert_phase(phase_fix[0], expected_phase(T_ADD - T_INIT, delay, 100.0))
+        idx_mov, phase_mov = chebyshev.poly_chebyshev_resolve_batch(
+            leaf,
+            (T_ADD, 1.0),
+            (T_INIT, SCALE),
+            (T_INIT, 1.0),
+            COUNTS,
+            LIMITS,
+            NBINS,
+        )
+        np.testing.assert_array_equal(idx_fix, idx_mov)
+        assert_phase(phase_fix[0], phase_mov[0])
+
+    @pytest.mark.parametrize(
         "impl", jit_variants(chebyshev.poly_chebyshev_resolve_batch)
     )
     @pytest.mark.parametrize("t_cur", [10.0, 18.3719])
@@ -394,14 +425,37 @@ class TestBranchingPattern:
         "impl",
         jit_variants(chebyshev.generate_bp_poly_chebyshev_approx),
     )
-    def test_approx_flags_a_pattern_that_reaches_branch_max(self, impl) -> None:
+    def test_approx_level_count_above_branch_max_is_not_truncated(self, impl) -> None:
+        """``branch_max`` caps children per parameter, not leaves per level.
+
+        A level's leaf count is the product over parameters, so it can exceed
+        ``branch_max`` without anything being truncated. The smallest
+        ``branch_max`` that still runs must give the full pattern.
+        """
+        param_arr = typed.List([np.array([0.0]), np.array([100.0])])
+        dparams = np.array([5000.0, 0.005])
+        args = (10.0, 2, NBINS, 1.0, 0)
+        kwargs = {"use_moving_grid": True, "tiling_strategy": "aggressive", "itree": 0}
+        full = impl(param_arr, dparams, *args, **kwargs, branch_max=4096)
+        smallest_ok = None
+        for branch_max in range(1, int(full.max()) + 1):
+            try:
+                got = impl(param_arr, dparams, *args, **kwargs, branch_max=branch_max)
+            except ValueError:
+                continue
+            smallest_ok = branch_max
+            np.testing.assert_array_equal(got, full)
+            break
+        assert smallest_ok is not None
+        assert full.max() > smallest_ok, "fixture must have a level above branch_max"
+
+    @pytest.mark.parametrize(
+        "impl",
+        jit_variants(chebyshev.generate_bp_poly_chebyshev_approx),
+    )
+    def test_approx_raises_when_a_parameter_exceeds_branch_max(self, impl) -> None:
         kwargs = {"use_moving_grid": True, "tiling_strategy": "aggressive", "itree": 0}
         full = impl(self.PARAM_ARR, self.DPARAMS, *self.ARGS, **kwargs, branch_max=4096)
-        with pytest.raises(ValueError, match="truncated due to branch_max"):
-            impl(
-                self.PARAM_ARR,
-                self.DPARAMS,
-                *self.ARGS,
-                **kwargs,
-                branch_max=int(full.max()),
-            )
+        assert full.max() > 1
+        with pytest.raises(ValueError, match="increase branch_max"):
+            impl(self.PARAM_ARR, self.DPARAMS, *self.ARGS, **kwargs, branch_max=1)

@@ -260,7 +260,7 @@ class WorldTreeComplex(structref.StructRefProxy):
     def score_min(self) -> float:
         return np.min(self.scores[: self.valid_size]) if self.valid_size > 0 else 0.0
 
-    def get_new(self, max_sugg: int) -> WorldTree:
+    def get_new(self, max_sugg: int) -> WorldTreeComplex:
         return get_new_func_complex(self, max_sugg)
 
     def get_best(self) -> tuple[np.ndarray, np.ndarray, float]:
@@ -513,6 +513,9 @@ def add_batch_func(
     n_to_add = min(len(pending_idxs), space_left)
     if n_to_add == 0:
         return effective_threshold
+    if len(pending_idxs) > space_left:
+        order = np.argsort(scores_batch[pending_idxs])[::-1][:n_to_add]
+        pending_idxs = pending_idxs[order]
     # Batched assignment
     pos = self.valid_size
     self.leaves[pos : pos + n_to_add] = leaves_batch[pending_idxs]
@@ -535,6 +538,8 @@ def prune_on_overload_func(
         return current_threshold
     # Compute threshold from Top-K and Median
     total_candidates = self.valid_size + num_to_add
+    if total_candidates <= self.size:
+        return current_threshold
     scratch_scores = np.empty(total_candidates, dtype=self.scores.dtype)
     scratch_scores[: self.valid_size] = self.scores[: self.valid_size]
     scratch_scores[self.valid_size :] = scores_batch
@@ -937,19 +942,25 @@ def get_unique_indices_scores(leaves: np.ndarray, scores: np.ndarray) -> np.ndar
     pos_dict: dict[int, int] = {}
     scores_dict: dict[int, float] = {}
     unique_indices = np.empty(n_leaves, dtype=np.int64)
+    buf = np.zeros(1, dtype=np.float64)
+    buf_i64 = buf.view(np.int64)
     count = 0
     mask31 = 0x7FFFFFFF
     mask62 = 0x3FFFFFFFFFFFFFFF
     for ii in range(n_leaves):
-        # Mix each quantized row value across two 31-bit chunks so all products
-        # stay below 2^62 (exact and overflow-free in both int64 and Python int).
+        # Mix the quantized IEEE-754 bit pattern across bounded 31-bit chunks so
+        # signs, exponents, and large |d0| values stay distinct and overflow-free.
         key = 0
         for jj in range(n_rows):
-            quant = int(np.round(leaves[ii, jj, 0] * 1e9))
+            q = np.round(leaves[ii, jj, 0], 9)
+            buf[0] = 0.0 if q == 0.0 else q
+            quant = int(buf_i64[0])
             lo = quant & mask31
             hi = (quant >> 31) & mask31
+            top = (quant >> 62) & 0x3
             key = (((key & mask31) * 2654435761) ^ (key >> 31) ^ lo) & mask62
             key = (((key & mask31) * 2654435761) ^ (key >> 31) ^ hi) & mask62
+            key = (((key & mask31) * 2654435761) ^ (key >> 31) ^ top) & mask62
         if key in pos_dict:
             if scores[ii] > scores_dict[key]:
                 scores_dict[key] = scores[ii]

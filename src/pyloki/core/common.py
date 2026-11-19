@@ -124,7 +124,7 @@ def load_folds_4d(fold: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndar
 
 @njit(cache=True, fastmath=True)
 def load_folds_5d(fold: np.ndarray, iseg: int, param_idx: np.ndarray) -> np.ndarray:
-    """Fold shape: (nsnap, ncrackles, nsnap, njerks, naccels, nfreqs, 2, nbins)."""
+    """Fold shape: (nsegments, ncrackles, nsnap, njerks, naccels, nfreqs, 2, nbins)."""
     return fold[
         iseg,
         param_idx[-5],
@@ -217,7 +217,7 @@ def load_prune_folds_4d(fold: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
 
 @njit(cache=True, fastmath=True)
 def load_prune_folds_5d(fold: np.ndarray, param_idx: np.ndarray) -> np.ndarray:
-    """Fold shape: (nsnap, ncrackles, nsnap, njerks, naccels, nfreqs, 2, nbins)."""
+    """Fold shape: (ncrackles, nsnap, njerks, naccels, nfreqs, 2, nbins)."""
     # Single slice case: param_idx is 1D
     if param_idx.ndim == 1:
         return fold[0, 0, 0, param_idx[-2], param_idx[-1]]

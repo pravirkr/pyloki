@@ -152,3 +152,16 @@ def test_parallel_prune_merges_only_its_own_runs(search, tmp_path) -> None:
     assert stray_h5.exists()  # and the other search's files are left alone
     assert stray_log.exists()
     assert not list(tmp_path.glob("tmp_mine_*"))  # its own temporaries are cleaned up
+
+
+def test_prune_dyp_tree_rejects_empty_or_invalid_without_creating_outputs(
+    search, tmp_path
+) -> None:
+    dyp = search
+    thresholds = _thresholds(dyp)
+    outdir = tmp_path / "should_not_exist"
+    with pytest.raises(ValueError, match="ref_segs must not be empty"):
+        prune_dyp_tree(dyp, thresholds, ref_segs=[], outdir=outdir)
+    with pytest.raises(ValueError, match="n_runs must be between"):
+        prune_dyp_tree(dyp, thresholds, n_runs=0, outdir=outdir)
+    assert not outdir.exists()

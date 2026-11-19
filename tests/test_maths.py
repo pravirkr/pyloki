@@ -139,6 +139,24 @@ class TestMaths:
         # floor by 2x and still catches the defect with ~400x to spare.
         np.testing.assert_allclose(result, -stats.chi2.logsf(chi_sq, df), rtol=2e-3)
 
+    @pytest.mark.parametrize("impl", jit_variants(maths.chi_sq_minus_logsf_func))
+    @pytest.mark.parametrize("chi_sq", [-10.0, -0.6, -0.25, -1e-9, 0.0])
+    @pytest.mark.parametrize("df", [1, 2, 16, 64])
+    def test_chi_sq_minus_logsf_func_non_positive_is_zero(
+        self,
+        impl,
+        chi_sq: float,
+        df: int,
+    ) -> None:
+        """Non-positive chi-squared scores have P = 1, so -ln SF == 0."""
+        assert impl(chi_sq, df) == 0.0
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.chi_sq_minus_logsf_func))
+    @pytest.mark.parametrize("df", [-1, 0, 65])
+    def test_chi_sq_minus_logsf_func_rejects_bad_df(self, impl, df: int) -> None:
+        with pytest.raises(ValueError, match="df must be in"):
+            impl(5.0, df)
+
     @pytest.mark.parametrize("df", [1, 2, 3, 32, 64])
     def test_chi_sq_minus_logsf_func_is_monotonic(self, df: int) -> None:
         """Sweeps the table, the top seam and the tail extrapolation together."""
@@ -312,6 +330,26 @@ class TestChebyshevPolysTable:
             rtol=1e-6,
         )
 
+    @pytest.mark.parametrize("impl", jit_variants(maths.gen_chebyshev_polys_table))
+    @pytest.mark.parametrize("n_derivs", [0, 1, 2])
+    def test_order_zero_matches_numpy(self, impl, n_derivs: int) -> None:
+        np.testing.assert_array_equal(
+            impl(0, n_derivs),
+            maths.gen_chebyshev_polys_table_np(0, n_derivs),
+        )
+
+    @pytest.mark.parametrize(
+        "impl",
+        [
+            *jit_variants(maths.gen_chebyshev_polys_table),
+            maths.gen_chebyshev_polys_table_np,
+        ],
+    )
+    @pytest.mark.parametrize(("order_max", "n_derivs"), [(-1, 0), (2, -1)])
+    def test_rejects_negative_args(self, impl, order_max: int, n_derivs: int) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            impl(order_max, n_derivs)
+
     @pytest.mark.parametrize("impl", jit_variants(maths.generalized_cheb_pols))
     @pytest.mark.parametrize(
         ("t0", "scale"), [(0.0, 1.0), (0.0, 1.7), (0.3, 1.0), (0.3, 1.7)]
@@ -325,6 +363,35 @@ class TestChebyshevPolysTable:
             expected = polynomial.Chebyshev.basis(n)((x - t0) / scale)
             got = polynomial.polynomial.polyval(x, table[n])
             np.testing.assert_allclose(got, expected, atol=1e-5)
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.generalized_cheb_pols))
+    def test_generalized_large_shift_and_float64(self, impl) -> None:
+        order, t0, scale = 5, 5000.0, 10.0
+        table = impl(order, t0, scale)
+        assert table.dtype == np.float64
+        for n in range(order + 1):
+            want = (
+                polynomial.Chebyshev.basis(n, domain=[t0 - scale, t0 + scale])
+                .convert(kind=polynomial.Polynomial)
+                .coef
+            )
+            np.testing.assert_allclose(table[n, : n + 1], want, rtol=1e-12, atol=0)
+            np.testing.assert_array_equal(table[n, n + 1 :], 0.0)
+
+        t0_eval, scale_eval = 100.0, 10.0
+        table_eval = impl(order, t0_eval, scale_eval)
+        x = np.linspace(t0_eval - scale_eval, t0_eval + scale_eval, 21)
+        for n in range(order + 1):
+            expected = polynomial.Chebyshev.basis(n)((x - t0_eval) / scale_eval)
+            got = polynomial.polynomial.polyval(x, table_eval[n])
+            np.testing.assert_allclose(got, expected, rtol=1e-7, atol=1e-7)
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.generalized_cheb_pols))
+    def test_generalized_rejects_invalid(self, impl) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            impl(-1, 0.0, 1.0)
+        with pytest.raises(ValueError, match="non-zero"):
+            impl(2, 0.0, 0.0)
 
 
 class TestDesignMatrixTaylor:
@@ -372,6 +439,11 @@ class TestPolyTaylorTransformMatrix:
             atol=1e-14,
         )
         np.testing.assert_array_equal(impl(5, 0.0, 0), np.eye(6))
+
+    @pytest.mark.parametrize("impl", jit_variants(maths.poly_taylor_transform_matrix))
+    def test_rejects_negative_order(self, impl) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            impl(-1, 0.5, 0)
 
 
 class TestCircTaylorTransformMatrix:
@@ -491,8 +563,12 @@ class TestConnectionCoefficients:
     def test_zero_off_support(self, impl, k: int, m: int) -> None:
         assert impl(k, m) == 0.0
 
-    @pytest.mark.parametrize("impl", jit_variants(maths.compute_connection_matrix_s))
-    def test_s_rejects_negative_order(self, impl) -> None:
+    @pytest.mark.parametrize(
+        "impl",
+        jit_variants(maths.compute_connection_matrix_s)
+        + jit_variants(maths.compute_connection_matrix_r),
+    )
+    def test_s_and_r_reject_negative_order(self, impl) -> None:
         with pytest.raises(ValueError, match="non-negative"):
             impl(-1)
 

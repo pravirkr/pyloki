@@ -107,6 +107,8 @@ class StateInfo:
 
     @property
     def cost(self) -> float:
+        if self.success_h1_cumul <= 0.0:
+            return float("inf")
         return self.complexity_cumul / self.success_h1_cumul
 
     @classmethod
@@ -143,14 +145,30 @@ class StatesInfo:
 
     def print_summary(self) -> None:
         """Print a summary of the threshold scheme using rich table."""
+        if not self.entries:
+            CONSOLE.print("[yellow]No states in scheme.[/yellow]")
+            return
         branching_pattern = self.get_info("nbranches")
         survive_prob = self.get_info("success_h1_cumul")[-1]
-        pruning_complexity = np.log2(self.get_info("complexity_cumul")[-1])
-        total_cost = np.log2(self.get_info("cost")[-1])
+        complexity_val = float(self.get_info("complexity_cumul")[-1])
+        pruning_complexity = (
+            float(np.log2(complexity_val)) if complexity_val > 0 else float("-inf")
+        )
+        cost_val = float(self.get_info("cost")[-1])
+        total_cost = (
+            float(np.log2(cost_val))
+            if np.isfinite(cost_val) and cost_val > 0
+            else float("inf")
+        )
         mean_bp = 2 ** (np.mean(np.log2(branching_pattern)))
         n_options = np.sum(np.log2(branching_pattern))
-        n_independent = len(self.thresholds) / self.thresholds[-1]
-        total_survive_prob = 1 - (1 - survive_prob) ** n_independent
+        last_thresh = float(self.thresholds[-1])
+        if last_thresh > 0:
+            n_independent = len(self.thresholds) / last_thresh
+            total_survive_prob = 1 - (1 - survive_prob) ** n_independent
+        else:
+            n_independent = float("nan")
+            total_survive_prob = float(survive_prob)
 
         # Format arrays for easy copy-pasting
         bp_str = np.array2string(
@@ -257,7 +275,7 @@ class DynamicThresholdSchemeAnalyser:
             for istage in range(self.nstages - 2, -1, -1):
                 ithres = np.argmin(np.abs(self.thresholds - prev_threshold))
                 iprob = np.digitize(prev_success_h1_cumul, self.probs) - 1
-                if iprob < 0:
+                if iprob < 0 or iprob >= self.nprobs:
                     msg = (
                         f"Backtracking failed at stage {istage} for threshold "
                         f"{prev_threshold} and success probability "
@@ -306,7 +324,7 @@ class DynamicThresholdSchemeAnalyser:
             for istage in range(self.nstages - 2, -1, -1):
                 ithres = np.argmin(np.abs(self.thresholds - prev_threshold))
                 iprob = np.digitize(prev_success_h1_cumul, self.probs) - 1
-                if iprob < 0:
+                if iprob < 0 or iprob >= self.nprobs:
                     msg = (
                         f"Backtracking failed at stage {istage} for threshold "
                         f"{prev_threshold} and success probability "
@@ -579,7 +597,7 @@ class DynamicThresholdSchemeAnalyser:
             raise ValueError(msg)
 
         prob = frontier["success_h1_cumul"].astype(float)
-        cost = frontier["cost"].astype(float)
+        cost = frontier["cost"].astype(float) * nparam_vol
         order = np.argsort(prob)
         prob, cost, _ = prob[order], cost[order], frontier[order]
 
@@ -626,25 +644,38 @@ class DynamicThresholdSchemeAnalyser:
         )
         return fig
 
-    def save(self, filename: str) -> None:
-        """Save the StatesInfo object to a file."""
-        np.savez(
-            filename,
-            thresholds=self.thresholds,
-            probs=self.probs,
-            states=self.states,
-            allow_pickle=True,
-        )
+    def save(self, filename: str | Path) -> None:
+        """Save the DynamicThresholdSchemeAnalyser to an hdf5 file."""
+        with h5py.File(filename, "w") as f:
+            f.attrs["beam_width"] = self.beam_width
+            for arr in [
+                "branching_pattern",
+                "thresholds",
+                "probs",
+                "guess_path",
+            ]:
+                f.create_dataset(
+                    arr,
+                    data=getattr(self, arr),
+                    compression="gzip",
+                    compression_opts=9,
+                )
+            f.create_dataset(
+                "states",
+                data=self.states,
+                compression="gzip",
+                compression_opts=9,
+            )
 
     @classmethod
-    def from_file(cls, filename: str) -> DynamicThresholdSchemeAnalyser:
+    def from_file(cls, filename: str | Path) -> DynamicThresholdSchemeAnalyser:
         """Load a DynamicThresholdScheme object from an hdf5 file."""
         with h5py.File(filename, "r") as f:
             branching_pattern = f["branching_pattern"][:]
             thresholds = f["thresholds"][:]
             probs = f["probs"][:]
             guess_path = f["guess_path"][:]
-            beam_width = f.attrs["beam_width"]
+            beam_width = float(f.attrs["beam_width"])
             states = f["states"][:]
         return cls(
             states,
