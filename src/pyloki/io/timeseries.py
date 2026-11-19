@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Literal
+
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.offsetbox import AnchoredText
@@ -9,15 +11,33 @@ from sigpyproc.viz.styles import PlotTable
 
 from pyloki.core import brutefold
 from pyloki.detection.scoring import boxcar_snr_1d
+from pyloki.io.preprocess import (
+    DM0RfiMask,
+    ObservationMetadata,
+    PreprocessOptions,
+    apply_dm0_rfi_mask,
+    preprocess_timeseries,
+)
 from pyloki.simulation.modulate import type_to_mods
 from pyloki.utils import np_utils
 
+if TYPE_CHECKING:
+    from numpy import typing as npt
+
 
 class TimeSeries:
-    def __init__(self, ts_e: np.ndarray, ts_v: np.ndarray, dt: float) -> None:
+    def __init__(
+        self,
+        ts_e: np.ndarray,
+        ts_v: np.ndarray,
+        dt: float,
+        *,
+        metadata: ObservationMetadata | None = None,
+    ) -> None:
         self._ts_e = np.asarray(ts_e, dtype=np.float32)
         self._ts_v = np.asarray(ts_v, dtype=np.float32)
         self._dt = dt
+        self._metadata = metadata
 
     @property
     def ts_e(self) -> np.ndarray:
@@ -30,6 +50,10 @@ class TimeSeries:
     @property
     def dt(self) -> float:
         return self._dt
+
+    @property
+    def metadata(self) -> ObservationMetadata | None:
+        return self._metadata
 
     @property
     def nsamps(self) -> int:
@@ -49,7 +73,37 @@ class TimeSeries:
             raise ValueError(msg)
         ts_e = np_utils.downsample_1d(self.ts_e[:n_keep], factor)
         ts_v = np_utils.downsample_1d(self.ts_v[:n_keep], factor) / factor
-        return TimeSeries(ts_e, ts_v, self.dt * factor)
+        return TimeSeries(ts_e, ts_v, self.dt * factor, metadata=self._metadata)
+
+    def apply_dm0_rfi_mask(
+        self,
+        rfi_mask: DM0RfiMask,
+        *,
+        zap_mode: Literal["noise", "zero"] = "noise",
+        seed: int | None = None,
+    ) -> TimeSeries:
+        """Return a new ``TimeSeries`` cleaned with a ``DM=0`` RFI mask."""
+        ts_e, ts_v = apply_dm0_rfi_mask(
+            self._ts_e,
+            self._ts_v,
+            rfi_mask,
+            zap_mode=zap_mode,
+            seed=seed,
+        )
+        return TimeSeries(ts_e, ts_v, self._dt, metadata=self._metadata)
+
+    @classmethod
+    def from_raw(
+        cls,
+        raw: npt.ArrayLike,
+        dt: float,
+        *,
+        options: PreprocessOptions | None = None,
+        metadata: ObservationMetadata | None = None,
+    ) -> TimeSeries:
+        """Build a ``TimeSeries`` from raw samples via ``preprocess_timeseries``."""
+        ts_e, ts_v, _ = preprocess_timeseries(raw, dt, options=options)
+        return cls(ts_e, ts_v, dt, metadata=metadata)
 
     def fold_ephem(
         self,
@@ -211,6 +265,11 @@ class TimeSeries:
         tim_type: str = "dat",
         filter_window: float = 1.0,
         norm_scale_method: str = "iqr",
+        *,
+        start_sample: int = 0,
+        nsamps: int | None = None,
+        preprocess_method: Literal["zscore", "robust"] = "zscore",
+        preprocess_options: PreprocessOptions | None = None,
     ) -> TimeSeries:
         """Load a time series from a .tim or .dat file.
 
@@ -223,15 +282,31 @@ class TimeSeries:
         filter_window : float, optional
             Window size for the median baseline/rednoise filter, by default 1.0 seconds
         norm_scale_method : str, optional
-            Method for normalising the time series, by default "iqr"
-            Other options are "std" and "mad"
+            Method for normalising the time series when using ``zscore``, by default
+            "iqr". Other options are "std" and "mad".
             See sigpyproc.timeseries.TimeSeries.normalise for more details.
+        start_sample : int, optional
+            Starting sample index for subinterval slicing, by default 0.
+        nsamps : int | None, optional
+            Number of samples to read from ``start_sample`` (``None`` reads to EOF).
+        preprocess_method : {"zscore", "robust"}, optional
+            Preprocessing method: legacy ``"zscore"`` (default, backward-compatible)
+            or ``"robust"`` dual-array inverse-variance ``(ts_e, ts_v)``.
+        preprocess_options : PreprocessOptions | None, optional
+            Explicit preprocessing options. When provided, overrides
+            ``preprocess_method``, ``filter_window``, and ``norm_scale_method``.
 
         Returns
         -------
         TimeSeries
-            A TimeSeries object.
+            A TimeSeries object with populated ``metadata``.
         """
+        if start_sample < 0:
+            msg = f"start_sample must be >= 0, got {start_sample}"
+            raise ValueError(msg)
+        if nsamps is not None and nsamps <= 0:
+            msg = f"nsamps must be > 0, got {nsamps}"
+            raise ValueError(msg)
         if tim_type == "dat":
             tim_load = sigTimeSeries.from_dat(timfile)
         elif tim_type == "tim":
@@ -239,10 +314,54 @@ class TimeSeries:
         else:
             msg = f"Invalid tim type: {tim_type}"
             raise ValueError(msg)
+
+        header = tim_load.header
+        dt = float(header.tsamp)
+        total_nsamps = len(tim_load.data)
+        if start_sample >= total_nsamps:
+            msg = f"start_sample ({start_sample}) exceeds total nsamps ({total_nsamps})"
+            raise ValueError(msg)
+        stop_sample = (
+            total_nsamps if nsamps is None else min(start_sample + nsamps, total_nsamps)
+        )
+
+        raw_dm = getattr(header, "dm", None)
+        raw_mjd = getattr(header, "tstart", None)
+        raw_bary = getattr(header, "barycentric", None)
+        metadata = ObservationMetadata(
+            dm=float(raw_dm) if raw_dm is not None and float(raw_dm) >= 0.0 else None,
+            start_mjd=(
+                float(raw_mjd) if raw_mjd is not None and float(raw_mjd) > 0.0 else None
+            ),
+            barycentric=bool(raw_bary) if raw_bary is not None else None,
+            source=str(getattr(header, "source", "") or ""),
+            input_path=str(timfile),
+            original_nsamps=int(getattr(header, "nsamples", total_nsamps)),
+        ).shifted(start_sample, dt)
+
+        if preprocess_options is not None or preprocess_method == "robust":
+            opts = (
+                preprocess_options
+                if preprocess_options is not None
+                else PreprocessOptions(method="robust", filter_window=filter_window)
+            )
+            sliced = np.asarray(tim_load.data[start_sample:stop_sample])
+            ts_e, ts_v, _ = preprocess_timeseries(sliced, dt, options=opts)
+            return cls(ts_e, ts_v, dt, metadata=metadata)
+
+        if preprocess_method != "zscore":
+            msg = f"Invalid preprocess_method: {preprocess_method!r}"
+            raise ValueError(msg)
+
+        if start_sample > 0 or stop_sample < total_nsamps:
+            tim_load = sigTimeSeries(
+                tim_load.data[start_sample:stop_sample],
+                header,
+            )
         tim_load = tim_load.deredden(method="median", window=filter_window, fast=True)
         tim_load = tim_load.normalise(loc_method="mean", scale_method=norm_scale_method)  # ty:ignore[invalid-argument-type]
         signal = tim_load.data
-        return cls(signal, np.ones_like(signal), tim_load.header.tsamp)
+        return cls(signal, np.ones_like(signal), dt, metadata=metadata)
 
     def __str__(self) -> str:
         name = type(self).__name__
