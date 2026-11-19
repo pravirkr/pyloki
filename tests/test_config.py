@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pyloki.config import ParamLimits, PulsarSearchConfig
+from pyloki.config import (
+    ParamLimits,
+    PulsarSearchConfig,
+    compute_max_coherent_subarc,
+    compute_min_nsegments,
+)
 from pyloki.utils import transforms
 from pyloki.utils.misc import C_VAL
 
@@ -173,3 +178,72 @@ class TestPulsarSearchConfigValidation:
             param_limits=np.array([[500.0, 501.0]]),
         )
         assert 1 <= cfg_many_cycles.bseg_brute < cfg_many_cycles.nsamps
+
+
+class TestSubArcGuardsAndSerialization:
+    def test_compute_min_nsegments_and_max_subarc(self) -> None:
+        nseg_cheb = compute_min_nsegments(
+            tobs=3600.0,
+            p_orb_min=7200.0,
+            x_max=2.0,
+            p_min=0.002,
+            nbins=64,
+            eta=1.0,
+            use_chebyshev=True,
+        )
+        nseg_tay = compute_min_nsegments(
+            tobs=3600.0,
+            p_orb_min=7200.0,
+            x_max=2.0,
+            p_min=0.002,
+            nbins=64,
+            eta=1.0,
+            use_chebyshev=False,
+        )
+        assert nseg_cheb >= 1
+        assert (nseg_cheb & (nseg_cheb - 1)) == 0
+        assert nseg_tay >= nseg_cheb
+
+        t2 = compute_max_coherent_subarc(2, 7200.0, 2.0, 0.002, 64)
+        t3 = compute_max_coherent_subarc(3, 7200.0, 2.0, 0.002, 64)
+        t4 = compute_max_coherent_subarc(4, 7200.0, 2.0, 0.002, 64)
+        assert 0.0 < t2 < t3 < t4
+
+        with pytest.raises(ValueError, match="poly_order"):
+            compute_max_coherent_subarc(1, 7200.0, 2.0, 0.002, 64)
+
+    def test_config_roundtrip_and_estimate_resources(self, tmp_path) -> None:
+        cfg = PulsarSearchConfig(
+            nsamps=2**16,
+            tsamp=1e-3,
+            nbins=32,
+            eta=1.0,
+            param_limits=np.array([[-5.0, 5.0], [10.0, 10.1]]),
+            bseg_brute=2**10,
+            bseg_ffa=2**12,
+        )
+        d = cfg.to_dict()
+        cfg2 = PulsarSearchConfig.from_dict(d)
+        assert cfg2.nsamps == cfg.nsamps
+        assert cfg2.nbins == cfg.nbins
+        np.testing.assert_allclose(cfg2.param_limits, cfg.param_limits)
+
+        toml_path = tmp_path / "search.toml"
+        toml_path.write_text(
+            "[search]\n"
+            f"nsamps = {cfg.nsamps}\n"
+            f"tsamp = {cfg.tsamp}\n"
+            f"nbins = {cfg.nbins}\n"
+            f"eta = {cfg.eta}\n"
+            "param_limits = [[-5.0, 5.0], [10.0, 10.1]]\n"
+            f"bseg_brute = {cfg.bseg_brute}\n"
+            f"bseg_ffa = {cfg.bseg_ffa}\n",
+        )
+        cfg3 = PulsarSearchConfig.from_toml(toml_path, section="search")
+        np.testing.assert_allclose(cfg3.param_limits, cfg.param_limits)
+
+        res = cfg.estimate_resources()
+        assert res["nsegments_ffa"] == 16
+        assert res["nparam_vol_ffa"] > 0
+        assert res["ffa_tensor_bytes"] > 0
+        assert res["total_ffa_evals"] >= res["nsegments_ffa"] * res["nparam_vol_ffa"]

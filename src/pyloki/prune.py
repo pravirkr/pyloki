@@ -840,6 +840,37 @@ def _prune_dyp_seg(
     )
 
 
+def sliding_arc_windows(
+    nsegments: int,
+    arc_len: int,
+    stride: int | None = None,
+) -> list[tuple[int, int]]:
+    """Generate contiguous sub-arc segment windows covering ``[0, nsegments)``.
+
+    Used with ``DynamicProgramming.slice_segments`` to run sliding-arc EP over
+    a single precomputed base P-FFA tensor when ``T_obs > t_max(k)``.
+    """
+    if nsegments < 1:
+        msg = f"nsegments must be >= 1, got {nsegments}"
+        raise ValueError(msg)
+    if not 1 <= arc_len <= nsegments:
+        msg = f"arc_len must be in [1, {nsegments}], got {arc_len}"
+        raise ValueError(msg)
+    step = max(1, arc_len // 4) if stride is None else int(stride)
+    if step < 1:
+        msg = f"stride must be >= 1, got {step}"
+        raise ValueError(msg)
+    windows: list[tuple[int, int]] = []
+    pos = 0
+    while pos + arc_len < nsegments:
+        windows.append((pos, pos + arc_len))
+        pos += step
+    last = (nsegments - arc_len, nsegments)
+    if not windows or windows[-1] != last:
+        windows.append(last)
+    return windows
+
+
 def prune_dyp_tree(
     dyp: DynamicProgramming,
     threshold_scheme: np.ndarray,
@@ -854,6 +885,7 @@ def prune_dyp_tree(
     *,
     use_moving_grid: bool = True,
     n_workers: int = 4,
+    stop_snr: float | None = None,
 ) -> str:
     if not isinstance(n_workers, int | np.integer):
         msg = f"n_workers must be an integer, got {type(n_workers)}"
@@ -911,6 +943,14 @@ def prune_dyp_tree(
                 result_file=result_file,
                 task_id=0,
             )
+            if stop_snr is not None and prn.world_tree.valid_size > 0:
+                _, _, best_score = prn.world_tree.get_best()
+                if float(best_score) >= stop_snr:
+                    logger.info(
+                        f"Early stop triggered at ref_seg={ref_seg}: "
+                        f"best score {best_score:.2f} >= {stop_snr:.2f}",
+                    )
+                    break
     else:
         with (
             MultiprocessProgressTracker("Pruning tree") as tracker,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -7,6 +8,7 @@ from numba import typed
 
 from pyloki.core import set_ffa_load_func
 from pyloki.core.fold import ffa_taylor_resolve
+from pyloki.detection import scoring
 from pyloki.dynamic import (
     FFATaylorComplexDPFuncts,
     FFATaylorDPFuncts,
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from numpy import typing as npt
 
     from pyloki.config import PulsarSearchConfig
+    from pyloki.detection.scoring import ScoreMode
     from pyloki.io.timeseries import TimeSeries
 
 DP_FUNCS_TYPE = FFATaylorDPFuncts | FFATaylorComplexDPFuncts
@@ -347,6 +350,109 @@ class DynamicProgramming:
                 f"fold dims: {self.fold.shape}",
             )
         logger.info(f"FFA complete: Grid sizes: {self.dparams}")
+
+    def execute_scored(
+        self,
+        threshold: float,
+        *,
+        widths: npt.NDArray[np.int64] | None = None,
+        tile_size: int = 4096,
+        score_mode: ScoreMode = "boxcar",
+        show_progress: bool = False,
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float32]]:
+        """Execute FFA and emit final-level hits above ``threshold`` without full fold.
+
+        Runs levels ``1 .. niters_ffa - 1`` normally, then merges and scores the
+        final level tile-by-tile in bounded scratch memory. Results match
+        ``execute()`` followed by ``score_profiles`` and thresholding identically.
+        """
+        if tile_size < 1:
+            msg = f"tile_size must be >= 1, got {tile_size}"
+            raise ValueError(msg)
+        w = (
+            self.cfg.score_widths
+            if widths is None
+            else np.asarray(widths, dtype=np.int64)
+        )
+        n_iters = self.cfg.niters_ffa
+        if n_iters == 0:
+            fold_t = (
+                np.fft.irfft(self.fold, n=self.cfg.nbins).astype(np.float32)
+                if self.cfg.use_fourier
+                else self.fold.astype(np.float32)
+            )
+            flat_ev = fold_t[0].reshape(-1, 2, self.cfg.nbins)
+            scores = scoring.score_profiles(flat_ev, w, mode=score_mode)
+            hit_idx = np.flatnonzero(scores >= threshold).astype(np.int64)
+            return hit_idx, scores[hit_idx].astype(np.float32)
+
+        for _ in track_progress(
+            range(n_iters - 1),
+            description="Computing FFA (penultimate)",
+            total=max(1, n_iters - 1),
+            get_leaves=lambda: self.leaves_lb,
+            show_progress=show_progress,
+        ):
+            self._execute_iter()
+
+        final_level = self._ffa_level + 1
+        dparams = self.cfg.get_dparams(final_level)
+        param_arr_cur = self.cfg.get_param_arr(dparams)
+        param_cart_cur = np_utils.cartesian_prod_st(param_arr_cur)
+        n_total = len(param_cart_cur)
+        n_seg_out = self.nsegments // 2
+
+        hit_indices_list: list[npt.NDArray[np.int64]] = []
+        hit_scores_list: list[npt.NDArray[np.float32]] = []
+        tile_buf = np.empty(
+            (n_seg_out, min(tile_size, max(1, n_total)), *self.fold.shape[-2:]),
+            dtype=self.fold.dtype,
+        )
+
+        for i0 in range(0, n_total, tile_size):
+            i1 = min(i0 + tile_size, n_total)
+            tlen = i1 - i0
+            tile_view = tile_buf[:, :tlen]
+            tile_view.fill(0)
+            unify_fold(
+                self.fold,
+                self.param_grid_count,
+                tile_view,
+                param_cart_cur[i0:i1],
+                final_level,
+                self.dp_funcs,
+                self.load_func,
+            )
+            fold_ev = (
+                np.fft.irfft(tile_view[0], n=self.cfg.nbins).astype(np.float32)
+                if self.cfg.use_fourier
+                else tile_view[0].astype(np.float32)
+            )
+            scores = scoring.score_profiles(fold_ev, w, mode=score_mode)
+            local_hits = np.flatnonzero(scores >= threshold)
+            if local_hits.size > 0:
+                hit_indices_list.append((local_hits + i0).astype(np.int64))
+                hit_scores_list.append(scores[local_hits].astype(np.float32))
+
+        if not hit_indices_list:
+            return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float32)
+        return np.concatenate(hit_indices_list), np.concatenate(hit_scores_list)
+
+    def slice_segments(self, seg_start: int, seg_stop: int) -> DynamicProgramming:
+        """Return a shallow segment-sliced view of an executed P-FFA object.
+
+        Allows sliding-arc EP runs over contiguous sub-arcs ``[seg_start, seg_stop)``
+        without recomputing the base P-FFA fold tensor.
+        """
+        if not (0 <= seg_start < seg_stop <= self.nsegments):
+            msg = (
+                f"Invalid segment slice [{seg_start}, {seg_stop}) for "
+                f"nsegments={self.nsegments}"
+            )
+            raise ValueError(msg)
+        sliced = copy.copy(self)
+        sliced._fold = self._fold[seg_start:seg_stop]  # noqa: SLF001
+        return sliced
 
     def _execute_iter(self) -> None:
         """Execute a single iteration of the FFA search."""
