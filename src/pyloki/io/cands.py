@@ -16,12 +16,14 @@ from numpy.polynomial import chebyshev as np_cheb
 from numpy.polynomial import polynomial as np_poly
 
 from pyloki import kepler
+from pyloki.detection import scoring
 from pyloki.utils.misc import C_VAL
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import ClassVar, Self
 
+    from matplotlib import figure as mpl_figure
     from numpy import typing as npt
 
 
@@ -2200,3 +2202,223 @@ def evaluate_tempo2_predictor(
         u = ((m - b_lo) - (b_hi - m)) / (b_hi - b_lo)
         out[idx] = float(np_cheb.chebval(u, b_coeffs))
     return out.reshape(mjd_arr.shape)
+
+
+# ---------------------------------------------------------------------------
+# 2D Segment Waterfalls, S/N-Preserving Rebinning & 4-Panel Diagnostic Card
+# ---------------------------------------------------------------------------
+
+
+def bin2d(
+    folds: npt.ArrayLike,
+    bt: int = 1,
+    bp: int = 1,
+) -> npt.NDArray[np.float64]:
+    """S/N-preserving 2D block rebinning by ``(bt, bp)`` along ``(time, phase)``.
+
+    Sums non-overlapping ``bt x bp`` blocks and divides by ``sqrt(bt * bp)``
+    so unit-variance Gaussian noise remains unit-variance after rebinning.
+    """
+    arr = np.asarray(folds, dtype=np.float64)
+    if arr.ndim != 2:
+        msg = f"folds must be 2D (n_time, n_phase), got shape {arr.shape}"
+        raise ValueError(msg)
+    if bt < 1 or bp < 1:
+        msg = f"Rebin factors must be >= 1, got bt={bt}, bp={bp}"
+        raise ValueError(msg)
+    n_t, n_p = arr.shape
+    eff_bt = min(bt, n_t)
+    eff_bp = min(bp, n_p)
+    trimmed = arr[: n_t - (n_t % eff_bt), : n_p - (n_p % eff_bp)]
+    return trimmed.reshape(
+        trimmed.shape[0] // eff_bt,
+        eff_bt,
+        trimmed.shape[1] // eff_bp,
+        eff_bp,
+    ).sum(axis=(1, 3)) / math.sqrt(float(eff_bt * eff_bp))
+
+
+@attrs.frozen(auto_attribs=True, kw_only=True)
+class SegmentWaterfall:
+    """Aligned per-segment folds, unit-noise waterfall, and integrated profile."""
+
+    segment_folds: npt.NDArray[np.float32]
+    amp_map: npt.NDArray[np.float64]
+    integrated_fold: npt.NDArray[np.float32]
+    integrated_profile: npt.NDArray[np.float64]
+    best_snr: float
+    best_width: int
+
+
+def _normalize_ev_row(e_row: np.ndarray, v_row: np.ndarray) -> np.ndarray:
+    """Mean-subtracted unit-noise profile ``(E - E_bar * V / V_bar) / sqrt(V)``."""
+    v = np.asarray(v_row, dtype=np.float64)
+    e = np.asarray(e_row, dtype=np.float64)
+    out = np.zeros_like(e, dtype=np.float64)
+    valid = v > 0.0
+    if not np.any(valid):
+        return out
+    v_sum = float(np.sum(v[valid]))
+    e_sum = float(np.sum(e[valid]))
+    mean_ratio = e_sum / v_sum if v_sum > 0.0 else 0.0
+    out[valid] = (e[valid] - mean_ratio * v[valid]) / np.sqrt(v[valid])
+    return out
+
+
+def extract_segment_waterfall(
+    folds: npt.NDArray[np.float32],
+    *,
+    a_indices: npt.ArrayLike | None = None,
+    f_indices: npt.ArrayLike | None = None,
+    phase_shifts: npt.ArrayLike | None = None,
+    widths: npt.NDArray[np.int64] | None = None,
+) -> SegmentWaterfall:
+    """Extract an aligned 2D ``(segment x phase)`` S/N waterfall and integrated profile.
+
+    Accepts either:
+    - A 5D P-FFA fold cube ``(n_seg, n_acc, n_freq, 2, n_bins)`` together with
+      ``a_indices`` and ``f_indices`` (and optional ``phase_shifts``), OR
+    - Already-extracted 3D per-segment folds ``(n_seg, 2, n_bins)`` with
+      optional ``phase_shifts``.
+    """
+    arr = np.asarray(folds, dtype=np.float32)
+    if arr.ndim == 5:
+        if a_indices is None or f_indices is None:
+            msg = "a_indices and f_indices are required for 5D P-FFA fold cubes"
+            raise ValueError(msg)
+        a_idx = np.asarray(a_indices, dtype=np.int64)
+        f_idx = np.asarray(f_indices, dtype=np.int64)
+        n_seg = arr.shape[0]
+        n_bins = arr.shape[4]
+        seg_folds = np.empty((n_seg, 2, n_bins), dtype=np.float32)
+        for i in range(n_seg):
+            seg_folds[i] = arr[i, int(a_idx[i]), int(f_idx[i])]
+    elif arr.ndim == 3 and arr.shape[1] == 2:
+        seg_folds = arr.copy()
+        n_seg, _, n_bins = seg_folds.shape
+    else:
+        msg = (
+            "folds must have shape (n_seg, n_acc, n_freq, 2, n_bins) or "
+            f"(n_seg, 2, n_bins), got {arr.shape}"
+        )
+        raise ValueError(msg)
+
+    if phase_shifts is not None:
+        shifts = np.asarray(phase_shifts, dtype=np.int64)
+        if shifts.shape != (n_seg,):
+            msg = f"phase_shifts must have shape ({n_seg},), got {shifts.shape}"
+            raise ValueError(msg)
+        for i in range(n_seg):
+            if int(shifts[i]) != 0:
+                seg_folds[i] = np.roll(seg_folds[i], int(shifts[i]), axis=-1)
+
+    amp_map = np.empty((n_seg, n_bins), dtype=np.float64)
+    for i in range(n_seg):
+        amp_map[i] = _normalize_ev_row(seg_folds[i, 0], seg_folds[i, 1])
+
+    integrated = np.sum(seg_folds, axis=0).astype(np.float32)
+    integrated_prof = _normalize_ev_row(integrated[0], integrated[1])
+
+    w_arr = (
+        scoring.generate_box_width_trials(n_bins)
+        if widths is None
+        else np.ascontiguousarray(widths, dtype=np.int64)
+    )
+    snrs = scoring.boxcar_snr_glrt_1d(
+        np.ascontiguousarray(integrated[0], dtype=np.float32),
+        np.ascontiguousarray(integrated[1], dtype=np.float32),
+        w_arr,
+    )
+    best_idx = int(np.argmax(snrs))
+    return SegmentWaterfall(
+        segment_folds=seg_folds,
+        amp_map=amp_map,
+        integrated_fold=integrated,
+        integrated_profile=integrated_prof,
+        best_snr=float(snrs[best_idx]),
+        best_width=int(w_arr[best_idx]),
+    )
+
+
+def plot_candidate_diagnostic_card(
+    waterfall: SegmentWaterfall,
+    segment_times: npt.ArrayLike,
+    freq_curve: npt.ArrayLike,
+    *,
+    phase_residuals_ms: npt.ArrayLike | None = None,
+    runner_up_freqs: Sequence[npt.ArrayLike] | None = None,
+    rebin: tuple[int, int] = (1, 1),
+    title: str | None = None,
+    fig: mpl_figure.Figure | None = None,
+) -> mpl_figure.Figure:
+    """Render a 4-panel candidate confirmation diagnostic card.
+
+    Panels:
+    - ``(0, 0)``: spin frequency curve ``f(t)`` (with optional runner-up tracks).
+    - ``(0, 1)``: integrated unit-noise pulse profile with S/N and boxcar width.
+    - ``(1, 0)``: detrended orbital arrival-time residual (ms).
+    - ``(1, 1)``: S/N-preserving ``bin2d`` ``(time x phase)`` waterfall.
+    """
+    from matplotlib import pyplot as plt  # noqa: PLC0415
+
+    t_arr = np.asarray(segment_times, dtype=np.float64)
+    f_arr = np.asarray(freq_curve, dtype=np.float64)
+    if fig is None:
+        fig = plt.figure(figsize=(11, 8), constrained_layout=True)
+    axes = fig.subplots(2, 2)
+
+    # (0, 0): Frequency track f(t)
+    ax_f = axes[0, 0]
+    if runner_up_freqs is not None:
+        for rf in runner_up_freqs:
+            ax_f.plot(t_arr, np.asarray(rf, dtype=np.float64), color="0.7", lw=1.0)
+    ax_f.plot(t_arr, f_arr, color="tab:blue", lw=1.8, label="Best")
+    ax_f.set_xlabel("Time (s)")
+    ax_f.set_ylabel("Frequency (Hz)")
+    ax_f.set_title("Spin Frequency Track")
+
+    # (0, 1): Integrated profile
+    ax_p = axes[0, 1]
+    n_bins = waterfall.integrated_profile.size
+    phase = np.linspace(0.0, 1.0, n_bins, endpoint=False)
+    ax_p.step(phase, waterfall.integrated_profile, where="mid", color="tab:blue")
+    ax_p.axhline(0.0, color="0.6", ls="--", lw=0.8)
+    ax_p.set_xlabel("Pulse Phase")
+    ax_p.set_ylabel("Normalized S/N")
+    ax_p.set_title(
+        f"Integrated Profile (S/N={waterfall.best_snr:.2f}, w={waterfall.best_width})",
+    )
+
+    # (1, 0): Detrended arrival-time residual (ms)
+    ax_r = axes[1, 0]
+    if phase_residuals_ms is not None:
+        res_ms = np.asarray(phase_residuals_ms, dtype=np.float64)
+    else:
+        # Derive detrended timing residual from integral of (f(t) - f_mean) / f_mean
+        f_mean = max(float(np.mean(f_arr)), 1e-12)
+        dt = np.diff(t_arr, prepend=t_arr[0])
+        tau_s = -np.cumsum((f_arr - f_mean) / f_mean * dt)
+        res_ms = (tau_s - float(np.mean(tau_s))) * 1e3
+    ax_r.plot(t_arr, res_ms, color="tab:orange", lw=1.5)
+    ax_r.axhline(0.0, color="0.6", ls="--", lw=0.8)
+    ax_r.set_xlabel("Time (s)")
+    ax_r.set_ylabel("Delay Residual (ms)")
+    ax_r.set_title("Detrended Orbital Phase Residual")
+
+    # (1, 1): 2D (time x phase) waterfall
+    ax_w = axes[1, 1]
+    rebinned = bin2d(waterfall.amp_map, bt=rebin[0], bp=rebin[1])
+    ax_w.imshow(
+        rebinned,
+        aspect="auto",
+        origin="lower",
+        extent=(0.0, 1.0, float(t_arr[0]), float(t_arr[-1])),
+        cmap="viridis",
+    )
+    ax_w.set_xlabel("Pulse Phase")
+    ax_w.set_ylabel("Time (s)")
+    ax_w.set_title(f"Time-Phase Waterfall (rebin={rebin[0]}x{rebin[1]})")
+
+    if title:
+        fig.suptitle(title)
+    return fig

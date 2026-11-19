@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+import attrs
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.offsetbox import AnchoredText
 from sigpyproc.core import filters as sig_filters
+from sigpyproc.readers import FilReader
 from sigpyproc.timeseries import TimeSeries as sigTimeSeries
 from sigpyproc.viz.styles import PlotTable
 
@@ -18,11 +21,17 @@ from pyloki.io.preprocess import (
     apply_dm0_rfi_mask,
     preprocess_timeseries,
 )
+from pyloki.io.preprocess_kernels import fold_subbands_kernel
 from pyloki.simulation.modulate import type_to_mods
 from pyloki.utils import np_utils
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from numpy import typing as npt
+
+# Pulsar dispersion constant in MHz^2 pc^-1 cm^3 s
+K_DM_CONST = 4.148808e3
 
 
 class TimeSeries:
@@ -372,3 +381,174 @@ class TimeSeries:
 
     def __repr__(self) -> str:
         return str(self)
+
+
+@attrs.frozen(auto_attribs=True, kw_only=True)
+class SubbandFoldResult:
+    """2D ``(freq_subband x phase)`` dispersive waterfall and pulsar spectrum."""
+
+    subband_folds: npt.NDArray[np.float64]
+    subband_snr_map: npt.NDArray[np.float64]
+    subband_freqs_mhz: npt.NDArray[np.float64]
+    integrated_profile: npt.NDArray[np.float64]
+    spectrum: npt.NDArray[np.float64]
+    dm: float
+
+
+def fold_subbands(
+    source: str | Path | npt.NDArray[np.floating],
+    dm: float,
+    phase_func: Callable[[np.ndarray], np.ndarray],
+    *,
+    n_subbands: int = 32,
+    n_bins: int = 64,
+    tsamp: float | None = None,
+    chan_freqs_mhz: npt.ArrayLike | None = None,
+    ref_freq_mhz: float | None = None,
+    zap_channels: Sequence[int] | None = None,
+    start_sample: int = 0,
+    nsamps: int | None = None,
+) -> SubbandFoldResult:
+    """Fold filterbank channels into a 2D ``(freq_subband x phase)`` waterfall.
+
+    Computes exact per-channel dedispersion time offsets without cyclic wrap
+    (skipping out-of-range shifted samples), folds each sub-band along
+    ``phase_func(t)``, and extracts both the per-subband normalized S/N map
+    and the integrated on-pulse pulsar spectrum across frequency.
+
+    Parameters
+    ----------
+    source : str | Path | ndarray
+        Path to a SIGPROC filterbank file or an in-memory 2D array of shape
+        ``(n_chan, n_samp)``.
+    dm : float
+        Dispersion measure in pc cm^-3.
+    phase_func : callable
+        Vectorized function mapping timestamps ``t`` (seconds) to pulse phase
+        in cycles.
+    n_subbands : int, optional
+        Number of frequency sub-bands, by default 32.
+    n_bins : int, optional
+        Number of pulse phase bins, by default 64.
+    tsamp : float | None, optional
+        Sampling interval in seconds (required when ``source`` is an array).
+    chan_freqs_mhz : array_like | None, optional
+        Channel center frequencies in MHz (required when ``source`` is an array).
+    ref_freq_mhz : float | None, optional
+        Reference frequency for dedispersion delays (defaults to highest channel).
+    zap_channels : sequence of int | None, optional
+        Channel indices to exclude before folding.
+    start_sample : int, optional
+        First time sample to read when ``source`` is a file, by default 0.
+    nsamps : int | None, optional
+        Number of time samples to read when ``source`` is a file.
+    """
+    if isinstance(source, (str, Path)):
+        reader = FilReader(str(source))
+        hdr = reader.header
+        total = int(hdr.nsamples)
+        count = (
+            total - start_sample
+            if nsamps is None
+            else min(nsamps, total - start_sample)
+        )
+        block = reader.read_block(start_sample, count)
+        data = np.ascontiguousarray(block.data, dtype=np.float32)
+        dt = float(hdr.tsamp)
+        freqs = np.asarray(hdr.chan_freqs, dtype=np.float64)
+    else:
+        data = np.ascontiguousarray(source, dtype=np.float32)
+        if data.ndim != 2:
+            msg = f"Expected 2D (n_chan, n_samp) array, got shape {data.shape}"
+            raise ValueError(msg)
+        if tsamp is None or tsamp <= 0.0:
+            msg = "tsamp must be positive when folding an in-memory array"
+            raise ValueError(msg)
+        if chan_freqs_mhz is None:
+            msg = "chan_freqs_mhz must be provided when folding an in-memory array"
+            raise ValueError(msg)
+        dt = float(tsamp)
+        freqs = np.asarray(chan_freqs_mhz, dtype=np.float64)
+        if freqs.shape != (data.shape[0],):
+            msg = f"chan_freqs_mhz length ({freqs.size}) != n_chan ({data.shape[0]})"
+            raise ValueError(msg)
+
+    n_chan, n_samp = data.shape
+    if n_subbands < 1 or n_bins < 2:
+        msg = "n_subbands must be >= 1 and n_bins >= 2"
+        raise ValueError(msg)
+    eff_sub = min(n_subbands, n_chan)
+
+    chan_valid = np.ones(n_chan, dtype=np.bool_)
+    if zap_channels is not None:
+        for ch in zap_channels:
+            if 0 <= int(ch) < n_chan:
+                chan_valid[int(ch)] = False
+
+    chan_subband = np.floor(
+        np.arange(n_chan, dtype=np.float64) * eff_sub / float(n_chan),
+    ).astype(np.int64)
+    chan_subband = np.clip(chan_subband, 0, eff_sub - 1)
+
+    nu_ref = float(np.max(freqs)) if ref_freq_mhz is None else float(ref_freq_mhz)
+    delays_s = K_DM_CONST * float(dm) * (freqs**-2 - nu_ref**-2)
+    delay_samps = np.rint(delays_s / dt).astype(np.int64)
+
+    times = np.arange(n_samp, dtype=np.float64) * dt
+    phases = np.mod(np.asarray(phase_func(times), dtype=np.float64), 1.0)
+    sample_bins = np.floor(phases * n_bins).astype(np.int64) % n_bins
+
+    folds = fold_subbands_kernel(
+        data,
+        chan_valid,
+        chan_subband,
+        delay_samps,
+        sample_bins,
+        eff_sub,
+        n_bins,
+    )
+
+    snr_map = np.zeros((eff_sub, n_bins), dtype=np.float64)
+    sub_freqs = np.zeros(eff_sub, dtype=np.float64)
+    for s in range(eff_sub):
+        sub_mask = (chan_subband == s) & chan_valid
+        if np.any(sub_mask):
+            sub_freqs[s] = float(np.mean(freqs[sub_mask]))
+        else:
+            sub_freqs[s] = float(np.mean(freqs[chan_subband == s]))
+        v = folds[s, 1]
+        e = folds[s, 0]
+        valid = v > 0.0
+        if np.any(valid):
+            v_sum = float(np.sum(v[valid]))
+            e_sum = float(np.sum(e[valid]))
+            ratio = e_sum / v_sum if v_sum > 0.0 else 0.0
+            snr_map[s, valid] = (e[valid] - ratio * v[valid]) / np.sqrt(v[valid])
+
+    tot_e = np.sum(folds[:, 0, :], axis=0)
+    tot_v = np.sum(folds[:, 1, :], axis=0)
+    int_prof = np.zeros(n_bins, dtype=np.float64)
+    valid_tot = tot_v > 0.0
+    if np.any(valid_tot):
+        ratio_tot = float(np.sum(tot_e[valid_tot])) / float(np.sum(tot_v[valid_tot]))
+        int_prof[valid_tot] = (
+            tot_e[valid_tot] - ratio_tot * tot_v[valid_tot]
+        ) / np.sqrt(tot_v[valid_tot])
+
+    # Extract on-pulse spectrum across sub-bands using matched weighting from int_prof
+    pos_weights = np.maximum(int_prof, 0.0)
+    w_norm = float(np.linalg.norm(pos_weights))
+    if w_norm > 0.0:
+        weights = pos_weights / w_norm
+        spectrum = snr_map @ weights
+    else:
+        spectrum = np.zeros(eff_sub, dtype=np.float64)
+
+    return SubbandFoldResult(
+        subband_folds=folds,
+        subband_snr_map=snr_map,
+        subband_freqs_mhz=sub_freqs,
+        integrated_profile=int_prof,
+        spectrum=spectrum,
+        dm=float(dm),
+    )

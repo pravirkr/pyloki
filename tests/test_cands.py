@@ -31,6 +31,7 @@ from pyloki.io.cands import (
     PruneStats,
     PruneStatsCollection,
     SurveyCandidateGroups,
+    bin2d,
     build_phase_model,
     cluster_candidates_single_dm,
     dominance_ratio,
@@ -38,10 +39,12 @@ from pyloki.io.cands import (
     export_segment_ephemeris,
     export_tempo2_predictor,
     extract_ref_seg,
+    extract_segment_waterfall,
     match_known_harmonics,
     merge_prune_result_files,
     phase_span,
     phase_track_distance,
+    plot_candidate_diagnostic_card,
     reduce_dominated_candidates,
 )
 from pyloki.periodogram import PruningStatsPlotter
@@ -597,3 +600,42 @@ def test_segment_ephemeris_and_tempo2_predictor_accuracy(tmp_path: Path) -> None
         phi_true = build_phase_model(kind, params, t_ref=0.0)(test_t)
         phi_pred = evaluate_tempo2_predictor(pred_path, test_mjd)
         assert float(np.max(np.abs(phi_pred - phi_true))) < 1e-4
+
+
+def test_bin2d_waterfall_and_diagnostic_card() -> None:
+    from matplotlib import pyplot as plt  # noqa: PLC0415
+
+    # S/N-preserving rebinning: constant 1.0 signal scales by sqrt(bt * bp)
+    ones = np.ones((8, 16), dtype=np.float64)
+    rebinned = bin2d(ones, bt=2, bp=4)
+    assert rebinned.shape == (4, 4)
+    assert np.allclose(rebinned, np.sqrt(8.0))
+
+    # Build synthetic aligned 3D (n_seg, 2, n_bins) folds with a pulse at bin 16
+    rng = np.random.default_rng(123)
+    n_seg, n_bins = 12, 32
+    folds = np.empty((n_seg, 2, n_bins), dtype=np.float32)
+    folds[:, 0, :] = rng.normal(0.0, 1.0, size=(n_seg, n_bins))
+    folds[:, 1, :] = 1.0
+    shifts = np.arange(n_seg, dtype=np.int64) % 5
+    for i in range(n_seg):
+        folds[i, 0, (16 - int(shifts[i])) % n_bins] += 6.0
+
+    wf = extract_segment_waterfall(folds, phase_shifts=shifts)
+    assert wf.amp_map.shape == (n_seg, n_bins)
+    assert wf.integrated_profile.shape == (n_bins,)
+    assert wf.best_snr > 12.0
+    assert int(np.argmax(wf.integrated_profile)) == 16
+
+    t_seg = np.linspace(0.0, 1200.0, n_seg)
+    f_curve = 100.0 + 0.01 * np.sin(2.0 * np.pi * t_seg / 1200.0)
+    fig = plot_candidate_diagnostic_card(
+        wf,
+        t_seg,
+        f_curve,
+        runner_up_freqs=[f_curve + 1e-3],
+        rebin=(2, 2),
+        title="Test Candidate",
+    )
+    assert len(fig.axes) == 4
+    plt.close(fig)

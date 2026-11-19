@@ -457,3 +457,46 @@ class TestPreprocessKernels:
     def test_longest_zero_run(self, fn) -> None:
         arr = np.array([1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 2.0], dtype=np.float32)
         assert fn(arr) == 3
+
+
+class TestSubbandFolding:
+    def test_fold_subbands_recovers_dispersive_signal_without_wrap(self) -> None:
+        from pyloki.io.timeseries import K_DM_CONST, fold_subbands  # noqa: PLC0415
+
+        rng = np.random.default_rng(31)
+        n_chan, n_samp = 16, 4096
+        dt = 5e-4
+        freqs = np.linspace(1500.0, 1200.0, n_chan, dtype=np.float64)
+        dm_true = 40.0
+        f0 = 20.0
+        data = rng.normal(0.0, 1.0, size=(n_chan, n_samp)).astype(np.float32)
+
+        nu_ref = float(np.max(freqs))
+        times = np.arange(n_samp, dtype=np.float64) * dt
+        for c in range(n_chan):
+            delay = K_DM_CONST * dm_true * (freqs[c] ** -2 - nu_ref**-2)
+            # Emit pulse at reference time t - delay so it arrives at t = t_ref + delay
+            phase = np.mod(f0 * (times - delay), 1.0)
+            valid = times >= delay
+            pulse = np.where(valid & (np.abs(phase - 0.5) < 0.04), 3.0, 0.0)
+            data[c] += pulse.astype(np.float32)
+
+        # Inject a corrupted channel and zap it
+        data[3] = 1e5
+
+        res = fold_subbands(
+            data,
+            dm=dm_true,
+            phase_func=lambda t: f0 * t,
+            n_subbands=8,
+            n_bins=32,
+            tsamp=dt,
+            chan_freqs_mhz=freqs,
+            zap_channels=[3],
+        )
+        assert res.subband_folds.shape == (8, 2, 32)
+        assert res.subband_snr_map.shape == (8, 32)
+        assert res.subband_freqs_mhz.shape == (8,)
+        assert res.spectrum.shape == (8,)
+        assert float(np.max(res.integrated_profile)) > 10.0
+        assert np.all(res.spectrum > 2.0)

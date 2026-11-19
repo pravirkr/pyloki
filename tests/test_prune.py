@@ -189,3 +189,31 @@ def test_prune_dyp_tree_stop_snr_early_stop(search, tmp_path) -> None:
     )
     with h5py.File(res_file, "r") as h:
         assert len(h["runs"]) == 1
+
+
+def test_trace_ep_hypothesis_and_resolve_stability(search: DynamicProgramming) -> None:
+    from pyloki.prune import trace_ep_hypothesis, verify_resolve_stability  # noqa: PLC0415
+
+    dyp = search
+    freq = 1.0 / 0.007
+    param_vec = np.array([6.0, 500.0, freq], dtype=np.float64)
+    ref_seg = dyp.nsegments // 2
+
+    trace = trace_ep_hypothesis(dyp, param_vec, ref_seg=ref_seg, poly_basis="taylor")
+    assert trace.levels.size == dyp.nsegments
+    assert trace.scores.size == dyp.nsegments
+    assert np.all(np.isfinite(trace.scores))
+    # Final accumulated S/N across all 8 segments should exceed the single-segment seed
+    assert float(trace.scores[-1]) > float(trace.scores[0])
+
+    report = verify_resolve_stability(
+        dyp,
+        param_vec,
+        ref_seg=ref_seg,
+        poly_basis="taylor",
+        max_grid_step_tol=1,
+        max_phase_tol=1.0,
+    )
+    assert report.is_stable
+    assert report.max_param_idx_diff <= 1
+    assert report.max_phase_shift_diff <= 1.0

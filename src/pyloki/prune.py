@@ -1005,3 +1005,225 @@ def prune_dyp_tree(
         merge_prune_result_files(outdir, log_file, result_file, temp_files=temp_files)
     logger.info(f"Pruning complete. Results saved to {result_file}")
     return result_file.as_posix()
+
+
+@dataclass(frozen=True)
+class HypothesisTrace:
+    """Per-level diagnostic trace of a single EP hypothesis without branching."""
+
+    ref_seg: int
+    levels: np.ndarray
+    seg_indices: np.ndarray
+    scores: np.ndarray
+    param_indices: np.ndarray
+    phase_shifts: np.ndarray
+    final_fold: np.ndarray
+    final_leaf: np.ndarray
+
+
+@dataclass(frozen=True)
+class ResolveStabilityReport:
+    """Comparison of chained-transform resolution vs direct initial-coord resolution."""
+
+    ref_seg: int
+    max_param_idx_diff: int
+    max_phase_shift_diff: float
+    param_idx_diffs: np.ndarray
+    phase_shift_diffs: np.ndarray
+    is_stable: bool
+
+
+def _build_single_leaf(
+    dyp: DynamicProgramming,
+    param_vec: np.ndarray,
+    poly_basis: str,
+) -> np.ndarray:
+    """Build a ``(1, n_slots, 2)`` initial leaf at ``coord_init`` from ``param_vec``.
+
+    Follows the Taylor leaf convention:
+    ``leaf[0, :-3, 0]`` holds ``[..., jerk, accel]``,
+    ``leaf[0, -3, 0] = 0`` (velocity offset),
+    ``leaf[0, -2, 0] = 0`` (delay offset),
+    ``leaf[0, -1, 0] = f0`` (reference spin frequency).
+    """
+    from pyloki.utils.misc import C_VAL  # noqa: PLC0415
+
+    p = np.asarray(param_vec, dtype=np.float64).ravel()
+    n_order = dyp.cfg.prune_poly_order
+    if p.size != n_order:
+        msg = (
+            f"param_vec must have length {n_order} (matching cfg.prune_poly_order), "
+            f"got {p.size}"
+        )
+        raise ValueError(msg)
+    n_slots = n_order + 3 if poly_basis == "circular" else n_order + 2
+    leaf = np.zeros((1, n_slots, 2), dtype=np.float64)
+    dparams = np.asarray(
+        dyp.cfg.get_dparams(dyp.cfg.niters_ffa),
+        dtype=np.float64,
+    )
+    f0 = float(p[-1])
+    # Kinematic derivatives [..., jerk, accel] go into slots [0 .. n_order - 2]
+    n_kin = n_order - 1
+    leaf[0, :n_kin, 0] = p[:n_kin]
+    if dparams.size >= 2 and n_kin > 0:
+        n_dp_kin = min(dparams.size - 1, n_kin)
+        leaf[0, n_kin - n_dp_kin : n_kin, 1] = dparams[
+            dparams.size - 1 - n_dp_kin : dparams.size - 1
+        ]
+    # Velocity slot (-3), delay slot (-2), reference frequency slot (-1)
+    df = float(dparams[-1]) if dparams.size > 0 else 0.0
+    leaf[0, -3, 0] = 0.0
+    leaf[0, -3, 1] = df * (C_VAL / f0) if f0 > 0.0 else 0.0
+    leaf[0, -2, 0] = 0.0
+    leaf[0, -1, 0] = f0
+    leaf[0, -1, 1] = 0.0
+    return leaf
+
+
+def trace_ep_hypothesis(
+    dyp: DynamicProgramming,
+    param_vec: np.ndarray,
+    *,
+    ref_seg: int = 0,
+    poly_basis: str = "taylor",
+    use_moving_grid: bool = False,
+) -> HypothesisTrace:
+    """Trace a single EP hypothesis forward across all segments without branching.
+
+    Accumulates the exact ``resolve -> load -> shift_add -> score -> transform``
+    chain from ``ref_seg`` through every segment of ``dyp`` and records per-level
+    S/N, resolved grid indices, and phase shifts for debugging signal loss.
+    """
+    prn = Pruning(
+        dyp=dyp,
+        threshold_scheme=np.zeros(dyp.nsegments, dtype=np.float32),
+        poly_basis=poly_basis,
+        use_moving_grid=use_moving_grid,
+    )
+    scheme = MiddleOutScheme(
+        nsegments=dyp.nsegments,
+        ref_idx=ref_seg,
+        tsegment=dyp.tseg,
+        stride=1,
+    )
+    coord_init = scheme.get_coord(0)
+    cur_leaf = _build_single_leaf(dyp, param_vec, poly_basis)
+
+    # Seed fold from the initial reference segment
+    init_pidx, _ = prn.prune_funcs.resolve(cur_leaf, coord_init, coord_init, coord_init)
+    fold_seg0 = prn.prune_funcs.load(dyp.fold, ref_seg)
+    cur_fold = prn.load_func(fold_seg0, init_pidx)
+    init_score = float(prn.prune_funcs.score(cur_fold)[0])
+
+    n_levels = dyp.nsegments
+    levels = np.arange(n_levels, dtype=np.int64)
+    seg_indices = np.empty(n_levels, dtype=np.int64)
+    scores = np.empty(n_levels, dtype=np.float64)
+    param_indices = np.empty((n_levels, init_pidx.shape[1]), dtype=np.int64)
+    phase_shifts = np.empty(n_levels, dtype=np.float64)
+
+    seg_indices[0] = ref_seg
+    scores[0] = init_score
+    param_indices[0] = init_pidx[0]
+    phase_shifts[0] = 0.0
+
+    orig = np.array([0], dtype=np.int64)
+    for lvl in range(1, n_levels):
+        seg_idx = scheme.get_segment_idx(lvl)
+        coord_cur = scheme.get_current_coord(lvl, use_moving_grid)
+        coord_next = scheme.get_coord(lvl)
+        coord_add = scheme.get_segment_coord(lvl)
+
+        pidx, pshift = prn.prune_funcs.resolve(
+            cur_leaf, coord_add, coord_cur, coord_init
+        )
+        fold_seg = prn.prune_funcs.load(dyp.fold, seg_idx)
+        loaded = prn.load_func(fold_seg, pidx)
+        cur_fold = prn.prune_funcs.shift_add(loaded, pshift, cur_fold, orig)
+        score = float(prn.prune_funcs.score(cur_fold)[0])
+
+        seg_indices[lvl] = seg_idx
+        scores[lvl] = score
+        param_indices[lvl] = pidx[0]
+        phase_shifts[lvl] = float(pshift[0])
+
+        cur_leaf = prn.prune_funcs.transform(cur_leaf, coord_next, coord_cur)
+
+    return HypothesisTrace(
+        ref_seg=ref_seg,
+        levels=levels,
+        seg_indices=seg_indices,
+        scores=scores,
+        param_indices=param_indices,
+        phase_shifts=phase_shifts,
+        final_fold=cur_fold[0].copy(),
+        final_leaf=cur_leaf[0].copy(),
+    )
+
+
+def verify_resolve_stability(
+    dyp: DynamicProgramming,
+    param_vec: np.ndarray,
+    *,
+    ref_seg: int = 0,
+    poly_basis: str = "taylor",
+    use_moving_grid: bool = False,
+    max_grid_step_tol: int = 1,
+    max_phase_tol: float = 1.0,
+) -> ResolveStabilityReport:
+    """Verify chained-transform EP resolution stays within ``<= 1`` grid step of direct.
+
+    Compares the discrete ``(param_idx, phase_shift)`` resolved after chaining
+    ``transform`` through every EP tree level against direct resolution from the
+    untransformed initial leaf at ``coord_init``.
+    """
+    trace = trace_ep_hypothesis(
+        dyp,
+        param_vec,
+        ref_seg=ref_seg,
+        poly_basis=poly_basis,
+        use_moving_grid=use_moving_grid,
+    )
+    prn = Pruning(
+        dyp=dyp,
+        threshold_scheme=np.zeros(dyp.nsegments, dtype=np.float32),
+        poly_basis=poly_basis,
+        use_moving_grid=use_moving_grid,
+    )
+    scheme = MiddleOutScheme(
+        nsegments=dyp.nsegments,
+        ref_idx=ref_seg,
+        tsegment=dyp.tseg,
+        stride=1,
+    )
+    coord_init = scheme.get_coord(0)
+    leaf_init = _build_single_leaf(dyp, param_vec, poly_basis)
+
+    n_levels = dyp.nsegments
+    nbins = float(dyp.cfg.nbins)
+    pidx_diffs = np.zeros(n_levels, dtype=np.int64)
+    pshift_diffs = np.zeros(n_levels, dtype=np.float64)
+
+    for lvl in range(1, n_levels):
+        coord_add = scheme.get_segment_coord(lvl)
+        ref_pidx, ref_pshift = prn.prune_funcs.resolve(
+            leaf_init,
+            coord_add,
+            coord_init,
+            coord_init,
+        )
+        pidx_diffs[lvl] = int(np.max(np.abs(trace.param_indices[lvl] - ref_pidx[0])))
+        raw_dp = abs(float(trace.phase_shifts[lvl]) - float(ref_pshift[0])) % nbins
+        pshift_diffs[lvl] = min(raw_dp, nbins - raw_dp)
+
+    max_pidx = int(np.max(pidx_diffs))
+    max_pshift = float(np.max(pshift_diffs))
+    return ResolveStabilityReport(
+        ref_seg=ref_seg,
+        max_param_idx_diff=max_pidx,
+        max_phase_shift_diff=max_pshift,
+        param_idx_diffs=pidx_diffs,
+        phase_shift_diffs=pshift_diffs,
+        is_stable=(max_pidx <= max_grid_step_tol) and (max_pshift <= max_phase_tol),
+    )

@@ -372,3 +372,60 @@ def longest_zero_run(arr: np.ndarray) -> int:
         else:
             run = 0
     return best
+
+
+@njit(cache=True)
+def fold_subbands_kernel(
+    data: np.ndarray,
+    chan_valid: np.ndarray,
+    chan_subband: np.ndarray,
+    chan_delay_samps: np.ndarray,
+    sample_bins: np.ndarray,
+    n_subbands: int,
+    n_bins: int,
+) -> np.ndarray:
+    """Fold filterbank channels into ``(n_subbands, 2, n_bins)`` without cyclic wrap.
+
+    Each valid channel is standardized to zero mean and unit variance, shifted
+    by ``chan_delay_samps[c]`` (skipping out-of-range samples rather than
+    wrapping), and accumulated into ``(E, V)`` fold bins.
+    """
+    n_chan, n_samp = data.shape
+    folds = np.zeros((n_subbands, 2, n_bins), dtype=np.float64)
+
+    for c in range(n_chan):
+        if not chan_valid[c]:
+            continue
+        sub = int(chan_subband[c])
+        if sub < 0 or sub >= n_subbands:
+            continue
+        delay = int(chan_delay_samps[c])
+        i_start = max(0, -delay)
+        i_stop = min(n_samp, n_samp - delay)
+        if i_stop <= i_start:
+            continue
+
+        # Standardize channel over valid non-wrapped range
+        mean_c = 0.0
+        count_c = i_stop - i_start
+        for i in range(i_start, i_stop):
+            mean_c += float(data[c, i + delay])
+        mean_c /= float(count_c)
+
+        var_c = 0.0
+        for i in range(i_start, i_stop):
+            d = float(data[c, i + delay]) - mean_c
+            var_c += d * d
+        var_c /= float(count_c)
+        if var_c <= 0.0:
+            continue
+        inv_std = 1.0 / np.sqrt(var_c)
+
+        for i in range(i_start, i_stop):
+            b = int(sample_bins[i])
+            if 0 <= b < n_bins:
+                val = (float(data[c, i + delay]) - mean_c) * inv_std
+                folds[sub, 0, b] += val
+                folds[sub, 1, b] += 1.0
+
+    return folds
