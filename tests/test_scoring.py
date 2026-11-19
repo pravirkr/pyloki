@@ -544,3 +544,52 @@ class TestDoubleBoxcarCombinedAndKadane:
                 WIDTHS,
                 mode="unknown",  # type: ignore[arg-type]
             )
+
+
+class TestMarkovNullingHMM:
+    @pytest.mark.parametrize(
+        "fn",
+        jit_variants(scoring.markov_hmm_log_llr),
+    )
+    def test_markov_hmm_stability_and_null_calibration(self, fn) -> None:
+        rng = np.random.default_rng(101)
+        # 10,000 segments with extreme transition probabilities: must not overflow
+        z_long = rng.standard_normal(10_000)
+        llr_h0 = fn(z_long, 1.0, 1e-4, 1e-4)
+        assert np.isfinite(llr_h0)
+        assert llr_h0 < 10.0
+
+    @pytest.mark.parametrize(
+        "fn",
+        jit_variants(scoring.viterbi_null_mask),
+    )
+    def test_viterbi_and_posterior_recover_on_burst(self, fn) -> None:
+        from pyloki.simulation.pulse import generate_markov_nulling_envelope  # noqa: PLC0415
+
+        rng = np.random.default_rng(202)
+        n_seg = 200
+        env = generate_markov_nulling_envelope(n_seg, 0.08, 0.02, rng=rng)
+        assert env.shape == (n_seg,)
+        assert set(np.unique(env)).issubset({0.0, 1.0})
+
+        # Deterministic 20% ON block to verify HMM beats full-span unweighted sum
+        true_on = np.zeros(n_seg, dtype=np.bool_)
+        true_on[60:100] = True
+        z = rng.standard_normal(n_seg) + np.where(true_on, 2.5, 0.0)
+
+        mask = fn(z, 2.5, 0.025, 0.006)
+        assert mask.shape == (n_seg,)
+        # High overlap with the true ON window
+        overlap = float(np.mean(mask == true_on))
+        assert overlap > 0.85
+
+        post = scoring.markov_hmm_posterior_on(z, 2.5, 0.025, 0.006)
+        assert np.all((post >= 0.0) & (post <= 1.0))
+        assert float(np.mean(post[true_on])) > 0.7
+        assert float(np.mean(post[~true_on])) < 0.2
+
+        best_llr, *_ = scoring.markov_hmm_grid_score(z)
+        # Equivalent Gaussian S/N from 2 * log_llr exceeds unweighted sum S/N
+        snr_unweighted = float(np.sum(z) / np.sqrt(n_seg))
+        snr_hmm_eq = float(np.sqrt(max(2.0 * best_llr, 0.0)))
+        assert snr_hmm_eq > snr_unweighted + 2.0

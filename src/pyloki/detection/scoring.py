@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from typing import Literal
+import math
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import numpy.typing as npt
 from numba import njit, prange, types
 
 from pyloki.utils import maths
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 @njit(cache=True, fastmath=True)
@@ -1260,3 +1264,190 @@ def score_profiles(
         msg = f"Unsupported score mode: {mode!r}"
         raise ValueError(msg)
     return result
+
+
+# ---------------------------------------------------------------------------
+# 2-State Markov / HMM Forward-DP Scorer for Nulling & Eclipsing Pulsars
+# ---------------------------------------------------------------------------
+
+
+@njit(cache=True)
+def _logaddexp(a: float, b: float) -> float:
+    """Overflow-safe symmetric log(exp(a) + exp(b))."""
+    if a == -np.inf:
+        return b
+    if b == -np.inf:
+        return a
+    if a >= b:
+        return a + math.log1p(math.exp(b - a))
+    return b + math.log1p(math.exp(a - b))
+
+
+@njit(cache=True)
+def markov_hmm_log_llr(
+    z_arr: np.ndarray,
+    amp: float,
+    p_on_off: float,
+    p_off_on: float,
+) -> float:
+    """2-state Markov HMM forward-DP log Bayes factor ``ln(p(z | H1) / p(z | H0))``.
+
+    Evaluates standardized per-segment matched-filter scores ``z_arr`` (where
+    ``z_i ~ N(0, 1)`` under OFF state ``s_i = 0`` and ``z_i ~ N(amp, 1)`` under
+    ON state ``s_i = 1``) in log-likelihood-ratio space using overflow-safe
+    ``logaddexp``.
+    """
+    n = z_arr.size
+    if n == 0:
+        return 0.0
+    p10 = min(max(p_on_off, 1e-12), 1.0 - 1e-12)
+    p01 = min(max(p_off_on, 1e-12), 1.0 - 1e-12)
+    pi0 = p10 / (p01 + p10)
+    pi1 = p01 / (p01 + p10)
+
+    log_t00 = math.log(1.0 - p01)
+    log_t01 = math.log(p01)
+    log_t10 = math.log(p10)
+    log_t11 = math.log(1.0 - p10)
+
+    half_a2 = 0.5 * amp * amp
+    a0 = math.log(pi0)
+    a1 = math.log(pi1) + (amp * float(z_arr[0]) - half_a2)
+
+    for i in range(1, n):
+        llr_i = amp * float(z_arr[i]) - half_a2
+        next_a0 = _logaddexp(a0 + log_t00, a1 + log_t10)
+        next_a1 = _logaddexp(a0 + log_t01, a1 + log_t11) + llr_i
+        a0 = next_a0
+        a1 = next_a1
+    return _logaddexp(a0, a1)
+
+
+@njit(cache=True)
+def viterbi_null_mask(
+    z_arr: np.ndarray,
+    amp: float,
+    p_on_off: float,
+    p_off_on: float,
+) -> np.ndarray:
+    """Decode the MAP ON/OFF state sequence (``True`` = ON) via Viterbi DP."""
+    n = z_arr.size
+    mask = np.zeros(n, dtype=np.bool_)
+    if n == 0:
+        return mask
+
+    p10 = min(max(p_on_off, 1e-12), 1.0 - 1e-12)
+    p01 = min(max(p_off_on, 1e-12), 1.0 - 1e-12)
+    pi0 = p10 / (p01 + p10)
+    pi1 = p01 / (p01 + p10)
+
+    log_t00 = math.log(1.0 - p01)
+    log_t01 = math.log(p01)
+    log_t10 = math.log(p10)
+    log_t11 = math.log(1.0 - p10)
+    half_a2 = 0.5 * amp * amp
+
+    backptr = np.zeros((n, 2), dtype=np.int8)
+    v0 = math.log(pi0)
+    v1 = math.log(pi1) + (amp * float(z_arr[0]) - half_a2)
+
+    for i in range(1, n):
+        llr_i = amp * float(z_arr[i]) - half_a2
+        c00 = v0 + log_t00
+        c10 = v1 + log_t10
+        if c00 >= c10:
+            next_v0 = c00
+            backptr[i, 0] = 0
+        else:
+            next_v0 = c10
+            backptr[i, 0] = 1
+
+        c01 = v0 + log_t01
+        c11 = v1 + log_t11
+        if c01 >= c11:
+            next_v1 = c01 + llr_i
+            backptr[i, 1] = 0
+        else:
+            next_v1 = c11 + llr_i
+            backptr[i, 1] = 1
+
+        v0 = next_v0
+        v1 = next_v1
+
+    state = 1 if v1 >= v0 else 0
+    mask[n - 1] = state == 1
+    for i in range(n - 1, 0, -1):
+        state = int(backptr[i, state])
+        mask[i - 1] = state == 1
+    return mask
+
+
+@njit(cache=True)
+def markov_hmm_posterior_on(
+    z_arr: np.ndarray,
+    amp: float,
+    p_on_off: float,
+    p_off_on: float,
+) -> np.ndarray:
+    """Compute forward-backward posterior ON probability ``P(s_i = 1 | z)``."""
+    n = z_arr.size
+    post = np.zeros(n, dtype=np.float64)
+    if n == 0:
+        return post
+
+    p10 = min(max(p_on_off, 1e-12), 1.0 - 1e-12)
+    p01 = min(max(p_off_on, 1e-12), 1.0 - 1e-12)
+    pi0 = p10 / (p01 + p10)
+    pi1 = p01 / (p01 + p10)
+
+    log_t00 = math.log(1.0 - p01)
+    log_t01 = math.log(p01)
+    log_t10 = math.log(p10)
+    log_t11 = math.log(1.0 - p10)
+    half_a2 = 0.5 * amp * amp
+
+    alpha0 = np.empty(n, dtype=np.float64)
+    alpha1 = np.empty(n, dtype=np.float64)
+    alpha0[0] = math.log(pi0)
+    alpha1[0] = math.log(pi1) + (amp * float(z_arr[0]) - half_a2)
+    for i in range(1, n):
+        llr_i = amp * float(z_arr[i]) - half_a2
+        alpha0[i] = _logaddexp(alpha0[i - 1] + log_t00, alpha1[i - 1] + log_t10)
+        alpha1[i] = _logaddexp(alpha0[i - 1] + log_t01, alpha1[i - 1] + log_t11) + llr_i
+
+    log_z = _logaddexp(alpha0[n - 1], alpha1[n - 1])
+    b0 = 0.0
+    b1 = 0.0
+    post[n - 1] = math.exp(alpha1[n - 1] - log_z)
+    for i in range(n - 2, -1, -1):
+        llr_next = amp * float(z_arr[i + 1]) - half_a2
+        nb0 = _logaddexp(log_t00 + b0, log_t01 + llr_next + b1)
+        nb1 = _logaddexp(log_t10 + b0, log_t11 + llr_next + b1)
+        b0 = nb0
+        b1 = nb1
+        post[i] = math.exp(alpha1[i] + b1 - log_z)
+    return post
+
+
+def markov_hmm_grid_score(
+    z_arr: npt.ArrayLike,
+    *,
+    amps: Sequence[float] = (0.5, 1.0, 1.5, 2.0),
+    p_on_offs: Sequence[float] = (0.02, 0.1, 0.25),
+    p_off_ons: Sequence[float] = (0.01, 0.05, 0.2),
+) -> tuple[float, float, float, float]:
+    """Maximize ``markov_hmm_log_llr`` over a coarse ``(amp, p_on_off, p_off_on)`` grid.
+
+    Returns ``(best_log_llr, best_amp, best_p_on_off, best_p_off_on)``.
+    """
+    z = np.ascontiguousarray(z_arr, dtype=np.float64)
+    best_llr = -np.inf
+    best_params = (float(amps[0]), float(p_on_offs[0]), float(p_off_ons[0]))
+    for a in amps:
+        for p10 in p_on_offs:
+            for p01 in p_off_ons:
+                val = float(markov_hmm_log_llr(z, float(a), float(p10), float(p01)))
+                if val > best_llr:
+                    best_llr = val
+                    best_params = (float(a), float(p10), float(p01))
+    return best_llr, best_params[0], best_params[1], best_params[2]
