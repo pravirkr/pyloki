@@ -599,3 +599,42 @@ def generate_folded_profile(
     profile = np.exp(-(wrapped_phase**2) / (2 * sigma**2))
     profile = profile / profile.max()
     return profile / np.sqrt(np.sum(profile**2))
+
+
+def generate_markov_nulling_envelope(
+    n_steps: int,
+    p_on_off: float,
+    p_off_on: float,
+    *,
+    rng: np.random.Generator | None = None,
+    seed: int | None = None,
+) -> np.ndarray:
+    """Generate a binary 2-state Markov ON/OFF nulling envelope of length ``n_steps``.
+
+    Initializes state ``s_0`` from the stationary ON probability
+    ``pi_1 = p_off_on / (p_off_on + p_on_off)`` and evolves with transition
+    probabilities ``P(0 | 1) = p_on_off`` and ``P(1 | 0) = p_off_on``.
+    """
+    if n_steps < 0:
+        msg = f"n_steps must be nonnegative, got {n_steps}"
+        raise ValueError(msg)
+    if not (0.0 <= p_on_off <= 1.0) or not (0.0 <= p_off_on <= 1.0):
+        msg = "Transition probabilities p_on_off and p_off_on must lie in [0, 1]"
+        raise ValueError(msg)
+    if n_steps == 0:
+        return np.empty(0, dtype=np.float64)
+    gen = np.random.default_rng(seed) if rng is None else rng
+    denom = p_off_on + p_on_off
+    pi1 = (p_off_on / denom) if denom > 0.0 else 0.5
+    u = gen.random(n_steps)
+    env = np.empty(n_steps, dtype=np.float64)
+    state = 1 if u[0] < pi1 else 0
+    env[0] = float(state)
+    for i in range(1, n_steps):
+        if state == 1:
+            if u[i] < p_on_off:
+                state = 0
+        elif u[i] < p_off_on:
+            state = 1
+        env[i] = float(state)
+    return env

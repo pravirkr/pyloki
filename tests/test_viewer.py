@@ -10,7 +10,12 @@ from click.testing import CliRunner
 from matplotlib import pyplot as plt
 
 from pyloki.apps import pyloki_viewer
-from pyloki.apps.pyloki_viewer import ThresholdAnalyzerApp
+from pyloki.apps.pyloki_viewer import (
+    ThresholdAnalyzerApp,
+    WaterfallLabParams,
+    WaterfallLabState,
+)
+from pyloki.orbit_fit import fit_phase_curve_fourier
 
 mpl.use("Agg")
 
@@ -209,3 +214,42 @@ def test_cli_help_runs_without_tkagg() -> None:
     res = runner.invoke(pyloki_viewer.main, ["--help"])
     assert res.exit_code == 0
     assert "scheme" in res.output
+
+
+def test_waterfall_lab_state_shifts_and_renders() -> None:
+    rng = np.random.default_rng(19)
+    n_seg, n_bins = 16, 32
+    t_seg = np.linspace(0.0, 1600.0, n_seg, dtype=np.float64)
+    t_c = t_seg - float(np.mean(t_seg))
+    df0_true = 2.0e-3  # drifts by 3.2 cycles across 1600 s
+
+    folds = np.empty((n_seg, 2, n_bins), dtype=np.float32)
+    folds[:, 0, :] = rng.normal(0.0, 1.0, size=(n_seg, n_bins))
+    folds[:, 1, :] = 1.0
+    for i in range(n_seg):
+        drift_bin = round((-df0_true * t_c[i]) * n_bins) % n_bins
+        folds[i, 0, (16 + drift_bin) % n_bins] += 5.0
+
+    # Fit a dummy circular overlay for render verification
+    om = 2.0 * np.pi / 3200.0
+    delays = 0.5 * np.sin(om * t_seg + 0.3)
+    overlay = fit_phase_curve_fourier(t_seg, delays, (2400.0, 4000.0))
+
+    state = WaterfallLabState(folds, t_seg, f0_ref=100.0, orbit_overlay=overlay)
+    _, _, snr_uncorrected = state.compute()
+
+    state.params = WaterfallLabParams(
+        delta_f0=df0_true,
+        time_rebin=2,
+        phase_rebin=2,
+    )
+    rebinned, profile, snr_corrected = state.compute()
+    assert rebinned.shape == (n_seg // 2, n_bins // 2)
+    assert profile.shape == (n_bins,)
+    assert snr_corrected > snr_uncorrected + 5.0
+
+    fig = plt.figure()
+    rendered_snr, _ = state.render(fig)
+    assert rendered_snr == snr_corrected
+    assert len(fig.axes) == 2
+    plt.close(fig)

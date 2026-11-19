@@ -914,3 +914,82 @@ def generate_bp_circ_taylor(
         else:
             dparam_cur_batch = dparam_cur_next
     return branching_pattern
+
+
+@njit(cache=True, fastmath=True)
+def cir_physical_branch_batch(
+    leaves_batch: np.ndarray,
+    coord_cur: tuple[float, float],
+    coord_prev: tuple[float, float],
+    nbins: int,
+    eta: float,
+    x_floor: float = 0.05,
+    branch_max: int = 256,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Branch physical 4D circular leaves ``[omega, freq, x_sin_phi, x_cos_phi]``.
+
+    Because phase perturbations from ``(x_sin_phi, x_cos_phi)`` are bounded by
+    ``|cos(omega * dt)| <= 1``, only ``omega`` and ``freq`` branch as the
+    coherent integration span grows across multiple orbits.
+    """
+    n_leaves, n_slots, _ = leaves_batch.shape
+    span_cur = max(abs(coord_cur[1]), 1e-9)
+    _ = coord_prev
+
+    # First pass: compute per-leaf branch counts
+    n_om_arr = np.ones(n_leaves, dtype=np.int64)
+    n_f_arr = np.ones(n_leaves, dtype=np.int64)
+    d_om_new = np.empty(n_leaves, dtype=np.float64)
+    d_f_new = np.empty(n_leaves, dtype=np.float64)
+    total_out = 0
+
+    for i in range(n_leaves):
+        f0 = leaves_batch[i, 1, 0]
+        d_om = abs(leaves_batch[i, 0, 1])
+        d_f = abs(leaves_batch[i, 1, 1])
+        x_amp = max(
+            math.hypot(leaves_batch[i, 2, 0], leaves_batch[i, 3, 0]),
+            x_floor,
+        )
+        # Required step for <= eta / nbins phase error over span_cur
+        step_f = eta / max(2.0 * span_cur * nbins, 1e-12)
+        step_om = eta / max(2.0 * f0 * x_amp * span_cur * nbins, 1e-12)
+
+        n_om = 1
+        if d_om > step_om:
+            n_om = max(1, min(branch_max, math.ceil(d_om / step_om - FLOAT_EPSILON)))
+        n_f = 1
+        if d_f > step_f:
+            n_f = max(1, min(branch_max, math.ceil(d_f / step_f - FLOAT_EPSILON)))
+        n_om_arr[i] = n_om
+        n_f_arr[i] = n_f
+        d_om_new[i] = d_om / n_om
+        d_f_new[i] = d_f / n_f
+        total_out += n_om * n_f
+
+    out_leaves = np.empty((total_out, n_slots, 2), dtype=np.float64)
+    origins = np.empty(total_out, dtype=np.int64)
+    idx = 0
+    for i in range(n_leaves):
+        n_om = n_om_arr[i]
+        n_f = n_f_arr[i]
+        om0 = leaves_batch[i, 0, 0]
+        f0 = leaves_batch[i, 1, 0]
+        dom_n = d_om_new[i]
+        df_n = d_f_new[i]
+        om_start = om0 - 0.5 * (n_om - 1) * dom_n
+        f_start = f0 - 0.5 * (n_f - 1) * df_n
+        for io in range(n_om):
+            om_val = om_start + io * dom_n
+            for jf in range(n_f):
+                f_val = f_start + jf * df_n
+                for s in range(n_slots):
+                    out_leaves[idx, s, 0] = leaves_batch[i, s, 0]
+                    out_leaves[idx, s, 1] = leaves_batch[i, s, 1]
+                out_leaves[idx, 0, 0] = om_val
+                out_leaves[idx, 0, 1] = dom_n
+                out_leaves[idx, 1, 0] = f_val
+                out_leaves[idx, 1, 1] = df_n
+                origins[idx] = i
+                idx += 1
+    return out_leaves, origins

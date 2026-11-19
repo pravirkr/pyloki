@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import itertools
+import math
+import tomllib
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import attrs
 import numpy as np
@@ -20,6 +24,79 @@ from pyloki.core import (
 from pyloki.detection.scoring import generate_box_width_trials
 from pyloki.utils import maths, psr_utils, transforms
 from pyloki.utils.misc import C_VAL
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+
+def compute_min_nsegments(
+    tobs: float,
+    p_orb_min: float,
+    x_max: float,
+    p_min: float,
+    nbins: int,
+    *,
+    eta: float = 1.0,
+    use_chebyshev: bool = True,
+) -> int:
+    """Compute minimum power-of-2 base segments to avoid unmodeled jerk smearing.
+
+    Base P-FFA segments of duration ``t_seg = tobs / nsegments`` model up to
+    quadratic phase ``(f, a)``. Unmodeled circular orbital jerk over a segment
+    induces a minimax phase delay ``x_max * omega_max^3 * t_seg^3 / 192``
+    (Chebyshev, linear term absorbed in ``f_0``) or ``/ 48`` (Taylor worst-case).
+    """
+    if tobs <= 0.0 or p_orb_min <= 0.0 or x_max <= 0.0 or p_min <= 0.0:
+        msg = "tobs, p_orb_min, x_max, and p_min must all be positive"
+        raise ValueError(msg)
+    if nbins < 2 or eta <= 0.0:
+        msg = "nbins must be >= 2 and eta must be > 0"
+        raise ValueError(msg)
+    omega_max = 2.0 * math.pi / p_orb_min
+    tau_tol = eta * (p_min / nbins)
+    factor = 24.0 if use_chebyshev else 6.0
+    t_seg_max = (2.0 / omega_max) * ((factor * tau_tol) / x_max) ** (1.0 / 3.0)
+    if t_seg_max >= tobs:
+        return 1
+    return 1 << math.ceil(math.log2(tobs / t_seg_max))
+
+
+def compute_max_coherent_subarc(
+    poly_order: int,
+    p_orb_min: float,
+    x_max: float,
+    p_min: float,
+    nbins: int,
+    *,
+    eta: float = 1.0,
+) -> float:
+    r"""Compute the maximum coherent sub-arc duration ``t_max(k)`` for order ``k``.
+
+    Uses the exact Chebyshev minimax truncation bound on the first omitted
+    degree ``k + 1`` term of a circular orbit (``poly_order >= 2``: accel=2,
+    jerk=3, snap=4, crackle=5):
+
+    .. math::
+        t_{\max}(k) = \frac{2}{\omega_{\max}}
+        \left(\frac{\tau_{\mathrm{tol}}}{x_{\max}}
+        \cdot 2^k (k + 1)!\right)^{1 / (k + 1)}
+    """
+    if poly_order < 2:
+        msg = f"poly_order must be >= 2, got {poly_order}"
+        raise ValueError(msg)
+    if p_orb_min <= 0.0 or x_max <= 0.0 or p_min <= 0.0:
+        msg = "p_orb_min, x_max, and p_min must all be positive"
+        raise ValueError(msg)
+    if nbins < 2 or eta <= 0.0:
+        msg = "nbins must be >= 2 and eta must be > 0"
+        raise ValueError(msg)
+    omega_max = 2.0 * math.pi / p_orb_min
+    tau_tol = eta * (p_min / nbins)
+    cheb_factor = float((1 << poly_order) * math.factorial(poly_order + 1))
+    return float(
+        (2.0 / omega_max)
+        * ((tau_tol / x_max) * cheb_factor) ** (1.0 / (poly_order + 1)),
+    )
 
 
 def _is_power_of_two(
@@ -864,3 +941,64 @@ class PulsarSearchConfig:
 
     def _bseg_ffa_default(self) -> int:
         return self.nsamps
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize configuration fields to a JSON/TOML-friendly dictionary."""
+        out: dict[str, Any] = {}
+        for field in attrs.fields(type(self)):
+            val = getattr(self, field.name)
+            if isinstance(val, np.ndarray):
+                out[field.name] = val.tolist()
+            else:
+                out[field.name] = val
+        return out
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> PulsarSearchConfig:
+        """Reconstruct a ``PulsarSearchConfig`` from a mapping."""
+        kwargs = dict(data)
+        if "param_limits" in kwargs:
+            kwargs["param_limits"] = np.asarray(
+                kwargs["param_limits"],
+                dtype=np.float64,
+            )
+        return cls(**kwargs)
+
+    @classmethod
+    def from_toml(
+        cls,
+        path: str | Path,
+        *,
+        section: str | None = None,
+    ) -> PulsarSearchConfig:
+        """Load a ``PulsarSearchConfig`` from a TOML file (optional table section)."""
+        with Path(path).open("rb") as fh:
+            raw = tomllib.load(fh)
+        table = raw[section] if section is not None else raw
+        return cls.from_dict(table)
+
+    def estimate_resources(self) -> dict[str, float | int]:
+        """Estimate P-FFA memory footprint and grid complexity without allocating."""
+        nsegments_ffa = math.ceil(self.nsamps / self.bseg_ffa)
+        dparams_ffa = self.get_dparams(self.niters_ffa)
+        counts_ffa = [len(p) for p in self.get_param_arr(dparams_ffa)]
+        nparam_vol_ffa = int(math.prod(counts_ffa)) if counts_ffa else 0
+        elem_bytes = 8 if self.use_fourier else 4
+        fold_bins = (self.nbins // 2 + 1) if self.use_fourier else self.nbins
+        ffa_tensor_bytes = nsegments_ffa * nparam_vol_ffa * 2 * fold_bins * elem_bytes
+
+        total_ffa_evals = 0
+        for lvl in range(self.niters_ffa + 1):
+            nseg_lvl = math.ceil(self.nsamps / (self.bseg_brute * (1 << lvl)))
+            vol_lvl = int(
+                math.prod(len(p) for p in self.get_param_arr(self.get_dparams(lvl))),
+            )
+            total_ffa_evals += nseg_lvl * vol_lvl
+
+        return {
+            "nsegments_ffa": nsegments_ffa,
+            "nparam_vol_ffa": nparam_vol_ffa,
+            "ffa_tensor_bytes": ffa_tensor_bytes,
+            "ffa_tensor_mib": ffa_tensor_bytes / (1024.0 * 1024.0),
+            "total_ffa_evals": total_ffa_evals,
+        }

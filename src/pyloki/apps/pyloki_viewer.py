@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+import math
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import TYPE_CHECKING
 
+import attrs
+import numpy as np
 import rich_click as click
 from matplotlib import pyplot as plt
 from sigpyproc.viz.styles import set_seaborn
 
+from pyloki import kepler
+from pyloki.detection import scoring
 from pyloki.detection.schemes import DynamicThresholdSchemeAnalyser, StatesInfo
+from pyloki.io.cands import bin2d, extract_segment_waterfall
+from pyloki.orbit_fit import FourierOrbitFit, KeplerianFitResult
 from pyloki.utils.misc import get_logger
+
+if TYPE_CHECKING:
+    from matplotlib import figure as mpl_figure
+    from numpy import typing as npt
 
 logger = get_logger(__name__)
 
@@ -367,6 +379,226 @@ class ThresholdAnalyzerApp:
         self.root.mainloop()
 
 
+@attrs.define(auto_attribs=True, kw_only=True)
+class WaterfallLabParams:
+    """Interactive slider parameters for the waterfall refolding lab."""
+
+    delta_f0: float = 0.0
+    delta_f1: float = 0.0
+    f2: float = 0.0
+    p_orb: float = 0.0
+    x_orb: float = 0.0
+    ecc: float = 0.0
+    aop: float = 0.0
+    phi_orb: float = 0.0
+    time_rebin: int = 1
+    phase_rebin: int = 1
+
+
+class WaterfallLabState:
+    """Headless state and rendering engine for the interactive waterfall slider lab.
+
+    Shifts ``(n_seg, 2, n_bins)`` (or ``(n_seg, n_bins)``) segment folds in real
+    time under polynomial + Keplerian slider adjustments, rebins via S/N-preserving
+    ``bin2d``, recomputes the integrated profile and GLRT S/N, and renders an
+    optional ``FourierOrbitFit`` or ``KeplerianFitResult`` phase overlay.
+    """
+
+    def __init__(
+        self,
+        folds: npt.ArrayLike,
+        segment_times: npt.ArrayLike,
+        *,
+        f0_ref: float = 100.0,
+        orbit_overlay: FourierOrbitFit | KeplerianFitResult | None = None,
+        params: WaterfallLabParams | None = None,
+    ) -> None:
+        arr = np.asarray(folds, dtype=np.float32)
+        if arr.ndim == 2:
+            ev = np.empty((arr.shape[0], 2, arr.shape[1]), dtype=np.float32)
+            ev[:, 0, :] = arr
+            ev[:, 1, :] = 1.0
+            self.segment_folds = ev
+        elif arr.ndim == 3 and arr.shape[1] == 2:
+            self.segment_folds = arr.copy()
+        else:
+            msg = (
+                "folds must have shape (n_seg, n_bins) or (n_seg, 2, n_bins), "
+                f"got {arr.shape}"
+            )
+            raise ValueError(msg)
+
+        self.segment_times = np.asarray(segment_times, dtype=np.float64)
+        if self.segment_times.shape != (self.segment_folds.shape[0],):
+            msg = "segment_times length must match folds.shape[0]"
+            raise ValueError(msg)
+        self.f0_ref = float(f0_ref)
+        self.orbit_overlay = orbit_overlay
+        self.params = params if params is not None else WaterfallLabParams()
+        self._widths = scoring.generate_box_width_trials(self.nbins)
+
+    @property
+    def nsegments(self) -> int:
+        return int(self.segment_folds.shape[0])
+
+    @property
+    def nbins(self) -> int:
+        return int(self.segment_folds.shape[2])
+
+    def phase_shifts_bins(self) -> npt.NDArray[np.int64]:
+        """Compute integer bin roll shifts per segment from current slider params."""
+        p = self.params
+        t_c = self.segment_times - float(np.mean(self.segment_times))
+        dphi = p.delta_f0 * t_c + 0.5 * p.delta_f1 * (t_c**2) + (p.f2 / 6.0) * (t_c**3)
+        if p.p_orb > 0.0 and p.x_orb > 0.0:
+            z_sec = kepler.keplerian_z(
+                self.segment_times,
+                p.p_orb,
+                float(np.clip(p.ecc, 0.0, 0.95)),
+                p.phi_orb,
+                p.x_orb,
+                p.aop,
+                0.5 * math.pi,
+            )
+            dphi = dphi - self.f0_ref * (z_sec - float(z_sec[0]))
+        return np.rint(dphi * self.nbins).astype(np.int64) % self.nbins
+
+    def compute(self) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]:
+        """Apply current shifts and return ``(rebinned_waterfall, profile, snr)``."""
+        shifts = self.phase_shifts_bins()
+        wf = extract_segment_waterfall(
+            self.segment_folds,
+            phase_shifts=shifts,
+            widths=self._widths,
+        )
+        rebinned = bin2d(
+            wf.amp_map,
+            bt=max(1, int(self.params.time_rebin)),
+            bp=max(1, int(self.params.phase_rebin)),
+        )
+        return rebinned, wf.integrated_profile, wf.best_snr
+
+    def render(self, fig: mpl_figure.Figure) -> tuple[float, mpl_figure.Figure]:
+        """Render the live 2D waterfall, integrated profile, and orbit overlay."""
+        rebinned, profile, snr = self.compute()
+        fig.clear()
+        gs = fig.add_gridspec(2, 1, height_ratios=[1.0, 2.5], hspace=0.25)
+        ax_prof = fig.add_subplot(gs[0])
+        ax_wf = fig.add_subplot(gs[1])
+
+        phase = np.linspace(0.0, 1.0, profile.size, endpoint=False)
+        ax_prof.step(phase, profile, where="mid", color="tab:blue")
+        ax_prof.axhline(0.0, color="0.6", ls="--", lw=0.8)
+        ax_prof.set_ylabel("Normalized S/N")
+        ax_prof.set_title(f"Integrated Profile (GLRT S/N = {snr:.2f})")
+
+        ax_wf.imshow(
+            rebinned,
+            aspect="auto",
+            origin="lower",
+            extent=(
+                0.0,
+                1.0,
+                float(self.segment_times[0]),
+                float(self.segment_times[-1]),
+            ),
+            cmap="viridis",
+        )
+        if self.orbit_overlay is not None:
+            t_arr = self.segment_times
+            if isinstance(self.orbit_overlay, FourierOrbitFit):
+                om = float(self.orbit_overlay.omega_orb)
+                x = float(self.orbit_overlay.x_orb)
+                phi = float(self.orbit_overlay.phi_orb)
+                delay_s = x * np.sin(om * t_arr + phi)
+            else:
+                delay_s = kepler.keplerian_z(
+                    t_arr,
+                    float(self.orbit_overlay.p_orb),
+                    float(self.orbit_overlay.ecc),
+                    float(self.orbit_overlay.phi),
+                    float(self.orbit_overlay.x_orb),
+                    float(self.orbit_overlay.aop),
+                    0.5 * math.pi,
+                )
+            overlay_phase = np.mod(
+                0.5 + self.f0_ref * (delay_s - float(delay_s[0])), 1.0
+            )
+            ax_wf.plot(overlay_phase, t_arr, color="tab:red", lw=1.2, ls="--")
+
+        ax_wf.set_xlabel("Pulse Phase")
+        ax_wf.set_ylabel("Time (s)")
+        return snr, fig
+
+
+class WaterfallLabApp:
+    """Tkinter interactive waterfall slider lab backed by ``WaterfallLabState``."""
+
+    def __init__(self, root: tk.Tk, state: WaterfallLabState) -> None:
+        from matplotlib.backends.backend_tkagg import (  # noqa: PLC0415
+            FigureCanvasTkAgg,
+            NavigationToolbar2Tk,
+        )
+
+        self.root = root
+        self.state = state
+        self.root.title("PyLoki Interactive Waterfall Lab")
+        self.root.minsize(950, 650)
+
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        self.fig = plt.Figure(figsize=(9, 6), dpi=100)
+        self.canvas = FigureCanvasTkAgg(self.fig, main_frame)
+        self.canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        toolbar = NavigationToolbar2Tk(self.canvas, main_frame)
+        toolbar.update()
+
+        slider_frame = ttk.Frame(main_frame)
+        slider_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=8)
+
+        self.vars: dict[str, tk.DoubleVar] = {}
+        slider_specs = [
+            ("delta_f0", -0.01, 0.01, 1e-5),
+            ("delta_f1", -1e-6, 1e-6, 1e-9),
+            ("f2", -1e-9, 1e-9, 1e-12),
+            ("p_orb", 0.0, 20000.0, 10.0),
+            ("x_orb", 0.0, 10.0, 0.01),
+            ("ecc", 0.0, 0.9, 0.01),
+            ("aop", 0.0, 2.0 * math.pi, 0.05),
+            ("phi_orb", 0.0, 2.0 * math.pi, 0.05),
+            ("time_rebin", 1.0, max(1.0, float(state.nsegments)), 1.0),
+            ("phase_rebin", 1.0, max(1.0, float(state.nbins // 2)), 1.0),
+        ]
+        for name, lo, hi, res in slider_specs:
+            ttk.Label(slider_frame, text=name).pack(anchor="w")
+            var = tk.DoubleVar(value=float(getattr(state.params, name)))
+            self.vars[name] = var
+            scale = tk.Scale(
+                slider_frame,
+                from_=lo,
+                to=hi,
+                resolution=res,
+                orient=tk.HORIZONTAL,
+                variable=var,
+                length=220,
+                command=lambda _v: self.refresh(),
+            )
+            scale.pack(fill=tk.X, pady=2)
+        self.refresh()
+
+    def refresh(self) -> float:
+        for name, var in self.vars.items():
+            val = var.get()
+            if name in ("time_rebin", "phase_rebin"):
+                setattr(self.state.params, name, max(1, round(val)))
+            else:
+                setattr(self.state.params, name, float(val))
+        snr, _ = self.state.render(self.fig)
+        self.canvas.draw()
+        return snr
+
+
 @click.group(
     context_settings={"help_option_names": ["-h", "--help"], "show_default": True},
 )
@@ -387,6 +619,21 @@ def scheme(scheme_file: str, display: tuple[int, int]) -> None:
     root = tk.Tk()
     app = ThresholdAnalyzerApp(root)
     app.run(default_file=scheme_file, display=display)
+
+
+@main.command()
+@click.argument("waterfall_npz", type=click.Path(exists=True))
+@click.option("--f0", type=float, default=100.0, help="Reference spin frequency (Hz)")
+def waterfall(waterfall_npz: str, f0: float) -> None:
+    data = np.load(waterfall_npz)
+    state = WaterfallLabState(
+        data["folds"],
+        data["segment_times"],
+        f0_ref=f0,
+    )
+    root = tk.Tk()
+    WaterfallLabApp(root, state)
+    root.mainloop()
 
 
 if __name__ == "__main__":

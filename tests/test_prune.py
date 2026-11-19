@@ -20,7 +20,7 @@ import pytest
 from pyloki.config import ParamLimits, PulsarSearchConfig
 from pyloki.ffa import DynamicProgramming
 from pyloki.io.cands import PruneResultWriter
-from pyloki.prune import Pruning, prune_dyp_tree
+from pyloki.prune import Pruning, prune_dyp_tree, sliding_arc_windows
 from pyloki.simulation.pulse import PulseSignalConfig
 from pyloki.utils.np_utils import determine_ref_segs_pareto
 
@@ -165,3 +165,55 @@ def test_prune_dyp_tree_rejects_empty_or_invalid_without_creating_outputs(
     with pytest.raises(ValueError, match="n_runs must be between"):
         prune_dyp_tree(dyp, thresholds, n_runs=0, outdir=outdir)
     assert not outdir.exists()
+
+
+def test_sliding_arc_windows() -> None:
+    wins = sliding_arc_windows(16, 8, stride=4)
+    assert wins == [(0, 8), (4, 12), (8, 16)]
+    assert sliding_arc_windows(16, 16) == [(0, 16)]
+    with pytest.raises(ValueError, match="arc_len"):
+        sliding_arc_windows(8, 12)
+
+
+def test_prune_dyp_tree_stop_snr_early_stop(search, tmp_path) -> None:
+    dyp = search
+    thresholds = _thresholds(dyp)
+    res_file = prune_dyp_tree(
+        dyp,
+        thresholds,
+        ref_segs=[0, 1, 2, 3],
+        outdir=tmp_path,
+        file_prefix="early",
+        n_workers=1,
+        stop_snr=0.0,
+    )
+    with h5py.File(res_file, "r") as h:
+        assert len(h["runs"]) == 1
+
+
+def test_trace_ep_hypothesis_and_resolve_stability(search: DynamicProgramming) -> None:
+    from pyloki.prune import trace_ep_hypothesis, verify_resolve_stability  # noqa: PLC0415
+
+    dyp = search
+    freq = 1.0 / 0.007
+    param_vec = np.array([6.0, 500.0, freq], dtype=np.float64)
+    ref_seg = dyp.nsegments // 2
+
+    trace = trace_ep_hypothesis(dyp, param_vec, ref_seg=ref_seg, poly_basis="taylor")
+    assert trace.levels.size == dyp.nsegments
+    assert trace.scores.size == dyp.nsegments
+    assert np.all(np.isfinite(trace.scores))
+    # Final accumulated S/N across all 8 segments should exceed the single-segment seed
+    assert float(trace.scores[-1]) > float(trace.scores[0])
+
+    report = verify_resolve_stability(
+        dyp,
+        param_vec,
+        ref_seg=ref_seg,
+        poly_basis="taylor",
+        max_grid_step_tol=1,
+        max_phase_tol=1.0,
+    )
+    assert report.is_stable
+    assert report.max_param_idx_diff <= 1
+    assert report.max_phase_shift_diff <= 1.0

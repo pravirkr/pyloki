@@ -408,3 +408,188 @@ class TestHarmonicSumming:
         small = np.stack([np.ones(2), np.ones(2)]).astype(np.float32)
         with pytest.raises(ValueError, match="harmonic"):
             impl(small, 4)
+
+
+class TestBoxcarGlrt:
+    @pytest.mark.parametrize("impl", jit_variants(scoring.boxcar_snr_glrt_1d))
+    def test_uniform_weights_matches_boxcar_1d(self, impl) -> None:
+        ts_e = _profiles(1, seed=21)[0]
+        v0 = np.full(NBINS, 3.5, dtype=np.float32)
+        got = impl(ts_e, v0, WIDTHS)
+        want = scoring.boxcar_snr_1d(
+            (ts_e / np.sqrt(v0)).astype(np.float32), WIDTHS, 1.0
+        )
+        np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-5)
+
+    @pytest.mark.parametrize("impl", jit_variants(scoring.boxcar_snr_glrt_1d))
+    def test_heteroscedastic_with_zeros_matches_exact_glrt_and_dc_invariant(
+        self, impl
+    ) -> None:
+        rng = np.random.default_rng(22)
+        ts_v = rng.uniform(0.2, 5.0, NBINS).astype(np.float32)
+        ts_v[5:10] = 0.0  # RFI-masked bins
+        ts_e = (rng.standard_normal(NBINS) * np.sqrt(ts_v)).astype(np.float32)
+        ts_e[ts_v == 0.0] = 0.0
+
+        got = impl(ts_e, ts_v, WIDTHS)
+        # Adding constant DC baseline mu_0 * ts_v leaves GLRT S/N invariant
+        got_dc = impl((ts_e + 7.5 * ts_v).astype(np.float32), ts_v, WIDTHS)
+        np.testing.assert_allclose(got, got_dc, rtol=1e-4, atol=1e-4)
+
+        # Brute-force exact GLRT check
+        v_tot = float(np.sum(ts_v))
+        e_tot = float(np.sum(ts_e))
+        want = []
+        for w in WIDTHS:
+            best = -np.inf
+            for s in range(NBINS):
+                idx = (np.arange(s, s + int(w)) % NBINS).astype(int)
+                vw = float(np.sum(ts_v[idx]))
+                ew = float(np.sum(ts_e[idx]))
+                if vw > 1e-12 * v_tot and v_tot - vw > 1e-12 * v_tot:
+                    frac = vw / v_tot
+                    val = (ew - frac * e_tot) / np.sqrt(vw * (1.0 - frac))
+                    best = max(best, val)
+            want.append(best)
+        np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-4)
+
+    def test_glrt_null_calibration_and_batch_wrappers(self) -> None:
+        rng = np.random.default_rng(23)
+        n = 4000
+        ts_v = np.broadcast_to(
+            rng.uniform(0.5, 4.0, NBINS).astype(np.float32),
+            (n, NBINS),
+        ).copy()
+        ts_e = (rng.standard_normal((n, NBINS)) * np.sqrt(ts_v)).astype(np.float32)
+        # Single width=1 fixed window (no trial maximization) has mean ~0, std ~1
+        w1 = np.array([4], dtype=np.int64)
+        s_par = scoring.boxcar_snr_glrt_2d(ts_e, ts_v, w1)
+        s_ser = scoring.boxcar_snr_glrt_2d_serial(ts_e, ts_v, w1)
+        np.testing.assert_allclose(s_par, s_ser, rtol=1e-6)
+
+        folds_ev = np.stack([ts_e[:16], ts_v[:16]], axis=1)
+        s_3d = scoring.boxcar_snr_glrt_3d(folds_ev, WIDTHS)
+        s_batch = scoring.snr_glrt_score_batch_func(folds_ev, WIDTHS)
+        np.testing.assert_allclose(s_batch, np.max(s_3d, axis=1), rtol=1e-6)
+
+
+class TestDoubleBoxcarCombinedAndKadane:
+    @pytest.mark.parametrize("impl", jit_variants(scoring.double_boxcar_snr_1d))
+    def test_double_boxcar_boosts_interpulse_over_single(self, impl) -> None:
+        prof = np.zeros(NBINS, dtype=np.float32)
+        prof[4:7] = 5.0
+        prof[20:23] = 5.0
+        w = np.array([1, 2, 3, 4], dtype=np.int64)
+        s_double = impl(prof, w)
+        # Single-peak trial-penalized score
+        z1 = float(np.max(scoring.boxcar_snr_1d(prof, w, 1.0)))
+        n_trials = len(w) * NBINS
+        s_single_lee = float(
+            maths.norm_isf_func(
+                maths.chi_sq_minus_logsf_func(z1 * z1, 1) - np.log(n_trials),
+            ),
+        )
+        assert s_double > s_single_lee + 2.0
+
+        # Pure white noise stays finite
+        rng = np.random.default_rng(30)
+        noise = rng.standard_normal(NBINS).astype(np.float32)
+        assert np.isfinite(impl(noise, w))
+        assert np.isfinite(impl(np.zeros(NBINS, dtype=np.float32), w))
+
+    @pytest.mark.parametrize("impl", jit_variants(scoring.combined_score_func))
+    def test_combined_score_is_max_of_boxcar_and_harmonic(self, impl) -> None:
+        rng = np.random.default_rng(31)
+        ev = np.stack([rng.standard_normal(NBINS), np.ones(NBINS)]).astype(np.float32)
+        got = impl(ev, WIDTHS, 8)
+        want = max(
+            scoring.snr_score_func(ev, WIDTHS),
+            scoring.harmonic_summing_score_func(ev, 8),
+        )
+        assert got == pytest.approx(want, rel=1e-6)
+
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "boxcar",
+            "boxcar_glrt",
+            "double_boxcar",
+            "double_matched",
+            "harmonic_z2",
+            "combined",
+            "kadane",
+        ],
+    )
+    def test_score_profiles_all_modes(self, mode: str) -> None:
+        rng = np.random.default_rng(32)
+        folds_ev = np.stack(
+            [rng.standard_normal((8, NBINS)), np.ones((8, NBINS))],
+            axis=1,
+        ).astype(np.float32)
+        scores = scoring.score_profiles(
+            folds_ev,
+            WIDTHS,
+            mode=mode,  # type: ignore[arg-type]
+            n_harmonics=8,
+        )
+        assert scores.shape == (8,)
+        assert np.all(np.isfinite(scores))
+
+    def test_score_profiles_validation(self) -> None:
+        with pytest.raises(ValueError, match="shape"):
+            scoring.score_profiles(np.zeros((4, NBINS), dtype=np.float32), WIDTHS)
+        with pytest.raises(ValueError, match="Unsupported score mode"):
+            scoring.score_profiles(
+                np.ones((2, 2, NBINS), dtype=np.float32),
+                WIDTHS,
+                mode="unknown",  # type: ignore[arg-type]
+            )
+
+
+class TestMarkovNullingHMM:
+    @pytest.mark.parametrize(
+        "fn",
+        jit_variants(scoring.markov_hmm_log_llr),
+    )
+    def test_markov_hmm_stability_and_null_calibration(self, fn) -> None:
+        rng = np.random.default_rng(101)
+        # 10,000 segments with extreme transition probabilities: must not overflow
+        z_long = rng.standard_normal(10_000)
+        llr_h0 = fn(z_long, 1.0, 1e-4, 1e-4)
+        assert np.isfinite(llr_h0)
+        assert llr_h0 < 10.0
+
+    @pytest.mark.parametrize(
+        "fn",
+        jit_variants(scoring.viterbi_null_mask),
+    )
+    def test_viterbi_and_posterior_recover_on_burst(self, fn) -> None:
+        from pyloki.simulation.pulse import generate_markov_nulling_envelope  # noqa: PLC0415
+
+        rng = np.random.default_rng(202)
+        n_seg = 200
+        env = generate_markov_nulling_envelope(n_seg, 0.08, 0.02, rng=rng)
+        assert env.shape == (n_seg,)
+        assert set(np.unique(env)).issubset({0.0, 1.0})
+
+        # Deterministic 20% ON block to verify HMM beats full-span unweighted sum
+        true_on = np.zeros(n_seg, dtype=np.bool_)
+        true_on[60:100] = True
+        z = rng.standard_normal(n_seg) + np.where(true_on, 2.5, 0.0)
+
+        mask = fn(z, 2.5, 0.025, 0.006)
+        assert mask.shape == (n_seg,)
+        # High overlap with the true ON window
+        overlap = float(np.mean(mask == true_on))
+        assert overlap > 0.85
+
+        post = scoring.markov_hmm_posterior_on(z, 2.5, 0.025, 0.006)
+        assert np.all((post >= 0.0) & (post <= 1.0))
+        assert float(np.mean(post[true_on])) > 0.7
+        assert float(np.mean(post[~true_on])) < 0.2
+
+        best_llr, *_ = scoring.markov_hmm_grid_score(z)
+        # Equivalent Gaussian S/N from 2 * log_llr exceeds unweighted sum S/N
+        snr_unweighted = float(np.sum(z) / np.sqrt(n_seg))
+        snr_hmm_eq = float(np.sqrt(max(2.0 * best_llr, 0.0)))
+        assert snr_hmm_eq > snr_unweighted + 2.0

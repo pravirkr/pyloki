@@ -913,6 +913,146 @@ class PredictionTableGenerator:
         fits = fits[None, :, :] * x_ratios[:, None, None]
         return fits.reshape(-1, poly_deg + 1)
 
+    def build_packed_voxel_table(
+        self,
+        key_indices: tuple[int, int, int],
+        target_index: int,
+        bin_sizes: tuple[float, float, float],
+    ) -> PackedVoxelTable:
+        """Build a Numba-compatible sorted 64-bit packed 3D voxel lookup table."""
+        i0 = np.floor(self.data[:, key_indices[0]] / bin_sizes[0]).astype(np.int64)
+        i1 = np.floor(self.data[:, key_indices[1]] / bin_sizes[1]).astype(np.int64)
+        i2 = np.floor(self.data[:, key_indices[2]] / bin_sizes[2]).astype(np.int64)
+        off0 = int(np.min(i0))
+        off1 = int(np.min(i1))
+        off2 = int(np.min(i2))
+
+        n = self.data.shape[0]
+        raw_keys = np.empty(n, dtype=np.uint64)
+        for idx in range(n):
+            raw_keys[idx] = pack_voxel_key_3d(
+                int(i0[idx]),
+                int(i1[idx]),
+                int(i2[idx]),
+                off0,
+                off1,
+                off2,
+            )
+
+        vals = self.data[:, target_index].astype(np.float64)
+        order = np.argsort(raw_keys)
+        sorted_keys = raw_keys[order]
+        sorted_vals = vals[order]
+        uniq_keys, starts = np.unique(sorted_keys, return_index=True)
+        d_min = np.minimum.reduceat(sorted_vals, starts)
+        d_max = np.maximum.reduceat(sorted_vals, starts)
+        return PackedVoxelTable(
+            keys=np.ascontiguousarray(uniq_keys, dtype=np.uint64),
+            d_min=np.ascontiguousarray(d_min, dtype=np.float64),
+            d_max=np.ascontiguousarray(d_max, dtype=np.float64),
+            bin_sizes=np.array(bin_sizes, dtype=np.float64),
+            offsets=np.array([off0, off1, off2], dtype=np.int64),
+        )
+
+
+@njit(cache=True)
+def pack_voxel_key_3d(
+    i0: int,
+    i1: int,
+    i2: int,
+    off0: int,
+    off1: int,
+    off2: int,
+) -> np.uint64:
+    """Pack three shifted integer voxel coordinates into one 64-bit key."""
+    u0 = np.uint64(max(0, i0 - off0)) & np.uint64(0x1FFFFF)
+    u1 = np.uint64(max(0, i1 - off1)) & np.uint64(0x1FFFFF)
+    u2 = np.uint64(max(0, i2 - off2)) & np.uint64(0x1FFFFF)
+    return (u0 << np.uint64(42)) | (u1 << np.uint64(21)) | u2
+
+
+@njit(cache=True)
+def lookup_voxel_bounds(
+    keys: np.ndarray,
+    d_min: np.ndarray,
+    d_max: np.ndarray,
+    query_key: np.uint64,
+) -> tuple[bool, float, float]:
+    """Binary-search ``(found, min_val, max_val)`` in a packed 64-bit voxel table."""
+    n = keys.size
+    if n == 0:
+        return False, 0.0, 0.0
+    idx = int(np.searchsorted(keys, query_key))
+    if idx < n and keys[idx] == query_key:
+        return True, float(d_min[idx]), float(d_max[idx])
+    return False, 0.0, 0.0
+
+
+@njit(cache=True)
+def dimensionless_kepler_key(
+    z2: float,
+    z3: float,
+    z4: float,
+    z5: float,
+    z6: float,
+    eps: float = 1e-18,
+) -> tuple[bool, float, float, float]:
+    """Compute scale-invariant 3D Keplerian key ``(angle, z5_hat, z6_hat)``.
+
+    Estimates ``omega_hat = sqrt(-z4 / z2)`` (falling back to ``sqrt(-z5 / z3)``
+    when ``|z2|`` is small) and amplitude ``A = hypot(z2 / om^2, z3 / om^3)``.
+    """
+    om_sq = -1.0
+    if abs(z2) > eps and (-z4 / z2) > 0.0:
+        om_sq = -z4 / z2
+    elif abs(z3) > eps and (-z5 / z3) > 0.0:
+        om_sq = -z5 / z3
+    if om_sq <= 0.0:
+        return False, 0.0, 0.0, 0.0
+    om = math.sqrt(om_sq)
+    om2 = om_sq
+    om3 = om2 * om
+    om5 = om3 * om2
+    om6 = om3 * om3
+    c2 = z2 / om2
+    c3 = z3 / om3
+    amp = math.hypot(c2, c3)
+    if amp <= eps:
+        return False, 0.0, 0.0, 0.0
+    angle = math.atan2(c2, c3)
+    return True, angle, z5 / (amp * om5), z6 / (amp * om6)
+
+
+@attrs.frozen(auto_attribs=True, kw_only=True)
+class PackedVoxelTable:
+    """Numba-ready sorted 64-bit packed 3D voxel lookup table."""
+
+    keys: np.ndarray
+    d_min: np.ndarray
+    d_max: np.ndarray
+    bin_sizes: np.ndarray
+    offsets: np.ndarray
+
+    def query(self, v0: float, v1: float, v2: float) -> tuple[bool, float, float]:
+        i0 = math.floor(v0 / float(self.bin_sizes[0]))
+        i1 = math.floor(v1 / float(self.bin_sizes[1]))
+        i2 = math.floor(v2 / float(self.bin_sizes[2]))
+        if (
+            i0 < int(self.offsets[0])
+            or i1 < int(self.offsets[1])
+            or i2 < int(self.offsets[2])
+        ):
+            return False, 0.0, 0.0
+        qkey = pack_voxel_key_3d(
+            i0,
+            i1,
+            i2,
+            int(self.offsets[0]),
+            int(self.offsets[1]),
+            int(self.offsets[2]),
+        )
+        return lookup_voxel_bounds(self.keys, self.d_min, self.d_max, qkey)
+
 
 def _grid_axis(bounds: tuple[float, float], step: float) -> np.ndarray:
     """Build a non-empty 1D grid over [min, max] allowing equal-bound pins."""

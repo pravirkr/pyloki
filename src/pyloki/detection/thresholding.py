@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
+import attrs
 import h5py
 import numpy as np
 import numpy.typing as npt
@@ -19,6 +21,11 @@ from pyloki.simulation.pulse import generate_folded_profile
 from pyloki.utils import np_utils
 from pyloki.utils.misc import CONSOLE, get_logger
 from pyloki.utils.timing import Timer
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from pyloki.detection.scoring import ScoreMode
 
 logger = get_logger(__name__)
 
@@ -739,6 +746,61 @@ def run_stage_improved(
                         folds_out[ithres * nprobs + iprob] = cur_fold_state
 
 
+@attrs.frozen(auto_attribs=True, kw_only=True)
+class SharedOptions:
+    """Configuration options for ``shared`` and ``robust`` threshold scheme modes."""
+
+    min_pd: float = 0.1
+    w_terminal: float = 1.0
+    beam_sigma: float = 3.0
+    reach_sigma: float = 1.0
+    ntrials_pilot: int = 8192
+    ntrials_sig_bank: int = 16384
+    ntrials_noise_bank: int = 4096
+
+
+@attrs.frozen(auto_attribs=True, kw_only=True)
+class SchemeSolution:
+    """Sample-split solution returned by ``DynamicThresholdScheme.solve()``."""
+
+    thresholds: npt.NDArray[np.float32]
+    pd: float
+    pd_se: float
+    pd_trials: int
+    c: float
+    cost: float
+    search_thresholds: npt.NDArray[np.float32]
+    search_pd: float
+    search_c: float
+    delivery: Literal["no_path", "met", "within_tolerance", "short"]
+    min_pd: float
+    w_terminal: float
+    eval_states: StatesInfo
+
+
+def simulate_unpruned_signal_scores(
+    nstages: int,
+    profile: npt.NDArray[np.float32],
+    bias_snr: float,
+    ntrials: int,
+    ducy_max: float,
+    wtsp: float,
+    rng: np.random.Generator,
+) -> npt.NDArray[np.float32]:
+    """Simulate unpruned cumulative signal boxcar scores ``(nstages, ntrials)``."""
+    nbins = len(profile)
+    widths = scoring.generate_box_width_trials(nbins, ducy_max=ducy_max, wtsp=wtsp)
+    sig_step = (profile * np.float32(bias_snr)).astype(np.float32)
+    folds = rng.standard_normal((ntrials, nbins)).astype(np.float32) + sig_step
+    scores = np.empty((nstages, ntrials), dtype=np.float32)
+    for istage in range(nstages):
+        folds += rng.standard_normal((ntrials, nbins)).astype(np.float32) + sig_step
+        inv_std = np.float32(1.0 / math.sqrt(istage + 2.0))
+        norm_folds = np.ascontiguousarray(folds * inv_std, dtype=np.float32)
+        scores[istage] = np.max(scoring.boxcar_snr_2d(norm_folds, widths, 1.0), axis=1)
+    return scores
+
+
 class DynamicThresholdScheme:
     def __init__(
         self,
@@ -753,13 +815,20 @@ class DynamicThresholdScheme:
         ducy_max: float = 0.2,
         wtsp: float = 1.0,
         beam_width: float = 0.7,
-        mode: Literal["legacy", "improved"] = "legacy",
+        mode: Literal["legacy", "improved", "shared", "robust"] = "legacy",
         seed: int | np.random.Generator | None = None,
+        shared_options: SharedOptions | None = None,
     ) -> None:
-        if mode not in ("legacy", "improved"):
-            msg = f"mode must be 'legacy' or 'improved', got {mode!r}"
+        if mode not in ("legacy", "improved", "shared", "robust"):
+            msg = (
+                "mode must be 'legacy', 'improved', 'shared', or 'robust', "
+                f"got {mode!r}"
+            )
             raise ValueError(msg)
         self.mode = mode
+        self.shared_options = (
+            SharedOptions() if shared_options is None else shared_options
+        )
         self.rng = np.random.default_rng(seed)
         # `self.rng` serves the serial init paths. The parallel kernels cannot use it:
         # they consume it inside a `prange`, so which thread takes which draw depends
@@ -784,7 +853,16 @@ class DynamicThresholdScheme:
         # later define as snr^2
         self.thresholds = np.linspace(0.1, self.snr_final, nthresholds)
         self.prob_min = prob_min
-        self.probs = np.logspace(np.log10(prob_min), 0, nprobs)
+        if self.mode in ("shared", "robust"):
+            min_pd = self.shared_options.min_pd
+            above = np.logspace(np.log10(min_pd), 0.0, nprobs)
+            n_below = min(16, max(1, nprobs // 2))
+            below = np.logspace(np.log10(min_pd * 0.5), np.log10(min_pd), n_below + 1)[
+                :-1
+            ]
+            self.probs = np.concatenate((below, above))
+        else:
+            self.probs = np.logspace(np.log10(prob_min), 0, nprobs)
 
         state = np.ones(1, dtype=state_dtype)
         state["threshold"] = -1.0
@@ -799,8 +877,28 @@ class DynamicThresholdScheme:
             bound_scheme(self.nstages, self.snr_final),
             trials_scheme(self.branching_pattern, trials_start=1),
         )
+        self._pilot_sigma: npt.NDArray[np.float64] = np.ones(
+            self.nstages,
+            dtype=np.float64,
+        )
+        self._beam_lo: npt.NDArray[np.float64] = np.zeros(
+            self.nstages,
+            dtype=np.float64,
+        )
+        self._beam_hi: npt.NDArray[np.float64] = np.full(
+            self.nstages,
+            self.snr_final,
+            dtype=np.float64,
+        )
+        self._shared_scores: npt.NDArray[np.float32] | None = None
+        self._shared_masks_in: dict[tuple[int, int], npt.NDArray[np.bool_]] = {}
+        self._shared_h0_in: dict[tuple[int, int], npt.NDArray[np.float32]] = {}
+        self._shared_parents: dict[tuple[int, int, int], tuple[int, int]] = {}
+
         if self.mode == "improved":
             self._init_improved()
+        elif self.mode in ("shared", "robust"):
+            self._init_shared()
         else:
             self._init_legacy()
 
@@ -825,6 +923,15 @@ class DynamicThresholdScheme:
         return len(self.profile)
 
     def get_current_thresholds_idx(self, istage: int) -> np.ndarray:
+        if self.mode in ("shared", "robust"):
+            lo = float(self._beam_lo[istage])
+            hi = float(self._beam_hi[istage])
+            idx = np.where((self.thresholds >= lo) & (self.thresholds <= hi))[0]
+            if len(idx) == 0:
+                target = float(np.clip(self.guess_path[istage], lo, hi))
+                nearest = int(np.argmin(np.abs(self.thresholds - target)))
+                return np.array([nearest], dtype=np.int64)
+            return idx
         guess = self.guess_path[istage]
         half_extent = self.beam_width
         lower_bound = max(0, guess - half_extent)
@@ -983,6 +1090,423 @@ class DynamicThresholdScheme:
                 folds_idx = int(ithres * self.nprobs + iprob)
                 self.folds_in[folds_idx] = cur_fold_state
 
+    def _init_shared(self) -> None:
+        with Timer(name="DynamicThresholdScheme shared init", logger=logger.info):
+            opts = self.shared_options
+            pilot_rng = np.random.default_rng(
+                np.random.SeedSequence(self._entropy, spawn_key=(9001,)),
+            )
+            pilot_scores = simulate_unpruned_signal_scores(
+                self.nstages,
+                self.profile,
+                self.bias_snr,
+                opts.ntrials_pilot,
+                self.ducy_max,
+                self.wtsp,
+                pilot_rng,
+            )
+            med_s = np.median(pilot_scores, axis=1)
+            sigma_s = np.maximum(np.std(pilot_scores, axis=1), 0.25)
+            p_lo = float(self.probs[0])
+            q_lo = np.quantile(
+                pilot_scores,
+                max(1e-4, 0.02 * p_lo / max(self.nstages, 1)),
+                axis=1,
+            )
+            q_hi = np.quantile(pilot_scores, min(0.9999, 1.0 - 0.5 * p_lo), axis=1)
+            self._pilot_sigma = sigma_s.astype(np.float64)
+            self.guess_path = np.minimum(
+                med_s,
+                trials_scheme(self.branching_pattern, trials_start=1),
+            )
+            self._set_guided_beam(self.guess_path, q_lo, q_hi)
+
+            n_sig_shared = min(16 * self.ntrials, 2**16)
+            shared_rng = np.random.default_rng(
+                np.random.SeedSequence(self._entropy, spawn_key=(9002,)),
+            )
+            self._shared_scores = simulate_unpruned_signal_scores(
+                self.nstages,
+                self.profile,
+                self.bias_snr,
+                n_sig_shared,
+                self.ducy_max,
+                self.wtsp,
+                shared_rng,
+            )
+            self._init_shared_stage0(pass_idx=0)
+
+    def _set_guided_beam(
+        self,
+        center: np.ndarray,
+        q_lo: np.ndarray | None = None,
+        q_hi: np.ndarray | None = None,
+    ) -> None:
+        half = self.shared_options.beam_sigma * self._pilot_sigma
+        lo = np.maximum(0.0, center - half)
+        hi = np.minimum(self.snr_final, center + half)
+        if q_lo is not None:
+            lo = np.maximum(lo, q_lo)
+        if q_hi is not None:
+            hi = np.minimum(hi, q_hi)
+        self._beam_lo = np.minimum(lo, hi)
+        self._beam_hi = np.maximum(lo, hi)
+
+    def _init_shared_stage0(self, pass_idx: int) -> None:
+        assert self._shared_scores is not None  # noqa: S101
+        state_empty = np.ones(1, dtype=state_dtype)
+        state_empty["threshold"] = -1.0
+        state_empty["threshold_prev"] = -1.0
+        self.states = np.full(
+            (self.nstages, self.nthresholds, self.nprobs),
+            state_empty,
+        )
+        self._shared_masks_in = {}
+        self._shared_h0_in = {}
+        self._shared_parents = {}
+
+        rng0 = np.random.default_rng(
+            np.random.SeedSequence(self._entropy, spawn_key=(9100 + pass_idx, 0)),
+        )
+        folds0 = rng0.standard_normal((self.ntrials, self.nbins)).astype(np.float32)
+        folds1 = folds0 + rng0.standard_normal((self.ntrials, self.nbins)).astype(
+            np.float32,
+        )
+        scores_h0 = fold_max_scores(folds1, 2.0, self.ducy_max, self.wtsp)
+        sig0 = self._shared_scores[0]
+        h0_floor = min(8, self.ntrials) / float(self.ntrials)
+        bp0 = float(self.branching_pattern[0])
+        is_last = self.nstages == 1
+        w_term = self.shared_options.w_terminal if is_last else 0.0
+
+        for ithres in self.get_current_thresholds_idx(0):
+            thresh = float(self.thresholds[ithres])
+            mask_sig = sig0 > thresh
+            pd_c = float(np.mean(mask_sig))
+            if pd_c <= 0.0:
+                continue
+            surv_idx = np.flatnonzero(scores_h0 > thresh)
+            if surv_idx.size == 0:
+                continue
+            h0_rate = max(surv_idx.size / float(self.ntrials), h0_floor)
+            nleaves_next = bp0
+            nleaves_surv = nleaves_next * h0_rate
+            comp_cumul = 1.0 + nleaves_next
+            rank_cost = (comp_cumul + w_term * nleaves_surv) / pd_c
+
+            iprob = int(np.digitize(pd_c, self.probs)) - 1
+            if iprob < 0 or iprob >= self.nprobs:
+                continue
+            cur = self.states[0, ithres, iprob]
+            if cur["threshold"] < 0 or rank_cost < float(cur["cost"]):
+                cur["success_h0"] = h0_rate
+                cur["success_h1"] = pd_c
+                cur["complexity"] = nleaves_surv
+                cur["complexity_cumul"] = comp_cumul
+                cur["success_h1_cumul"] = pd_c
+                cur["nbranches"] = bp0
+                cur["threshold"] = thresh
+                cur["cost"] = rank_cost
+                cur["threshold_prev"] = -1.0
+                cur["success_h1_cumul_prev"] = 1.0
+                self._shared_masks_in[(int(ithres), iprob)] = mask_sig
+                self._shared_h0_in[(int(ithres), iprob)] = np.ascontiguousarray(
+                    folds1[surv_idx],
+                )
+
+    def _run_shared_pass(self, center: np.ndarray, pass_idx: int) -> None:
+        assert self._shared_scores is not None  # noqa: S101
+        h0_floor = min(8, self.ntrials) / float(self.ntrials)
+        reach_sigma = self.shared_options.reach_sigma
+        widths = scoring.generate_box_width_trials(
+            self.nbins,
+            ducy_max=self.ducy_max,
+            wtsp=self.wtsp,
+        )
+
+        for istage in track(
+            range(1, self.nstages),
+            description="Running shared stages",
+            console=CONSOLE,
+            transient=True,
+        ):
+            beam_cur = self.get_current_thresholds_idx(istage)
+            sig_s = self._shared_scores[istage]
+            var_next = float(istage + 2)
+            inv_std = np.float32(1.0 / math.sqrt(var_next))
+            bp_s = float(self.branching_pattern[istage])
+            is_last = istage == self.nstages - 1
+            w_term = self.shared_options.w_terminal if is_last else 0.0
+            max_doff = reach_sigma * float(self._pilot_sigma[istage])
+            center_prev = float(center[istage - 1])
+            center_cur = float(center[istage])
+
+            masks_out: dict[tuple[int, int], npt.NDArray[np.bool_]] = {}
+            h0_out: dict[tuple[int, int], npt.NDArray[np.float32]] = {}
+            parent_keys = sorted(self._shared_masks_in.keys())
+            stage_seq = np.random.SeedSequence(
+                self._entropy,
+                spawn_key=(9100 + pass_idx, istage),
+            )
+            parent_rngs = [
+                np.random.default_rng(child)
+                for child in stage_seq.spawn(max(1, len(parent_keys)))
+            ]
+
+            for pidx, (iprev, jprob) in enumerate(parent_keys):
+                prev_state = self.states[istage - 1, iprev, jprob]
+                if prev_state["threshold"] < 0:
+                    continue
+                mask_parent = self._shared_masks_in[(iprev, jprob)]
+                h0_parent = self._shared_h0_in[(iprev, jprob)]
+                if h0_parent.shape[0] == 0:
+                    continue
+                prev_off = float(self.thresholds[iprev]) - center_prev
+                rng_p = parent_rngs[pidx]
+                rep = math.ceil(self.ntrials / h0_parent.shape[0])
+                tiled = np.tile(h0_parent, (rep, 1))[: self.ntrials]
+                h0_next = tiled + rng_p.standard_normal(
+                    (self.ntrials, self.nbins),
+                ).astype(np.float32)
+                scores_h0 = np.max(
+                    scoring.boxcar_snr_2d(
+                        np.ascontiguousarray(h0_next * inv_std, dtype=np.float32),
+                        widths,
+                        1.0,
+                    ),
+                    axis=1,
+                )
+
+                prev_comp = float(prev_state["complexity"])
+                prev_comp_cumul = float(prev_state["complexity_cumul"])
+                prev_pd = float(prev_state["success_h1_cumul"])
+                nleaves_next = prev_comp * bp_s
+                comp_cumul = prev_comp_cumul + nleaves_next
+
+                for ithres in beam_cur:
+                    thresh = float(self.thresholds[ithres])
+                    cur_off = thresh - center_cur
+                    if abs(cur_off - prev_off) > max_doff:
+                        continue
+                    mask_child = mask_parent & (sig_s > thresh)
+                    pd_c = float(np.mean(mask_child))
+                    if pd_c <= 0.0:
+                        continue
+                    surv_idx = np.flatnonzero(scores_h0 > thresh)
+                    if surv_idx.size == 0:
+                        continue
+                    h0_rate = max(surv_idx.size / float(self.ntrials), h0_floor)
+                    nleaves_surv = nleaves_next * h0_rate
+                    rank_cost = (comp_cumul + w_term * nleaves_surv) / pd_c
+
+                    iprob = int(np.digitize(pd_c, self.probs)) - 1
+                    if iprob < 0 or iprob >= self.nprobs:
+                        continue
+                    cur = self.states[istage, ithres, iprob]
+                    if cur["threshold"] < 0 or rank_cost < float(cur["cost"]):
+                        cur["success_h0"] = h0_rate
+                        cur["success_h1"] = pd_c / max(prev_pd, 1e-12)
+                        cur["complexity"] = nleaves_surv
+                        cur["complexity_cumul"] = comp_cumul
+                        cur["success_h1_cumul"] = pd_c
+                        cur["nbranches"] = bp_s
+                        cur["threshold"] = thresh
+                        cur["cost"] = rank_cost
+                        cur["threshold_prev"] = float(prev_state["threshold"])
+                        cur["success_h1_cumul_prev"] = prev_pd
+                        masks_out[(int(ithres), iprob)] = mask_child
+                        h0_out[(int(ithres), iprob)] = np.ascontiguousarray(
+                            h0_next[surv_idx],
+                        )
+                        self._shared_parents[(istage, int(ithres), iprob)] = (
+                            iprev,
+                            jprob,
+                        )
+
+            self._shared_masks_in = masks_out
+            self._shared_h0_in = h0_out
+
+    def _extract_best_path(
+        self,
+        min_pd: float,
+    ) -> tuple[npt.NDArray[np.float32], float, float]:
+        last = self.states[self.nstages - 1]
+        valid = (last["threshold"] >= 0) & (last["success_h1_cumul"] >= min_pd)
+        if not np.any(valid):
+            valid = last["threshold"] >= 0
+        if not np.any(valid):
+            return np.empty(0, dtype=np.float32), 0.0, float("inf")
+        costs = np.where(valid, last["cost"], np.inf)
+        best_flat = int(np.argmin(costs))
+        ithres, iprob = divmod(best_flat, self.nprobs)
+        best_state = last[ithres, iprob]
+        search_pd = float(best_state["success_h1_cumul"])
+        w_term = (
+            self.shared_options.w_terminal if self.mode in ("shared", "robust") else 0.0
+        )
+        search_c = float(best_state["complexity_cumul"]) + w_term * float(
+            best_state["complexity"],
+        )
+
+        path = np.empty(self.nstages, dtype=np.float32)
+        cur_t, cur_p = ithres, iprob
+        for istage in range(self.nstages - 1, -1, -1):
+            st = self.states[istage, cur_t, cur_p]
+            path[istage] = np.float32(st["threshold"])
+            if istage > 0:
+                if (istage, cur_t, cur_p) in self._shared_parents:
+                    cur_t, cur_p = self._shared_parents[(istage, cur_t, cur_p)]
+                else:
+                    t_prev = float(st["threshold_prev"])
+                    p_prev = float(st["success_h1_cumul_prev"])
+                    cur_t = int(np.argmin(np.abs(self.thresholds - t_prev)))
+                    cur_p = int(
+                        np.clip(
+                            int(np.digitize(p_prev, self.probs)) - 1,
+                            0,
+                            self.nprobs - 1,
+                        ),
+                    )
+        return path, search_pd, search_c
+
+    def solve(
+        self,
+        min_pd: float | None = None,
+        seed: int | None = None,
+    ) -> SchemeSolution:
+        """Sample-split tighten, repair, and unbiased evaluation of the best schedule.
+
+        Uses three independent signal banks (Bank A to shift/tighten, Bank B to
+        repair if needed, and Bank C — untouched by any selection — for unbiased
+        ``pd`` and binomial ``pd_se``) plus a fresh noise evaluation for ``c``.
+        """
+        opts = self.shared_options
+        target_pd = opts.min_pd if min_pd is None else float(min_pd)
+        w_term = opts.w_terminal if self.mode in ("shared", "robust") else 0.0
+        search_path, search_pd, search_c = self._extract_best_path(target_pd)
+        if search_path.size == 0:
+            return SchemeSolution(
+                thresholds=np.empty(0, dtype=np.float32),
+                pd=0.0,
+                pd_se=0.0,
+                pd_trials=0,
+                c=float("inf"),
+                cost=float("inf"),
+                search_thresholds=search_path,
+                search_pd=0.0,
+                search_c=float("inf"),
+                delivery="no_path",
+                min_pd=target_pd,
+                w_terminal=w_term,
+                eval_states=StatesInfo([]),
+            )
+
+        base_seq = (
+            np.random.SeedSequence(seed)
+            if seed is not None
+            else np.random.SeedSequence(self._entropy, spawn_key=(9500,))
+        )
+        rng_a, rng_b, rng_c, rng_noise = [
+            np.random.default_rng(s) for s in base_seq.spawn(4)
+        ]
+        n_sig = opts.ntrials_sig_bank
+        scores_a = simulate_unpruned_signal_scores(
+            self.nstages,
+            self.profile,
+            self.bias_snr,
+            n_sig,
+            self.ducy_max,
+            self.wtsp,
+            rng_a,
+        )
+        scores_b = simulate_unpruned_signal_scores(
+            self.nstages,
+            self.profile,
+            self.bias_snr,
+            n_sig,
+            self.ducy_max,
+            self.wtsp,
+            rng_b,
+        )
+        scores_c = simulate_unpruned_signal_scores(
+            self.nstages,
+            self.profile,
+            self.bias_snr,
+            n_sig,
+            self.ducy_max,
+            self.wtsp,
+            rng_c,
+        )
+
+        # Target includes +2 binomial standard errors to protect delivery on Bank C
+        se_target = math.sqrt(max(target_pd * (1.0 - target_pd), 1e-6) / n_sig)
+        k_target = min(n_sig, math.ceil((target_pd + 2.0 * se_target) * n_sig))
+
+        # 1. Bank A: shift down if under target, then tighten each stage
+        gamma = search_path.astype(np.float64).copy()
+        margins_a = np.min(scores_a - gamma[:, None], axis=0)
+        if int(np.count_nonzero(margins_a > 0.0)) < k_target:
+            delta_a = float(np.sort(margins_a)[-k_target]) - 1e-6
+            gamma = np.maximum(0.0, gamma + delta_a)
+        surv_a = np.all(scores_a > gamma[:, None], axis=0)
+        if np.any(surv_a):
+            tight = np.min(scores_a[:, surv_a], axis=1) - 1e-6
+            gamma = np.maximum(gamma, tight)
+
+        # 2. Bank B: repair if Bank B survival falls below target
+        margins_b = np.min(scores_b - gamma[:, None], axis=0)
+        if int(np.count_nonzero(margins_b > 0.0)) < k_target:
+            delta_b = float(np.sort(margins_b)[-k_target]) - 1e-6
+            gamma = np.maximum(0.0, gamma + delta_b)
+
+        gamma_f32 = gamma.astype(np.float32)
+
+        # 3. Bank C: unbiased Pd report + fresh noise cost evaluation
+        surv_c = np.all(scores_c > gamma_f32[:, None], axis=0)
+        pd = float(np.mean(surv_c))
+        pd_se = math.sqrt(max(pd * (1.0 - pd), 0.0) / n_sig)
+        eval_states = evaluate_scheme(
+            gamma_f32,
+            self.branching_pattern,
+            self.ref_ducy,
+            nbins=self.nbins,
+            ntrials=opts.ntrials_noise_bank,
+            snr_final=self.snr_final,
+            ducy_max=self.ducy_max,
+            wtsp=self.wtsp,
+            seed=rng_noise,
+        )
+        if eval_states.entries:
+            last_st = eval_states.entries[-1]
+            c_val = float(last_st.complexity_cumul) + w_term * float(last_st.complexity)
+        else:
+            c_val = float("inf")
+        cost_val = c_val / pd if pd > 0.0 else float("inf")
+
+        delivery: Literal["no_path", "met", "within_tolerance", "short"]
+        if pd >= target_pd:
+            delivery = "met"
+        elif pd >= 0.9 * target_pd:
+            delivery = "within_tolerance"
+        else:
+            delivery = "short"
+
+        return SchemeSolution(
+            thresholds=gamma_f32,
+            pd=pd,
+            pd_se=pd_se,
+            pd_trials=n_sig,
+            c=c_val,
+            cost=cost_val,
+            search_thresholds=search_path,
+            search_pd=search_pd,
+            search_c=search_c,
+            delivery=delivery,
+            min_pd=target_pd,
+            w_terminal=w_term,
+            eval_states=eval_states,
+        )
+
     def _stage_rngs(self, istage: int, n: int) -> typed.List:
         """One generator per parallel-loop iteration of `istage`.
 
@@ -996,6 +1520,16 @@ class DynamicThresholdScheme:
     def run(self, thres_neigh: int = 11) -> None:
         with Timer(name="DynamicThresholdScheme run", logger=logger.info):
             logger.info("Running dynamic threshold scheme (%s mode)", self.mode)
+            if self.mode in ("shared", "robust"):
+                self._run_shared_pass(self.guess_path, pass_idx=0)
+                if self.mode == "robust":
+                    path1, _, _ = self._extract_best_path(self.shared_options.min_pd)
+                    if path1.size == self.nstages:
+                        self.guess_path = path1.astype(np.float64)
+                        self._set_guided_beam(self.guess_path)
+                        self._init_shared_stage0(pass_idx=1)
+                        self._run_shared_pass(self.guess_path, pass_idx=1)
+                return
             for istage in track(
                 range(1, self.nstages),
                 description="Running stages",
@@ -1256,3 +1790,123 @@ def evaluate_scheme(
         states.append(cur_state)
         prev_fold_state = cur_fold_state
     return StatesInfo([StateInfo.from_record(state) for state in states])
+
+
+def threshold_simulation(
+    survive_probs: np.ndarray,
+    branching_pattern: np.ndarray,
+    ref_ducy: float = 0.1,
+    *,
+    nbins: int = 64,
+    ntrials: int = 2048,
+    snr_final: float = 8.0,
+    ducy_max: float = 0.2,
+    wtsp: float = 1.0,
+    score_mode: ScoreMode = "boxcar",
+    score_fn: Callable[[npt.NDArray[np.float32]], npt.NDArray[np.float32]]
+    | None = None,
+    n_harmonics: int = 16,
+    seed: int | np.random.Generator | None = None,
+) -> tuple[npt.NDArray[np.float32], StatesInfo]:
+    """Empirically calibrate pruning thresholds for any profile scorer.
+
+    Simulates null-hypothesis (``H0``) and signal (``H1``) cumulative ``(E, V)``
+    folds along ``branching_pattern``, scoring them at each stage with either
+    ``score_fn`` or ``scoring.score_profiles(..., mode=score_mode)`` so
+    non-boxcar scorers (``double_boxcar``, ``double_matched``, ``harmonic_z2``,
+    ``combined``, ``boxcar_glrt``, ``kadane``) obtain properly calibrated
+    empirical survival thresholds.
+
+    Returns
+    -------
+    tuple[NDArray[np.float32], StatesInfo]
+        Empirical per-stage thresholds and stage-by-stage ``StatesInfo``.
+    """
+    bp = np.asarray(branching_pattern, dtype=np.float64)
+    sp = np.asarray(survive_probs, dtype=np.float64)
+    if sp.shape != bp.shape:
+        msg = "survive_probs and branching_pattern must have the same length"
+        raise ValueError(msg)
+    nstages = len(bp)
+    widths = scoring.generate_box_width_trials(nbins, ducy_max=ducy_max, wtsp=wtsp)
+    profile = generate_folded_profile(nbins=nbins, ducy=ref_ducy).astype(np.float32)
+    bias_snr = float(snr_final / math.sqrt(nstages + 1))
+    rng = np.random.default_rng(seed)
+
+    folds_h0 = rng.standard_normal((ntrials, nbins)).astype(np.float32)
+    folds_h1 = rng.standard_normal((ntrials, nbins)).astype(np.float32) + (
+        profile * np.float32(bias_snr)
+    )
+    sig_step = (profile * np.float32(bias_snr)).astype(np.float32)
+
+    def _eval_scores(folds: npt.NDArray[np.float32], var_cur: float) -> np.ndarray:
+        n = folds.shape[0]
+        folds_ev = np.empty((n, 2, nbins), dtype=np.float32)
+        folds_ev[:, 0, :] = folds
+        folds_ev[:, 1, :] = np.float32(var_cur)
+        if score_fn is not None:
+            return np.asarray(score_fn(folds_ev), dtype=np.float32)
+        return scoring.score_profiles(
+            folds_ev,
+            widths,
+            mode=score_mode,
+            n_harmonics=n_harmonics,
+        )
+
+    thresholds = np.empty(nstages, dtype=np.float32)
+    states_list: list[StateInfo] = []
+    complexity = 1.0
+    complexity_cumul = 1.0
+    h1_cumul = 1.0
+
+    for istage in range(nstages):
+        var_cur = float(istage + 2)
+        # Stratified refill to ntrials before adding the next segment
+        rep0 = math.ceil(ntrials / folds_h0.shape[0])
+        h0_sim = np.tile(folds_h0, (rep0, 1))[:ntrials] + rng.standard_normal(
+            (ntrials, nbins),
+        ).astype(np.float32)
+        scores_h0 = _eval_scores(h0_sim, var_cur)
+
+        p_surv = float(np.clip(sp[istage], 0.0, 1.0))
+        n_keep = max(1, min(ntrials, round(p_surv * ntrials)))
+        order_h0 = np.argsort(scores_h0)[::-1]
+        keep_h0 = order_h0[:n_keep]
+        thresh = float(scores_h0[keep_h0[-1]])
+        thresholds[istage] = np.float32(thresh)
+        folds_h0 = np.ascontiguousarray(h0_sim[keep_h0])
+        h0_rate = keep_h0.size / float(ntrials)
+
+        if folds_h1.shape[0] > 0:
+            rep1 = math.ceil(ntrials / folds_h1.shape[0])
+            h1_sim = (
+                np.tile(folds_h1, (rep1, 1))[:ntrials]
+                + rng.standard_normal((ntrials, nbins)).astype(np.float32)
+                + sig_step
+            )
+            scores_h1 = _eval_scores(h1_sim, var_cur)
+            keep_h1 = np.flatnonzero(scores_h1 >= thresh)
+            h1_rate = keep_h1.size / float(ntrials)
+            folds_h1 = np.ascontiguousarray(h1_sim[keep_h1])
+        else:
+            h1_rate = 0.0
+
+        nbranches = float(bp[istage])
+        nleaves_next = complexity * nbranches
+        complexity = nleaves_next * h0_rate
+        complexity_cumul += nleaves_next
+        h1_cumul *= h1_rate
+
+        states_list.append(
+            StateInfo(
+                success_h0=h0_rate,
+                success_h1=h1_rate,
+                complexity=complexity,
+                complexity_cumul=complexity_cumul,
+                success_h1_cumul=h1_cumul,
+                nbranches=nbranches,
+                threshold=thresh,
+            ),
+        )
+
+    return thresholds, StatesInfo(states_list)

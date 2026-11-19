@@ -21,10 +21,31 @@ import numpy as np
 import pytest
 
 from pyloki.io.cands import (
+    SECONDS_PER_DAY,
+    CandidateClusterOptions,
+    CandidateCollection,
+    HarmonicMatcher,
+    KnownPeriodEntry,
+    PhaseModelKind,
+    PruneResultWriter,
     PruneStats,
     PruneStatsCollection,
+    SurveyCandidateGroups,
+    bin2d,
+    build_phase_model,
+    cluster_candidates_single_dm,
+    dominance_ratio,
+    evaluate_tempo2_predictor,
+    export_segment_ephemeris,
+    export_tempo2_predictor,
     extract_ref_seg,
+    extract_segment_waterfall,
+    match_known_harmonics,
     merge_prune_result_files,
+    phase_span,
+    phase_track_distance,
+    plot_candidate_diagnostic_card,
+    reduce_dominated_candidates,
 )
 from pyloki.periodogram import PruningStatsPlotter
 
@@ -259,3 +280,362 @@ def test_extract_ref_seg_and_merge_prefixed_temporaries(
     merge_prune_result_files(tmp_path, log, result)
     assert log.read_text() == "Pruning log\nlog 3\nlog 12\n"
     assert _merged(result) == {"dup": 3}
+
+
+# ---------------------------------------------------------------------------
+# Stage 5: Catalogs, CandidateCollection, Sifting, Harmonics & Predictors
+# ---------------------------------------------------------------------------
+
+
+def _write_schema_v1_h5(
+    path: Path,
+    *,
+    dm: float,
+    freqs: np.ndarray,
+    accels: np.ndarray,
+    snrs: np.ndarray,
+) -> None:
+    c_val = 299792458.0
+    n = freqs.size
+    with h5py.File(path, "w") as f:
+        f.attrs["schema_version"] = "1.0"
+        f.attrs["complete"] = 1
+        f.attrs["param_names"] = ["accel", "freq"]
+        obs = f.create_group("observation")
+        obs.attrs["dm"] = dm
+        obs.attrs["reference_mjd"] = 60000.5
+        obs.attrs["barycentric"] = True
+        grp = f.create_group("candidates")
+        grp.create_dataset("id", data=np.arange(n, dtype=np.uint64))
+        grp.create_dataset("cluster_id", data=np.arange(n, dtype=np.int64))
+        grp.create_dataset("param_sets", data=np.column_stack([accels, freqs]))
+        grp.create_dataset("snr", data=snrs.astype(np.float64))
+        grp.create_dataset("width", data=np.full(n, 4, dtype=np.int64))
+        grp.create_dataset("nbins", data=np.full(n, 64, dtype=np.int64))
+        grp.create_dataset("f0", data=freqs)
+        grp.create_dataset("f1", data=-freqs * accels / c_val)
+        grp.create_dataset("f2", data=np.zeros(n, dtype=np.float64))
+        grp.create_dataset("duty_cycle", data=np.full(n, 4 / 64, dtype=np.float64))
+
+
+def test_candidate_collection_reads_schema_v1_legacy_and_prune(tmp_path: Path) -> None:
+    # 1. Schema v1
+    v1_path = tmp_path / "dm100.h5"
+    _write_schema_v1_h5(
+        v1_path,
+        dm=100.0,
+        freqs=np.array([100.0, 200.0]),
+        accels=np.array([5.0, -2.0]),
+        snrs=np.array([12.5, 9.0]),
+    )
+    c_v1 = CandidateCollection.from_hdf5(v1_path)
+    assert len(c_v1) == 2
+    assert c_v1.param_names == ("accel", "freq")
+    assert np.allclose(c_v1.dm, 100.0)
+    assert c_v1.metadata["reference_mjd"] == pytest.approx(60000.5)
+
+    # 2. Legacy flat FFA
+    leg_path = tmp_path / "legacy_ffa.h5"
+    with h5py.File(leg_path, "w") as f:
+        f.attrs["ffa_version"] = "0.9"
+        f.attrs["complete"] = 1
+        f.attrs["dm"] = 50.0
+        f.attrs["param_names"] = ["accel", "freq"]
+        f.create_dataset("param_sets", data=np.array([[1.0, 150.0]]))
+        f.create_dataset("snr", data=np.array([11.0]))
+        f.create_dataset("width", data=np.array([2]))
+        f.create_dataset("nbins", data=np.array([64]))
+    c_leg = CandidateCollection.from_hdf5(leg_path)
+    assert len(c_leg) == 1
+    assert c_leg.f0[0] == pytest.approx(150.0)
+    assert c_leg.dm[0] == pytest.approx(50.0)
+
+    # 3. PruneResultWriter output
+    pr_path = tmp_path / "prune.h5"
+    with PruneResultWriter(pr_path) as writer:
+        writer.write_metadata(
+            param_names=["jerk", "accel", "freq"],
+            nsegments=8,
+            max_sugg=16,
+            threshold_scheme=np.ones(8, dtype=np.float32),
+        )
+        leaves_report = np.zeros((2, 5, 2), dtype=np.float64)
+        leaves_report[0, :3, 0] = [0.01, -3.0, 86.48]
+        leaves_report[1, :3, 0] = [0.02, 4.0, 120.5]
+        writer.write_run_results(
+            run_name="000_00",
+            scheme=np.ones(8, dtype=np.float32),
+            leaves_report=leaves_report,
+            scores=np.array([15.2, 8.7], dtype=np.float32),
+            scores_ep=np.array([15.0, 8.5], dtype=np.float32),
+            pstats=PruneStatsCollection(),
+        )
+    c_pr = CandidateCollection.from_hdf5(pr_path, dm=238.75)
+    assert len(c_pr) == 2
+    assert c_pr.param_names == ("jerk", "accel", "freq")
+    assert c_pr.f0[0] == pytest.approx(86.48)
+    assert np.allclose(c_pr.dm, 238.75)
+
+
+def test_phase_span_dominance_and_single_dm_clustering(tmp_path: Path) -> None:
+    tobs = 1000.0
+    # 1. Exact phase_span on linear & curved tracks
+    # df = 1e-4 Hz over 1000 s => phase span = df * tobs = 0.1 cycles
+    span_lin = phase_span([100.0, 0.0], [100.0001, 0.0], tobs)
+    assert span_lin == pytest.approx(0.1, rel=1e-9)
+    dist = phase_track_distance([100.0, 0.0], 0.05, [100.0001, 0.0], 0.1, tobs)
+    assert dist == pytest.approx(2.0, rel=1e-9)
+    # Quadratic track has interior extremum at x = 0: f1 * (T/2)^2 / 2
+    span_quad = phase_span([100.0, 0.0], [100.0, 1e-6], tobs)
+    assert span_quad == pytest.approx(0.5 * 1e-6 * (0.5 * tobs) ** 2, rel=1e-12)
+
+    # 2. Dominance ratio & reduction
+    assert dominance_ratio(np.zeros(129), 0.05) == pytest.approx(1.0)
+    p_dom = tmp_path / "dom.h5"
+    _write_schema_v1_h5(
+        p_dom,
+        dm=100.0,
+        freqs=np.array([100.0, 100.00004, 250.0]),
+        accels=np.array([0.0, 0.0, 0.0]),
+        snrs=np.array([20.0, 12.0, 15.0]),
+    )
+    coll_dom = CandidateCollection.from_hdf5(p_dom)
+    reduced, kept_idx = reduce_dominated_candidates(
+        coll_dom,
+        tobs,
+        dominance_kappa=1.5,
+        radius=1.0,
+        phase_radius=0.05,
+    )
+    assert len(reduced) == 2
+    assert kept_idx.tolist() == [0, 2]
+
+    # 3. Transitive union-find vs anchored grouping (bridge candidate!)
+    # width=4, nbins=64 => duty = 0.0625, limit = 0.0625 cycles => df_lim = 6.25e-5 Hz
+    # Three points spaced by 5e-5 Hz: A-B linked, B-C linked, A-C NOT directly linked
+    p_tr = tmp_path / "transitive.h5"
+    _write_schema_v1_h5(
+        p_tr,
+        dm=238.0,
+        freqs=np.array([100.0, 100.00005, 100.00010, 200.0]),
+        accels=np.array([10.0, 10.0, 10.0, 10.0]),
+        snrs=np.array([20.0, 14.0, 12.0, 15.0]),
+    )
+    coll_tr = CandidateCollection.from_hdf5(p_tr)
+    res_tr = cluster_candidates_single_dm(
+        coll_tr,
+        tobs,
+        options=CandidateClusterOptions(
+            grouping="transitive",
+            radius=1.0,
+            phase_radius=0.05,
+            flag_harmonics=True,
+            remove_harmonics=True,
+        ),
+    )
+    # Transitive merges {0, 1, 2} into cluster 0; cluster 1 (200 Hz) is 2/1 harmonic
+    assert len(res_tr.representatives) == 2
+    assert res_tr.member_counts.tolist() == [3, 1]
+    assert res_tr.phase_extents[0] == pytest.approx(0.1, rel=1e-9)
+    assert res_tr.parent_cluster_ids.tolist() == [-1, 0]
+    assert res_tr.harmonic_numerators.tolist() == [0, 2]
+    assert res_tr.harmonic_denominators.tolist() == [0, 1]
+    assert res_tr.selected.tolist() == [True, False]
+
+    # Anchored mode does NOT bridge A-C directly
+    res_anch = cluster_candidates_single_dm(
+        coll_tr,
+        tobs,
+        options=CandidateClusterOptions(
+            grouping="anchored",
+            radius=1.0,
+            phase_radius=0.05,
+        ),
+    )
+    assert len(res_anch.representatives) == 3
+    assert res_anch.member_counts.tolist() == [2, 1, 1]
+
+
+def test_harmonic_matching_tiers() -> None:
+    known: list[KnownPeriodEntry] = [
+        ("J1748-2446A", 11.5632e-3, "strong"),
+        ("J1748-2446G", 21.6719e-3, "weak"),
+    ]
+    matcher = HarmonicMatcher(known)
+    ter5a_p = 11.5632e-3
+    # Strong pulsar matches high coprime harmonic 13/11
+    m_strong = matcher.match_period(ter5a_p * (13.0 / 11.0))
+    assert m_strong.matched
+    assert m_strong.pulsar_name == "J1748-2446A"
+    assert (m_strong.k, m_strong.m) == (13, 11)
+
+    # Weak pulsar matches 3/2, but NOT 13/11 (tier cap = 3)
+    weak_p = 21.6719e-3
+    m_weak_ok = matcher.match_period(weak_p * (3.0 / 2.0))
+    assert m_weak_ok.matched
+    assert m_weak_ok.pulsar_name == "J1748-2446G"
+    m_weak_high = match_known_harmonics(
+        weak_p * (13.0 / 11.0),
+        known,
+        rel_tol=1e-4,
+    )
+    assert not m_weak_high.matched
+
+    # Novel period does not match
+    m_novel = matcher.match_period(0.137912345, rel_tol=1e-4)
+    assert not m_novel.matched
+
+
+def test_multi_dm_survey_sifting_and_persistence(tmp_path: Path) -> None:
+    ter5a_p = 11.5632e-3
+    ter5a_f = 1.0 / ter5a_p
+    known = {"J1748-2446A": ter5a_p}
+    # Build 4 DM trials: DM=0 (RFI), DM=238, DM=242 (peak for Ter5A + novel), DM=246
+    trials = [
+        (0.0, [50.0], [0.0], [25.0]),
+        (238.0, [50.001, ter5a_f, 173.456], [0.0, 1.0, 2.0], [18.0, 12.0, 9.0]),
+        (242.0, [49.999, ter5a_f, 173.457], [0.0, 1.0, 2.0], [15.0, 22.0, 16.0]),
+        (246.0, [50.0, ter5a_f, 173.455], [0.0, 1.0, 2.0], [14.0, 11.0, 10.0]),
+    ]
+    colls = []
+    for dm, freqs, accels, snrs in trials:
+        fpath = tmp_path / f"dm_{int(dm)}.h5"
+        _write_schema_v1_h5(
+            fpath,
+            dm=dm,
+            freqs=np.array(freqs),
+            accels=np.array(accels),
+            snrs=np.array(snrs),
+        )
+        colls.append(CandidateCollection.from_hdf5(fpath))
+
+    merged = CandidateCollection.merge(colls)
+    groups = SurveyCandidateGroups.from_collection(merged, rel_freq_tol=1e-3)
+    assert len(groups) == 3
+    # Verify single-append (total members across all groups equals len(merged))
+    assert sum(g.member_indices.size for g in groups.groups) == len(merged)
+
+    survivors = groups.filter_dm0_and_span(rfi_ratio=0.5)
+    assert len(survivors) == 2
+    rfi_groups = [g for g in groups.groups if g.disposition == "rfi"]
+    assert len(rfi_groups) == 1
+    assert rfi_groups[0].has_dm0_hit
+
+    n_harm = groups.tag_known_harmonics(known)
+    assert n_harm == 1
+    novel = [g for g in groups.groups if g.disposition == "new"]
+    assert len(novel) == 1
+    assert novel[0].dm_peak == pytest.approx(242.0)
+
+    groups.set_annotation(novel[0].group_id, notes="Promising new MSP candidate")
+
+    json_path = tmp_path / "sifted.json"
+    groups.save_json(json_path)
+    loaded_json = SurveyCandidateGroups.load_json(json_path)
+    assert len(loaded_json) == 3
+    assert loaded_json.groups[novel[0].group_id].notes == "Promising new MSP candidate"
+
+    h5_path = tmp_path / "sifted.h5"
+    groups.save_hdf5(h5_path)
+    loaded_h5 = SurveyCandidateGroups.load_hdf5(h5_path)
+    assert len(loaded_h5) == 3
+    assert loaded_h5.groups[novel[0].group_id].notes == "Promising new MSP candidate"
+
+
+def test_segment_ephemeris_and_tempo2_predictor_accuracy(tmp_path: Path) -> None:
+    ref_mjd = 60000.0
+    t_end = 1800.0
+
+    # 1. High-order Taylor with snap + crackle (previously blocked by PulsarX F0/F1/F2)
+    taylor_params = [1e-7, -2e-5, 3e-3, -15.0, 200.0]
+    seg_json = tmp_path / "ephem.json"
+    seg_csv = tmp_path / "ephem.csv"
+    rows_json = export_segment_ephemeris(
+        seg_json,
+        model="taylor",
+        params=taylor_params,
+        ref_mjd=ref_mjd,
+        t_start=0.0,
+        t_end=t_end,
+        n_segments=10,
+        fmt="json",
+    )
+    rows_csv = export_segment_ephemeris(
+        seg_csv,
+        model="taylor",
+        params=taylor_params,
+        ref_mjd=ref_mjd,
+        t_start=0.0,
+        t_end=t_end,
+        n_segments=10,
+        fmt="csv",
+    )
+    assert len(rows_json) == 10
+    assert len(rows_csv) == 10
+    assert seg_json.exists()
+    assert seg_csv.exists()
+    assert rows_json[0]["mjd"] > ref_mjd
+
+    # 2. TEMPO2 Chebyshev predictor round-trip on Taylor, circular, and Keplerian
+    cases: list[tuple[PhaseModelKind, list[float], float]] = [
+        ("taylor", taylor_params, t_end),
+        ("circular", [2.0 * np.pi / 3600.0, 250.0, 0.8, 0.6], 3600.0),
+        ("keplerian", [150.0, 3000.0, 1.5, 0.25, 0.7, 0.4], 6000.0),
+    ]
+    for kind, params, span_s in cases:
+        pred_path = tmp_path / f"t2pred_{kind}.dat"
+        mjd_hi = ref_mjd + span_s / SECONDS_PER_DAY
+        info = export_tempo2_predictor(
+            pred_path,
+            model=kind,
+            params=params,
+            ref_mjd=ref_mjd,
+            mjd_start=ref_mjd,
+            mjd_end=mjd_hi,
+            max_phase_err=1e-4,
+        )
+        assert info["max_phase_err"] < 1e-4
+        test_t = np.linspace(0.0, span_s, 200, dtype=np.float64)
+        test_mjd = ref_mjd + test_t / SECONDS_PER_DAY
+        phi_true = build_phase_model(kind, params, t_ref=0.0)(test_t)
+        phi_pred = evaluate_tempo2_predictor(pred_path, test_mjd)
+        assert float(np.max(np.abs(phi_pred - phi_true))) < 1e-4
+
+
+def test_bin2d_waterfall_and_diagnostic_card() -> None:
+    from matplotlib import pyplot as plt  # noqa: PLC0415
+
+    # S/N-preserving rebinning: constant 1.0 signal scales by sqrt(bt * bp)
+    ones = np.ones((8, 16), dtype=np.float64)
+    rebinned = bin2d(ones, bt=2, bp=4)
+    assert rebinned.shape == (4, 4)
+    assert np.allclose(rebinned, np.sqrt(8.0))
+
+    # Build synthetic aligned 3D (n_seg, 2, n_bins) folds with a pulse at bin 16
+    rng = np.random.default_rng(123)
+    n_seg, n_bins = 12, 32
+    folds = np.empty((n_seg, 2, n_bins), dtype=np.float32)
+    folds[:, 0, :] = rng.normal(0.0, 1.0, size=(n_seg, n_bins))
+    folds[:, 1, :] = 1.0
+    shifts = np.arange(n_seg, dtype=np.int64) % 5
+    for i in range(n_seg):
+        folds[i, 0, (16 - int(shifts[i])) % n_bins] += 6.0
+
+    wf = extract_segment_waterfall(folds, phase_shifts=shifts)
+    assert wf.amp_map.shape == (n_seg, n_bins)
+    assert wf.integrated_profile.shape == (n_bins,)
+    assert wf.best_snr > 12.0
+    assert int(np.argmax(wf.integrated_profile)) == 16
+
+    t_seg = np.linspace(0.0, 1200.0, n_seg)
+    f_curve = 100.0 + 0.01 * np.sin(2.0 * np.pi * t_seg / 1200.0)
+    fig = plot_candidate_diagnostic_card(
+        wf,
+        t_seg,
+        f_curve,
+        runner_up_freqs=[f_curve + 1e-3],
+        rebin=(2, 2),
+        title="Test Candidate",
+    )
+    assert len(fig.axes) == 4
+    plt.close(fig)

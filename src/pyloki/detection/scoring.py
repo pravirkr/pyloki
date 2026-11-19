@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import math
+from typing import TYPE_CHECKING, Literal
+
 import numpy as np
 import numpy.typing as npt
 from numba import njit, prange, types
 
 from pyloki.utils import maths
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 @njit(cache=True, fastmath=True)
@@ -257,6 +263,141 @@ def boxcar_snr_beta_1d(
         snr[iw] = max_snr
 
     return snr
+
+
+@njit("f4[::1](f4[::1], f4[::1], i8[::1])", cache=True, fastmath=True)
+def boxcar_snr_glrt_1d(
+    ts_e: npt.NDArray[np.float32],
+    ts_v: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    r"""Compute exact heteroscedastic GLRT boxcar S/N for a 1D ``(E, V)`` profile.
+
+    Under :math:`H_0: E_b \sim \mathcal{N}(\mu_0 V_b, V_b)` and
+    :math:`H_1: E_b \sim \mathcal{N}((\mu_0 + A T_b) V_b, V_b)`, the profile
+    likelihood (zero-mean background-marginalized) signed S/N for window
+    :math:`W = [i, i + w)` is:
+
+    .. math::
+        \mathrm{SNR}_{\mathrm{GLRT}}(i, w)
+        = \frac{E_W - (V_W / V_{\mathrm{tot}}) E_{\mathrm{tot}}}
+                {\sqrt{V_W (1 - V_W / V_{\mathrm{tot}})}}
+
+    which handles arbitrary non-uniform weights including zero-weight masked
+    bins (``ts_v[b] == 0``) and reduces identically to ``boxcar_snr_1d`` when
+    ``ts_v`` is uniform.
+    """
+    size = len(ts_e)
+    n_widths = len(widths)
+    if size == 0 or n_widths == 0:
+        return np.zeros(n_widths, dtype=np.float32)
+    max_width = max(0, int(np.max(widths)))
+    prefix_e = np.empty(size + max_width, dtype=np.float32)
+    prefix_v = np.empty(size + max_width, dtype=np.float32)
+    circular_prefix_sum(ts_e, prefix_e)
+    circular_prefix_sum(ts_v, prefix_v)
+
+    total_e = float(prefix_e[size - 1])
+    total_v = float(prefix_v[size - 1])
+    snr = np.zeros(n_widths, dtype=np.float32)
+    if total_v <= 0.0:
+        return snr
+
+    eps = 1e-12 * total_v
+    for iw in range(n_widths):
+        width = widths[iw]
+        if width <= 0 or width >= size:
+            snr[iw] = np.float32(0.0)
+            continue
+        max_snr = -np.finfo(np.float32).max
+        has_valid = False
+        for i in range(size):
+            ew = float(prefix_e[i + width] - prefix_e[i])
+            vw = float(prefix_v[i + width] - prefix_v[i])
+            voff = total_v - vw
+            if vw > eps and voff > eps:
+                frac = vw / total_v
+                num = ew - frac * total_e
+                den = np.sqrt(vw * (1.0 - frac))
+                if den > 0.0:
+                    cur = np.float32(num / den)
+                    if not has_valid or cur > max_snr:
+                        max_snr = cur
+                        has_valid = True
+        snr[iw] = max_snr if has_valid else np.float32(0.0)
+    return snr
+
+
+@njit(
+    "f4[:, ::1](f4[:, ::1], f4[:, ::1], i8[::1])",
+    cache=True,
+    fastmath=True,
+    parallel=True,
+)
+def boxcar_snr_glrt_2d(
+    ts_e_2d: npt.NDArray[np.float32],
+    ts_v_2d: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Compute heteroscedastic GLRT boxcar S/N in parallel for 2D ``(E, V)`` arrays."""
+    nfolds, _ = ts_e_2d.shape
+    snrs = np.empty((nfolds, widths.size), dtype=np.float32)
+    for ifold in prange(nfolds):
+        snrs[ifold] = boxcar_snr_glrt_1d(ts_e_2d[ifold], ts_v_2d[ifold], widths)
+    return snrs
+
+
+@njit("f4[:, ::1](f4[:, ::1], f4[:, ::1], i8[::1])", cache=True, fastmath=True)
+def boxcar_snr_glrt_2d_serial(
+    ts_e_2d: npt.NDArray[np.float32],
+    ts_v_2d: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Compute heteroscedastic GLRT boxcar S/N serially for parallel regions."""
+    nfolds, _ = ts_e_2d.shape
+    snrs = np.empty((nfolds, widths.size), dtype=np.float32)
+    for ifold in range(nfolds):
+        snrs[ifold] = boxcar_snr_glrt_1d(ts_e_2d[ifold], ts_v_2d[ifold], widths)
+    return snrs
+
+
+@njit("f4[:, ::1](f4[:, :, ::1], i8[::1])", cache=True, fastmath=True, parallel=True)
+def boxcar_snr_glrt_3d(
+    folds_ev: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Compute heteroscedastic GLRT boxcar S/N for ``(nfolds, 2, nbins)`` folds."""
+    nfolds = folds_ev.shape[0]
+    snrs = np.empty((nfolds, widths.size), dtype=np.float32)
+    for ifold in prange(nfolds):
+        snrs[ifold] = boxcar_snr_glrt_1d(
+            folds_ev[ifold, 0, :],
+            folds_ev[ifold, 1, :],
+            widths,
+        )
+    return snrs
+
+
+@njit("f4(f4[:, ::1], i8[::1])", cache=True, fastmath=True)
+def snr_glrt_score_func(
+    combined_res: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> float:
+    """Compute max heteroscedastic GLRT boxcar S/N for a single ``(2, nbins)`` fold."""
+    return float(np.max(boxcar_snr_glrt_1d(combined_res[0], combined_res[1], widths)))
+
+
+@njit("f4[::1](f4[:, :, ::1], i8[::1])", cache=True, fastmath=True, parallel=True)
+def snr_glrt_score_batch_func(
+    combined_res_batch: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Compute max heteroscedastic GLRT boxcar S/N for a batch of folds."""
+    batch_size = combined_res_batch.shape[0]
+    scores = np.empty(batch_size, dtype=np.float32)
+    for i in prange(batch_size):
+        scores[i] = snr_glrt_score_func(combined_res_batch[i], widths)
+    return scores
 
 
 @njit("f4(f4[:, ::1], i8[::1])", cache=True, fastmath=True)
@@ -846,3 +987,467 @@ def kadane_circular_normalized_1d(
             best_global_start = best_start
 
     return float(best_global_snr), best_global_w, best_global_start
+
+
+@njit("f4(f4[::1], i8[::1])", cache=True, fastmath=True)
+def double_boxcar_snr_1d(
+    norm_data: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> float:
+    r"""Compute trial-penalized single- or disjoint-double-peak boxcar S/N.
+
+    Finds the strongest single boxcar window ``(s1, w1)`` and its best
+    non-overlapping partner ``(s2, w2)`` on the phase circle, evaluates the
+    exact correlated 2-DOF :math:`\chi^2_2` statistic with off-pulse correlation
+    :math:`\gamma_{12} = -\sqrt{w_1 w_2 / ((B - w_1)(B - w_2))}`, and converts
+    to equivalent Gaussian significance via natural-log look-elsewhere penalties.
+    """
+    size = len(norm_data)
+    n_widths = len(widths)
+    if size < 2 or n_widths == 0:
+        return 0.0
+    max_width = max(0, int(np.max(widths)))
+    psum = np.empty(size + max_width, dtype=np.float32)
+    circular_prefix_sum(norm_data, psum)
+    total_sum = float(psum[size - 1])
+
+    best_z1 = 0.0
+    best_s1 = 0
+    best_w1 = 0
+    n_valid_widths = 0
+
+    for iw in range(n_widths):
+        w = int(widths[iw])
+        if w <= 0 or w >= size:
+            continue
+        n_valid_widths += 1
+        size_w = float(size - w)
+        height = np.sqrt(size_w / (float(size) * float(w)))
+        b = float(w) * height / size_w
+        hb = height + b
+        for i in range(size):
+            dw = float(psum[i + w] - psum[i])
+            z = hb * dw - b * total_sum
+            if z > best_z1:
+                best_z1 = z
+                best_s1 = (i + 1) % size
+                best_w1 = w
+
+    if n_valid_widths == 0:
+        return 0.0
+
+    n_trials = n_valid_widths * size
+    lee_single = np.log(float(n_trials))
+    n_pairs = (n_trials * (n_trials - 1)) // 2
+    lee_double = np.log(float(n_pairs)) if n_pairs > 0 else 0.0
+
+    x_single = maths.chi_sq_minus_logsf_func(best_z1 * best_z1, 1) - lee_single
+
+    if best_w1 <= 0 or best_z1 <= 0.0:
+        return float(maths.norm_isf_func(x_single))
+
+    best_s2_chi2 = 0.0
+    has_double = False
+    for iw in range(n_widths):
+        w2 = int(widths[iw])
+        if w2 <= 0 or w2 + best_w1 >= size:
+            continue
+        size_w2 = float(size - w2)
+        height2 = np.sqrt(size_w2 / (float(size) * float(w2)))
+        b2 = float(w2) * height2 / size_w2
+        hb2 = height2 + b2
+        gamma = -np.sqrt(
+            (float(best_w1) * float(w2)) / (float(size - best_w1) * size_w2),
+        )
+        if abs(gamma) >= 0.99:
+            continue
+        inv_denom = 1.0 / (1.0 - gamma * gamma)
+        for i in range(size):
+            s2 = (i + 1) % size
+            dist = (s2 - best_s1) % size
+            if dist < best_w1 or dist + w2 > size:
+                continue
+            dw2 = float(psum[i + w2] - psum[i])
+            z2 = hb2 * dw2 - b2 * total_sum
+            if z2 <= 0.0:
+                continue
+            num1 = best_z1 - gamma * z2
+            num2 = z2 - gamma * best_z1
+            if num1 > 0.0 and num2 > 0.0:
+                s_val = (best_z1 * num1 + z2 * num2) * inv_denom
+                if s_val > best_s2_chi2:
+                    best_s2_chi2 = s_val
+                    has_double = True
+
+    if has_double:
+        x_double = 0.5 * best_s2_chi2 - lee_double
+        best_x = max(x_single, x_double)
+    else:
+        best_x = x_single
+    return float(maths.norm_isf_func(best_x))
+
+
+@njit("f4[::1](f4[:, ::1], i8[::1])", cache=True, fastmath=True, parallel=True)
+def double_boxcar_snr_2d(
+    folds: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Compute disjoint two-window boxcar S/N in parallel for 2D profiles."""
+    nfolds = folds.shape[0]
+    scores = np.empty(nfolds, dtype=np.float32)
+    for i in prange(nfolds):
+        scores[i] = double_boxcar_snr_1d(folds[i], widths)
+    return scores
+
+
+@njit("f4[::1](f4[:, :, ::1], i8)", cache=True, fastmath=True, parallel=True)
+def harmonic_summing_snr_2d(
+    folds_ev: npt.NDArray[np.float32],
+    n_harmonics: int,
+) -> npt.NDArray[np.float32]:
+    """Compute trial-penalized Fourier :math:`Z^2_m` harmonic-summing S/N."""
+    nfolds = folds_ev.shape[0]
+    scores = np.empty(nfolds, dtype=np.float32)
+    for i in prange(nfolds):
+        scores[i] = harmonic_summing_score_func(folds_ev[i], n_harmonics)
+    return scores
+
+
+@njit("f4(f4[:, ::1], i8[::1], i8)", cache=True, fastmath=True)
+def combined_score_func(
+    combined_res: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+    n_harmonics: int,
+) -> float:
+    """Compute hybrid ``max(harmonic_z2, boxcar)`` S/N for a ``(2, nbins)`` fold."""
+    s_box = snr_score_func(combined_res, widths)
+    s_harm = harmonic_summing_score_func(combined_res, n_harmonics)
+    return float(max(s_box, s_harm))
+
+
+@njit("f4[::1](f4[:, :, ::1], i8[::1], i8)", cache=True, fastmath=True, parallel=True)
+def combined_score_2d(
+    folds_ev: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+    n_harmonics: int,
+) -> npt.NDArray[np.float32]:
+    """Compute hybrid ``max(harmonic_z2, boxcar)`` S/N in parallel."""
+    nfolds = folds_ev.shape[0]
+    scores = np.empty(nfolds, dtype=np.float32)
+    for i in prange(nfolds):
+        scores[i] = combined_score_func(folds_ev[i], widths, n_harmonics)
+    return scores
+
+
+def generate_kadane_biases(
+    nbins: int,
+    ducy_max: float = 0.2,
+    n_biases: int = 6,
+) -> npt.NDArray[np.float32]:
+    """Generate geometric Kadane bias penalties spanning ``[1/nbins, ducy_max]``."""
+    if nbins < 2:
+        msg = "nbins must be at least 2."
+        raise ValueError(msg)
+    if n_biases < 1:
+        msg = "n_biases must be at least 1."
+        raise ValueError(msg)
+    wmax = max(1, min(nbins - 1, int(ducy_max * nbins)))
+    # Optimal bias scales inversely with sqrt(width)
+    return np.geomspace(1.0 / np.sqrt(wmax), 1.0, n_biases, dtype=np.float32)
+
+
+@njit("f4[::1](f4[:, ::1], f4[::1])", cache=True, fastmath=True, parallel=True)
+def kadane_circular_snr_2d(
+    folds: npt.NDArray[np.float32],
+    biases: npt.NDArray[np.float32],
+) -> npt.NDArray[np.float32]:
+    """Compute circular Kadane S/N in parallel for 2D normalized profiles."""
+    nfolds = folds.shape[0]
+    scores = np.empty(nfolds, dtype=np.float32)
+    for i in prange(nfolds):
+        snr, _, _ = kadane_circular_normalized_1d(folds[i], biases)
+        scores[i] = np.float32(snr)
+    return scores
+
+
+ScoreMode = Literal[
+    "boxcar",
+    "boxcar_glrt",
+    "double_boxcar",
+    "double_matched",
+    "harmonic_z2",
+    "combined",
+    "kadane",
+]
+
+
+def score_profiles(
+    folds_ev: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+    *,
+    mode: ScoreMode = "boxcar",
+    n_harmonics: int = 16,
+    e_mat: npt.NDArray[np.float32] | None = None,
+    biases: npt.NDArray[np.float32] | None = None,
+    n_corr: int = 10,
+) -> npt.NDArray[np.float32]:
+    """Score a batch of ``(nfolds, 2, nbins)`` ``(E, V)`` folds with ``mode``.
+
+    Parameters
+    ----------
+    folds_ev : NDArray[np.float32]
+        Folded profiles with shape ``(nfolds, 2, nbins)`` where axis 1 holds
+        ``(ts_e, ts_v)``.
+    widths : NDArray[np.int64]
+        Boxcar width trials.
+    mode : ScoreMode, optional
+        Scoring algorithm, by default ``"boxcar"``.
+    n_harmonics : int, optional
+        Maximum Fourier harmonics for ``"harmonic_z2"`` / ``"combined"``.
+    e_mat : NDArray[np.float32] | None, optional
+        Normalized template matrix for ``"double_matched"``. If ``None``, built
+        automatically from ``widths`` using ``MatchedFilter``.
+    biases : NDArray[np.float32] | None, optional
+        Kadane bias penalties for ``"kadane"``. If ``None``, generated via
+        ``generate_kadane_biases``.
+    n_corr : int, optional
+        Top-K correlated templates for ``"double_matched"``, by default 10.
+
+    Returns
+    -------
+    NDArray[np.float32]
+        1D array of S/N scores with shape ``(nfolds,)``.
+    """
+    arr = np.ascontiguousarray(folds_ev, dtype=np.float32)
+    if arr.ndim != 3 or arr.shape[1] != 2:
+        msg = f"folds_ev must have shape (nfolds, 2, nbins), got {arr.shape}"
+        raise ValueError(msg)
+    widths_i64 = np.ascontiguousarray(widths, dtype=np.int64)
+
+    if mode == "boxcar":
+        result = snr_score_batch_func(arr, widths_i64)
+    elif mode == "boxcar_glrt":
+        result = snr_glrt_score_batch_func(arr, widths_i64)
+    elif mode == "harmonic_z2":
+        result = harmonic_summing_snr_2d(arr, n_harmonics)
+    elif mode == "combined":
+        result = combined_score_2d(arr, widths_i64, n_harmonics)
+    elif mode in ("double_boxcar", "double_matched", "kadane"):
+        ts_e = arr[:, 0, :]
+        ts_v = arr[:, 1, :]
+        norm = np.divide(
+            ts_e,
+            np.sqrt(np.maximum(ts_v, 0.0)),
+            out=np.zeros_like(ts_e, dtype=np.float32),
+            where=ts_v > 0.0,
+        )
+        norm = np.ascontiguousarray(norm, dtype=np.float32)
+        if mode == "double_boxcar":
+            result = double_boxcar_snr_2d(norm, widths_i64)
+        elif mode == "double_matched":
+            if e_mat is None:
+                mf = MatchedFilter(widths_i64, arr.shape[2], kind="gaussian")
+                e_mat = mf.e_mat
+            result = _compute_snr_double(
+                norm,
+                np.ascontiguousarray(e_mat, dtype=np.float32),
+                n_corr,
+            )
+        else:
+            if biases is None:
+                biases = generate_kadane_biases(arr.shape[2])
+            result = kadane_circular_snr_2d(
+                norm,
+                np.ascontiguousarray(biases, dtype=np.float32),
+            )
+    else:
+        msg = f"Unsupported score mode: {mode!r}"
+        raise ValueError(msg)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 2-State Markov / HMM Forward-DP Scorer for Nulling & Eclipsing Pulsars
+# ---------------------------------------------------------------------------
+
+
+@njit(cache=True)
+def _logaddexp(a: float, b: float) -> float:
+    """Overflow-safe symmetric log(exp(a) + exp(b))."""
+    if a == -np.inf:
+        return b
+    if b == -np.inf:
+        return a
+    if a >= b:
+        return a + math.log1p(math.exp(b - a))
+    return b + math.log1p(math.exp(a - b))
+
+
+@njit(cache=True)
+def markov_hmm_log_llr(
+    z_arr: np.ndarray,
+    amp: float,
+    p_on_off: float,
+    p_off_on: float,
+) -> float:
+    """2-state Markov HMM forward-DP log Bayes factor ``ln(p(z | H1) / p(z | H0))``.
+
+    Evaluates standardized per-segment matched-filter scores ``z_arr`` (where
+    ``z_i ~ N(0, 1)`` under OFF state ``s_i = 0`` and ``z_i ~ N(amp, 1)`` under
+    ON state ``s_i = 1``) in log-likelihood-ratio space using overflow-safe
+    ``logaddexp``.
+    """
+    n = z_arr.size
+    if n == 0:
+        return 0.0
+    p10 = min(max(p_on_off, 1e-12), 1.0 - 1e-12)
+    p01 = min(max(p_off_on, 1e-12), 1.0 - 1e-12)
+    pi0 = p10 / (p01 + p10)
+    pi1 = p01 / (p01 + p10)
+
+    log_t00 = math.log(1.0 - p01)
+    log_t01 = math.log(p01)
+    log_t10 = math.log(p10)
+    log_t11 = math.log(1.0 - p10)
+
+    half_a2 = 0.5 * amp * amp
+    a0 = math.log(pi0)
+    a1 = math.log(pi1) + (amp * float(z_arr[0]) - half_a2)
+
+    for i in range(1, n):
+        llr_i = amp * float(z_arr[i]) - half_a2
+        next_a0 = _logaddexp(a0 + log_t00, a1 + log_t10)
+        next_a1 = _logaddexp(a0 + log_t01, a1 + log_t11) + llr_i
+        a0 = next_a0
+        a1 = next_a1
+    return _logaddexp(a0, a1)
+
+
+@njit(cache=True)
+def viterbi_null_mask(
+    z_arr: np.ndarray,
+    amp: float,
+    p_on_off: float,
+    p_off_on: float,
+) -> np.ndarray:
+    """Decode the MAP ON/OFF state sequence (``True`` = ON) via Viterbi DP."""
+    n = z_arr.size
+    mask = np.zeros(n, dtype=np.bool_)
+    if n == 0:
+        return mask
+
+    p10 = min(max(p_on_off, 1e-12), 1.0 - 1e-12)
+    p01 = min(max(p_off_on, 1e-12), 1.0 - 1e-12)
+    pi0 = p10 / (p01 + p10)
+    pi1 = p01 / (p01 + p10)
+
+    log_t00 = math.log(1.0 - p01)
+    log_t01 = math.log(p01)
+    log_t10 = math.log(p10)
+    log_t11 = math.log(1.0 - p10)
+    half_a2 = 0.5 * amp * amp
+
+    backptr = np.zeros((n, 2), dtype=np.int8)
+    v0 = math.log(pi0)
+    v1 = math.log(pi1) + (amp * float(z_arr[0]) - half_a2)
+
+    for i in range(1, n):
+        llr_i = amp * float(z_arr[i]) - half_a2
+        c00 = v0 + log_t00
+        c10 = v1 + log_t10
+        if c00 >= c10:
+            next_v0 = c00
+            backptr[i, 0] = 0
+        else:
+            next_v0 = c10
+            backptr[i, 0] = 1
+
+        c01 = v0 + log_t01
+        c11 = v1 + log_t11
+        if c01 >= c11:
+            next_v1 = c01 + llr_i
+            backptr[i, 1] = 0
+        else:
+            next_v1 = c11 + llr_i
+            backptr[i, 1] = 1
+
+        v0 = next_v0
+        v1 = next_v1
+
+    state = 1 if v1 >= v0 else 0
+    mask[n - 1] = state == 1
+    for i in range(n - 1, 0, -1):
+        state = int(backptr[i, state])
+        mask[i - 1] = state == 1
+    return mask
+
+
+@njit(cache=True)
+def markov_hmm_posterior_on(
+    z_arr: np.ndarray,
+    amp: float,
+    p_on_off: float,
+    p_off_on: float,
+) -> np.ndarray:
+    """Compute forward-backward posterior ON probability ``P(s_i = 1 | z)``."""
+    n = z_arr.size
+    post = np.zeros(n, dtype=np.float64)
+    if n == 0:
+        return post
+
+    p10 = min(max(p_on_off, 1e-12), 1.0 - 1e-12)
+    p01 = min(max(p_off_on, 1e-12), 1.0 - 1e-12)
+    pi0 = p10 / (p01 + p10)
+    pi1 = p01 / (p01 + p10)
+
+    log_t00 = math.log(1.0 - p01)
+    log_t01 = math.log(p01)
+    log_t10 = math.log(p10)
+    log_t11 = math.log(1.0 - p10)
+    half_a2 = 0.5 * amp * amp
+
+    alpha0 = np.empty(n, dtype=np.float64)
+    alpha1 = np.empty(n, dtype=np.float64)
+    alpha0[0] = math.log(pi0)
+    alpha1[0] = math.log(pi1) + (amp * float(z_arr[0]) - half_a2)
+    for i in range(1, n):
+        llr_i = amp * float(z_arr[i]) - half_a2
+        alpha0[i] = _logaddexp(alpha0[i - 1] + log_t00, alpha1[i - 1] + log_t10)
+        alpha1[i] = _logaddexp(alpha0[i - 1] + log_t01, alpha1[i - 1] + log_t11) + llr_i
+
+    log_z = _logaddexp(alpha0[n - 1], alpha1[n - 1])
+    b0 = 0.0
+    b1 = 0.0
+    post[n - 1] = math.exp(alpha1[n - 1] - log_z)
+    for i in range(n - 2, -1, -1):
+        llr_next = amp * float(z_arr[i + 1]) - half_a2
+        nb0 = _logaddexp(log_t00 + b0, log_t01 + llr_next + b1)
+        nb1 = _logaddexp(log_t10 + b0, log_t11 + llr_next + b1)
+        b0 = nb0
+        b1 = nb1
+        post[i] = math.exp(alpha1[i] + b1 - log_z)
+    return post
+
+
+def markov_hmm_grid_score(
+    z_arr: npt.ArrayLike,
+    *,
+    amps: Sequence[float] = (0.5, 1.0, 1.5, 2.0),
+    p_on_offs: Sequence[float] = (0.02, 0.1, 0.25),
+    p_off_ons: Sequence[float] = (0.01, 0.05, 0.2),
+) -> tuple[float, float, float, float]:
+    """Maximize ``markov_hmm_log_llr`` over a coarse ``(amp, p_on_off, p_off_on)`` grid.
+
+    Returns ``(best_log_llr, best_amp, best_p_on_off, best_p_off_on)``.
+    """
+    z = np.ascontiguousarray(z_arr, dtype=np.float64)
+    best_llr = -np.inf
+    best_params = (float(amps[0]), float(p_on_offs[0]), float(p_off_ons[0]))
+    for a in amps:
+        for p10 in p_on_offs:
+            for p01 in p_off_ons:
+                val = float(markov_hmm_log_llr(z, float(a), float(p10), float(p01)))
+                if val > best_llr:
+                    best_llr = val
+                    best_params = (float(a), float(p10), float(p01))
+    return best_llr, best_params[0], best_params[1], best_params[2]
