@@ -32,7 +32,8 @@ Modules under [`src/pyloki/`](../src/pyloki) follow a strict layered layout
   `PulsarSearchConfig`), `ffa.py` (`FFAPlan`, `DynamicProgramming`), `prune.py`
   (`Pruning`, `prune_dyp_tree`, `trace_ep_hypothesis`,
   `verify_resolve_stability`), `search.py` (`ffa_search`, `ep_search`,
-  `refold_candidates`, `measure_snr_retention`), `periodogram.py` (`Periodogram`,
+  `ep_sliding_arc_search`, `refold_candidates`, `measure_snr_retention`,
+  `decompose_fold_quality`), `periodogram.py` (`Periodogram`,
   `ScatteredPeriodogram`), `kepler.py`, `orbit_fit.py`, `io/` (`timeseries`,
   `preprocess`, `preprocess_kernels`, `cands`), `simulation/` (`pulse`,
   `modulate`), `sensitivity/` (`sim_ffa`, `analytical`, `heavy_tail`), and

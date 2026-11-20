@@ -505,7 +505,21 @@ def add_batch_func(
         self.valid_size += num_to_add
         return current_threshold
 
-    # Slow path: Overflow & Pruning (Median + Top-K Strategy)
+    # Slow path: Deduplicate exact parameter keys BEFORE overload median pruning
+    # so duplicate copies of bright tracks cannot fill max_sugg or inflate threshold.
+    self.trim_repeats()
+    space_left = self.size - self.valid_size
+    if num_to_add <= space_left:
+        pos = self.valid_size
+        self.leaves[pos : pos + num_to_add] = leaves_batch
+        self.folds[pos : pos + num_to_add] = folds_batch
+        self.scores[pos : pos + num_to_add] = scores_batch
+        self.scores_ep[pos : pos + num_to_add] = scores_batch
+        self.backtracks[pos : pos + num_to_add] = backtracks_batch
+        self.valid_size += num_to_add
+        return current_threshold
+
+    # Still overflowing after dedup: Median + Top-K overload pruning
     effective_threshold = self.prune_on_overload(scores_batch, current_threshold)
     idxs = np.arange(num_to_add)
     pending_idxs = idxs[scores_batch >= effective_threshold]

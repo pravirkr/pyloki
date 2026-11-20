@@ -183,3 +183,32 @@ def test_even_n_z2m_excludes_nyquist_and_compare_handles_target_le_fap() -> None
     )
     assert cmp_res.snr_min_ffa == 0.0
     assert cmp_res.snr_min_fft == 0.0
+
+
+def test_scalloping_eta_bin_sigma_eq_and_distinct_fap_fft() -> None:
+    """Verify sinc^2 scalloping, eta_bin, chi2_to_sigma_eq, and distinct fap_fft."""
+    # Exact sinc^2 scalloping loss at 0, 0.5, and uniform mean ~0.7737
+    assert float(analytical.fft_scalloping_loss(0.0)) == pytest.approx(1.0)
+    assert float(analytical.fft_scalloping_loss(0.5)) == pytest.approx(
+        (2.0 / np.pi) ** 2, rel=1e-12
+    )
+    grid = np.linspace(-0.5, 0.5, 4001)
+    assert float(np.mean(analytical.fft_scalloping_loss(grid))) == pytest.approx(
+        0.7737, abs=1e-3
+    )
+
+    # eta_bin increases with nbins and stays in (0, 1]
+    eta_16 = analytical.eta_bin_loss(0.05, 16)
+    eta_128 = analytical.eta_bin_loss(0.05, 128)
+    assert 0.0 < eta_16 < eta_128 <= 1.0
+
+    # chi2_to_sigma_eq maps high chi2 to positive sigma and penalizes trials
+    s1 = analytical.chi2_to_sigma_eq(40.0, df=8, n_trials=1)
+    s100 = analytical.chi2_to_sigma_eq(40.0, df=8, n_trials=100)
+    assert s1 > s100 > 2.0
+
+    # Distinct fap_fft tighter than fap increases snr_min_fft
+    c_same = analytical.compare_ffa_vs_fft_flux_ratio(0.05, 8, fap=1e-5)
+    c_tight = analytical.compare_ffa_vs_fft_flux_ratio(0.05, 8, fap=1e-5, fap_fft=1e-9)
+    assert c_tight.snr_min_fft > c_same.snr_min_fft
+    assert c_tight.snr_min_ffa == pytest.approx(c_same.snr_min_ffa)

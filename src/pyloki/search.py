@@ -7,18 +7,18 @@ from typing import TYPE_CHECKING
 import attrs
 import numpy as np
 
+from pyloki.config import PulsarSearchConfig, compute_max_coherent_subarc
 from pyloki.detection import scoring
 from pyloki.detection.thresholding import determine_scheme, schedule_survive_probs
 from pyloki.ffa import DynamicProgramming
 from pyloki.periodogram import Periodogram
-from pyloki.prune import Pruning
+from pyloki.prune import Pruning, sliding_arc_windows
 from pyloki.utils.misc import get_logger, quiet_logger
 from pyloki.utils.np_utils import determine_ref_segs_pareto
 
 if TYPE_CHECKING:
     from numpy import typing as npt
 
-    from pyloki.config import PulsarSearchConfig
     from pyloki.detection.scoring import ScoreMode
     from pyloki.io.timeseries import TimeSeries
 
@@ -54,10 +54,46 @@ def ffa_search(
         dyp = DynamicProgramming(tseries, search_cfg)
         dyp.initialize()
         dyp.execute(show_progress=show_progress)
-        folds = dyp.get_fold_norm()
-        snrs = scoring.boxcar_snr_nd(folds, search_cfg.score_widths, 1.0)
+        if search_cfg.score_mode == "boxcar":
+            folds = dyp.get_fold_norm()
+            snrs = scoring.boxcar_snr_nd(folds, search_cfg.score_widths, 1.0)
+            width_axis = search_cfg.score_widths
+        elif search_cfg.score_mode == "boxcar_glrt":
+            fold_t = (
+                np.fft.irfft(dyp.fold, n=search_cfg.nbins).astype(np.float32)
+                if search_cfg.use_fourier
+                else dyp.fold.astype(np.float32)
+            )
+            param_shape = fold_t.shape[1:-2]
+            flat_ev = np.ascontiguousarray(
+                fold_t[0].reshape(-1, 2, search_cfg.nbins),
+                dtype=np.float32,
+            )
+            snrs_flat = scoring.boxcar_snr_glrt_3d(flat_ev, search_cfg.score_widths)
+            snrs = snrs_flat.reshape((*param_shape, search_cfg.score_widths.size))
+            width_axis = search_cfg.score_widths
+        else:
+            fold_t = (
+                np.fft.irfft(dyp.fold, n=search_cfg.nbins).astype(np.float32)
+                if search_cfg.use_fourier
+                else dyp.fold.astype(np.float32)
+            )
+            param_shape = fold_t.shape[1:-2]
+            flat_ev = np.ascontiguousarray(
+                fold_t[0].reshape(-1, 2, search_cfg.nbins),
+                dtype=np.float32,
+            )
+            snrs_flat = scoring.score_profiles(
+                flat_ev,
+                search_cfg.score_widths,
+                mode=search_cfg.score_mode,
+                n_harmonics=search_cfg.score_n_harmonics,
+                biases=search_cfg.kadane_biases,
+            )
+            snrs = snrs_flat.reshape((*param_shape, 1))
+            width_axis = np.array([0], dtype=np.int64)
     pgram = Periodogram(
-        params={"width": search_cfg.score_widths, **dyp.param_arr_dict},
+        params={"width": width_axis, **dyp.param_arr_dict},
         snrs=snrs,
         tobs=tseries.tobs,
     )
@@ -93,6 +129,8 @@ class SnrRetentionResult:
     rho_ascend: float
     rho_ts: float
     ep_result: EPSearchResult
+    delta_f_over_df: float = float("nan")
+    delta_a_over_da: float = float("nan")
 
 
 def _build_default_threshold_scheme(
@@ -129,6 +167,140 @@ def _build_default_threshold_scheme(
     return info.thresholds
 
 
+def _run_ep_on_dyp(
+    dyp_full: DynamicProgramming,
+    search_cfg: PulsarSearchConfig,
+    *,
+    threshold_scheme: npt.NDArray[np.float32] | None = None,
+    n_runs: int = 1,
+    ref_segs: list[int] | None = None,
+    ascend_levels: list[int] | None = None,
+    poly_basis: str = "taylor",
+    use_moving_grid: bool = True,
+    max_sugg: int = 2**16,
+    batch_size: int = 1024,
+    arc_slice: tuple[int, int] | None = None,
+    stop_snr: float | None = None,
+    ref_ducy: float = 0.1,
+    snr_final: float = 10.0,
+    seed: int | None = None,
+) -> EPSearchResult:
+    """Execute EP on an already-computed P-FFA object (optionally sliced)."""
+    dyp_run = dyp_full.slice_segments(*arc_slice) if arc_slice is not None else dyp_full
+
+    if threshold_scheme is None:
+        scheme = _build_default_threshold_scheme(
+            search_cfg,
+            dyp_run,
+            poly_basis=poly_basis,
+            use_moving_grid=use_moving_grid,
+            ref_ducy=ref_ducy,
+            snr_final=snr_final,
+            seed=seed,
+        )
+    else:
+        scheme = np.asarray(threshold_scheme, dtype=np.float32)
+
+    segs = (
+        determine_ref_segs_pareto(dyp_run.nsegments, n_runs)
+        if ref_segs is None
+        else list(ref_segs)
+    )
+    if not segs:
+        msg = "ref_segs must not be empty"
+        raise ValueError(msg)
+
+    best_score = -np.inf
+    best_pre_ascend = -np.inf
+    best_params = np.empty(0, dtype=np.float64)
+    best_param_names: tuple[str, ...] = ()
+    best_fold = np.empty((2, search_cfg.nbins), dtype=np.float32)
+    best_seg = segs[0]
+    best_prn: Pruning | None = None
+    t_arc_offset = float(arc_slice[0]) * dyp_full.tseg if arc_slice is not None else 0.0
+    best_t_ref = t_arc_offset + 0.5 * dyp_run.nsegments * dyp_run.tseg
+    all_names = ("crackle", "snap", "jerk", "accel", "freq")
+
+    with tempfile.TemporaryDirectory(prefix="pyloki_ep_") as tmpdir:
+        tmp_path = Path(tmpdir)
+        for idx_run, seg in enumerate(segs):
+            prn = Pruning(
+                dyp_run,
+                scheme,
+                max_sugg=max_sugg,
+                batch_size=batch_size,
+                poly_basis=poly_basis,
+                use_moving_grid=use_moving_grid,
+            )
+            prn.execute(
+                seg,
+                ascend_levels=ascend_levels,
+                outdir=tmp_path,
+                task_id=idx_run,
+            )
+            if prn.world_tree.valid_size == 0:
+                if best_prn is None:
+                    best_prn = prn
+                continue
+            scores_post = prn.world_tree.scores
+            scores_pre = prn.world_tree.scores_ep
+            best_idx = int(np.argmax(scores_post))
+            post_score = float(scores_post[best_idx])
+            pre_score = (
+                float(scores_pre[best_idx])
+                if scores_pre.size > best_idx
+                else post_score
+            )
+            if post_score > best_score:
+                coord_end = prn.scheme.get_previous_coord(
+                    prn.prune_level + 1,
+                    use_moving_grid,
+                )
+                coord_report = prn.scheme.get_report_coord(use_moving_grid)
+                leaves_report = prn.prune_funcs.report(
+                    prn.world_tree.leaves,
+                    coord_report,
+                    coord_end,
+                )
+                raw_fold = prn.world_tree.folds[best_idx]
+                fold_t = (
+                    np.fft.irfft(raw_fold, n=search_cfg.nbins).astype(np.float32)
+                    if search_cfg.use_fourier
+                    else np.asarray(raw_fold, dtype=np.float32).copy()
+                )
+                best_score = post_score
+                best_pre_ascend = pre_score
+                best_params = np.asarray(
+                    leaves_report[best_idx, :-2, 0],
+                    dtype=np.float64,
+                ).copy()
+                best_param_names = all_names[-len(best_params) :]
+                best_fold = fold_t
+                best_seg = seg
+                best_prn = prn
+                best_t_ref = t_arc_offset + float(coord_report[0])
+            if stop_snr is not None and best_score >= stop_snr:
+                break
+
+    if best_prn is None:
+        msg = "Pruning did not execute any segment"
+        raise RuntimeError(msg)
+
+    return EPSearchResult(
+        dyp=dyp_run,
+        pruning=best_prn,
+        threshold_scheme=scheme,
+        ref_seg=best_seg,
+        param_names=best_param_names,
+        best_params=best_params,
+        best_score=best_score,
+        best_fold=best_fold,
+        pre_ascend_score=best_pre_ascend,
+        t_ref=best_t_ref,
+        arc_slice=arc_slice,
+    )
+
+
 def ep_search(
     tseries: TimeSeries,
     search_cfg: PulsarSearchConfig,
@@ -159,119 +331,95 @@ def ep_search(
         dyp = DynamicProgramming(tseries, search_cfg)
         dyp.initialize()
         dyp.execute(show_progress=show_progress)
-        dyp_run = dyp.slice_segments(*arc_slice) if arc_slice is not None else dyp
+        return _run_ep_on_dyp(
+            dyp,
+            search_cfg,
+            threshold_scheme=threshold_scheme,
+            n_runs=n_runs,
+            ref_segs=ref_segs,
+            ascend_levels=ascend_levels,
+            poly_basis=poly_basis,
+            use_moving_grid=use_moving_grid,
+            max_sugg=max_sugg,
+            batch_size=batch_size,
+            arc_slice=arc_slice,
+            stop_snr=stop_snr,
+            ref_ducy=ref_ducy,
+            snr_final=snr_final,
+            seed=seed,
+        )
 
-        if threshold_scheme is None:
-            scheme = _build_default_threshold_scheme(
+
+def ep_sliding_arc_search(
+    tseries: TimeSeries,
+    search_cfg: PulsarSearchConfig,
+    *,
+    arc_len: int | None = None,
+    stride: int | None = None,
+    threshold_scheme: npt.NDArray[np.float32] | None = None,
+    n_runs: int = 1,
+    poly_basis: str = "taylor",
+    use_moving_grid: bool = True,
+    max_sugg: int = 2**16,
+    batch_size: int = 1024,
+    stop_snr: float | None = None,
+    ref_ducy: float = 0.1,
+    snr_final: float = 10.0,
+    seed: int | None = None,
+    quiet: bool = False,
+    show_progress: bool = False,
+) -> list[EPSearchResult]:
+    """Run single-P-FFA sliding-arc EP across contiguous sub-arc windows.
+
+    Computes the base P-FFA fold tensor **once**, derives sub-arc windows via
+    ``sliding_arc_windows`` (optionally sizing ``arc_len`` from
+    ``compute_max_coherent_subarc`` when ``p_orb_min > 0`` and ``x_max > 0``),
+    and executes EP on shallow segment-sliced views sharing the same fold memory.
+    """
+    with quiet_logger(quiet=quiet):
+        dyp = DynamicProgramming(tseries, search_cfg)
+        dyp.initialize()
+        dyp.execute(show_progress=show_progress)
+
+        if arc_len is None:
+            if search_cfg.p_orb_min > 0.0 and search_cfg.x_max > 0.0:
+                t_max = compute_max_coherent_subarc(
+                    search_cfg.prune_poly_order,
+                    search_cfg.p_orb_min,
+                    search_cfg.x_max,
+                    1.0 / search_cfg.f_max,
+                    search_cfg.nbins,
+                    eta=search_cfg.eta,
+                )
+                eff_arc = min(dyp.nsegments, max(2, int(t_max // dyp.tseg)))
+            else:
+                eff_arc = dyp.nsegments
+        else:
+            eff_arc = int(arc_len)
+
+        windows = sliding_arc_windows(dyp.nsegments, eff_arc, stride=stride)
+        results: list[EPSearchResult] = []
+        for idx, win in enumerate(windows):
+            win_seed = None if seed is None else seed + idx
+            res = _run_ep_on_dyp(
+                dyp,
                 search_cfg,
-                dyp_run,
+                threshold_scheme=threshold_scheme,
+                n_runs=n_runs,
                 poly_basis=poly_basis,
                 use_moving_grid=use_moving_grid,
+                max_sugg=max_sugg,
+                batch_size=batch_size,
+                arc_slice=win,
+                stop_snr=stop_snr,
                 ref_ducy=ref_ducy,
                 snr_final=snr_final,
-                seed=seed,
+                seed=win_seed,
             )
-        else:
-            scheme = np.asarray(threshold_scheme, dtype=np.float32)
-
-        segs = (
-            determine_ref_segs_pareto(dyp_run.nsegments, n_runs)
-            if ref_segs is None
-            else list(ref_segs)
-        )
-        if not segs:
-            msg = "ref_segs must not be empty"
-            raise ValueError(msg)
-
-        best_score = -np.inf
-        best_pre_ascend = -np.inf
-        best_params = np.empty(0, dtype=np.float64)
-        best_param_names: tuple[str, ...] = ()
-        best_fold = np.empty((2, search_cfg.nbins), dtype=np.float32)
-        best_seg = segs[0]
-        best_prn: Pruning | None = None
-        t_arc_offset = float(arc_slice[0]) * dyp.tseg if arc_slice is not None else 0.0
-        best_t_ref = t_arc_offset + 0.5 * dyp_run.nsegments * dyp_run.tseg
-        all_names = ("crackle", "snap", "jerk", "accel", "freq")
-
-        with tempfile.TemporaryDirectory(prefix="pyloki_ep_") as tmpdir:
-            tmp_path = Path(tmpdir)
-            for idx_run, seg in enumerate(segs):
-                prn = Pruning(
-                    dyp_run,
-                    scheme,
-                    max_sugg=max_sugg,
-                    batch_size=batch_size,
-                    poly_basis=poly_basis,
-                    use_moving_grid=use_moving_grid,
-                )
-                prn.execute(
-                    seg,
-                    ascend_levels=ascend_levels,
-                    outdir=tmp_path,
-                    task_id=idx_run,
-                )
-                if prn.world_tree.valid_size == 0:
-                    if best_prn is None:
-                        best_prn = prn
-                    continue
-                scores_post = prn.world_tree.scores
-                scores_pre = prn.world_tree.scores_ep
-                best_idx = int(np.argmax(scores_post))
-                post_score = float(scores_post[best_idx])
-                pre_score = (
-                    float(scores_pre[best_idx])
-                    if scores_pre.size > best_idx
-                    else post_score
-                )
-                if post_score > best_score:
-                    coord_end = prn.scheme.get_previous_coord(
-                        prn.prune_level + 1,
-                        use_moving_grid,
-                    )
-                    coord_report = prn.scheme.get_report_coord(use_moving_grid)
-                    leaves_report = prn.prune_funcs.report(
-                        prn.world_tree.leaves,
-                        coord_report,
-                        coord_end,
-                    )
-                    raw_fold = prn.world_tree.folds[best_idx]
-                    fold_t = (
-                        np.fft.irfft(raw_fold, n=search_cfg.nbins).astype(np.float32)
-                        if search_cfg.use_fourier
-                        else np.asarray(raw_fold, dtype=np.float32).copy()
-                    )
-                    best_score = post_score
-                    best_pre_ascend = pre_score
-                    best_params = np.asarray(
-                        leaves_report[best_idx, :-2, 0],
-                        dtype=np.float64,
-                    ).copy()
-                    best_param_names = all_names[-len(best_params) :]
-                    best_fold = fold_t
-                    best_seg = seg
-                    best_prn = prn
-                    best_t_ref = t_arc_offset + float(coord_report[0])
-                if stop_snr is not None and best_score >= stop_snr:
-                    break
-
-        if best_prn is None:
-            msg = "Pruning did not execute any segment"
-            raise RuntimeError(msg)
-
-    return EPSearchResult(
-        dyp=dyp_run,
-        pruning=best_prn,
-        threshold_scheme=scheme,
-        ref_seg=best_seg,
-        param_names=best_param_names,
-        best_params=best_params,
-        best_score=best_score,
-        best_fold=best_fold,
-        pre_ascend_score=best_pre_ascend,
-        t_ref=best_t_ref,
-        arc_slice=arc_slice,
-    )
+            results.append(res)
+            if stop_snr is not None and res.best_score >= stop_snr:
+                break
+        return results
 
 
 def refold_candidates(
@@ -451,6 +599,25 @@ def measure_snr_retention(
         snr_refold = 0.0
 
     denom = snr_exact if snr_exact > 0.0 else float("nan")
+    delta_f_over_df = float("nan")
+    delta_a_over_da = float("nan")
+    if ep_res.best_params.size > 0 and "freq" in ep_res.param_names:
+        f_idx = ep_res.param_names.index("freq")
+        df_full = float(search_cfg.eta) / (search_cfg.nbins * tseries.tobs)
+        delta_f_over_df = abs(
+            float(ep_res.best_params[f_idx]) - float(true_freq)
+        ) / max(df_full, 1e-18)
+        if "accel" in ep_res.param_names and mod_kwargs and "acc" in mod_kwargs:
+            a_idx = ep_res.param_names.index("accel")
+            da_full = (
+                2.0
+                * float(search_cfg.eta)
+                * 299792458.0
+                / (search_cfg.nbins * float(true_freq) * tseries.tobs**2)
+            )
+            delta_a_over_da = abs(
+                float(ep_res.best_params[a_idx]) - float(mod_kwargs["acc"])
+            ) / max(da_full, 1e-18)
     return SnrRetentionResult(
         snr_exact=snr_exact,
         snr_mid=ep_res.pre_ascend_score,
@@ -460,4 +627,72 @@ def measure_snr_retention(
         rho_ascend=ep_res.best_score / denom,
         rho_ts=snr_refold / denom,
         ep_result=ep_res,
+        delta_f_over_df=delta_f_over_df,
+        delta_a_over_da=delta_a_over_da,
     )
+
+
+def decompose_fold_quality(
+    tseries: TimeSeries,
+    search_cfg: PulsarSearchConfig,
+    *,
+    true_freq: float,
+    mod_type: str = "derivative",
+    mod_kwargs: dict | None = None,
+    mod_tref: float | None = None,
+    oversample: int = 4,
+) -> dict[str, float]:
+    """Decompose S/N loss into finite-nbins binning loss vs FFA shift-rounding loss.
+
+    Compares an ``oversample * nbins`` high-resolution ideal ephemeris fold,
+    an ``nbins`` ideal ephemeris fold, and the full-observation FFA peak S/N.
+    """
+    tref = tseries.tobs / 2.0 if mod_tref is None else float(mod_tref)
+    hi_bins = search_cfg.nbins * max(2, int(oversample))
+    hi_widths = scoring.generate_box_width_trials(
+        hi_bins,
+        ducy_max=search_cfg.ducy_max,
+        wtsp=search_cfg.wtsp,
+    )
+    fold_ideal_hi = tseries.fold_ephem(
+        true_freq,
+        hi_bins,
+        nsubints=1,
+        normalize=False,
+        mod_type=mod_type,
+        mod_kwargs=mod_kwargs,
+        mod_tref=tref,
+    )
+    snr_ideal_hi = float(
+        scoring.score_profiles(
+            fold_ideal_hi[np.newaxis, :, :].astype(np.float32),
+            hi_widths,
+            mode=search_cfg.score_mode,
+        )[0],
+    )
+    fold_ideal_nb = tseries.fold_ephem(
+        true_freq,
+        search_cfg.nbins,
+        nsubints=1,
+        normalize=False,
+        mod_type=mod_type,
+        mod_kwargs=mod_kwargs,
+        mod_tref=tref,
+    )
+    snr_ideal_nb = float(
+        scoring.score_profiles(
+            fold_ideal_nb[np.newaxis, :, :].astype(np.float32),
+            search_cfg.score_widths,
+            mode=search_cfg.score_mode,
+        )[0],
+    )
+    _, pgram = ffa_search(tseries, search_cfg, quiet=True)
+    snr_ffa = float(np.max(pgram.snrs))
+    return {
+        "snr_ideal_oversampled": snr_ideal_hi,
+        "snr_ideal_nbins": snr_ideal_nb,
+        "snr_ffa": snr_ffa,
+        "binning_retention": snr_ideal_nb / max(snr_ideal_hi, 1e-12),
+        "ffa_retention_vs_nbins": snr_ffa / max(snr_ideal_nb, 1e-12),
+        "total_retention": snr_ffa / max(snr_ideal_hi, 1e-12),
+    }

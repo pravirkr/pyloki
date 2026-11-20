@@ -1499,8 +1499,8 @@ class HarmonicMatcher:
         """Match a candidate spin period ``period_s`` against precomputed harmonics."""
         if self._periods.size == 0 or period_s <= 0.0:
             return HarmonicMatch(matched=False)
-        lo_val = period_s * (1.0 - rel_tol)
-        hi_val = period_s * (1.0 + rel_tol)
+        lo_val = period_s / (1.0 + rel_tol)
+        hi_val = period_s / max(1.0 - rel_tol, 1e-9)
         lo_idx = int(np.searchsorted(self._periods, lo_val, side="left"))
         hi_idx = int(np.searchsorted(self._periods, hi_val, side="right"))
         if lo_idx >= hi_idx:

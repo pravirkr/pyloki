@@ -222,21 +222,91 @@ def h_test_statistic(
     return float(h_vals[best_idx]), best_idx + 1
 
 
+def fft_scalloping_loss(
+    delta_k: float | npt.ArrayLike,
+) -> npt.NDArray[np.float64]:
+    r"""Exact FFT bin-offset scalloping loss :math:`\mathrm{sinc}^2(\pi \Delta_k)`.
+
+    For fractional bin offset :math:`\Delta_k \in [-0.5, 0.5]`, ``np.sinc(x)``
+    evaluates :math:`\sin(\pi x)/(\pi x)`. Averaged uniformly over
+    :math:`[-0.5, 0.5]`, this equals :math:`\approx 0.7737`.
+    """
+    arr = np.asarray(delta_k, dtype=np.float64)
+    return np.square(np.sinc(arr))
+
+
+def eta_bin_loss(
+    duty_cycle: float,
+    nbins: int,
+    *,
+    profile_shape: Literal["gaussian", "von_mises"] = "gaussian",
+) -> float:
+    """Compute finite-binning S/N retention ``eta_bin(duty_cycle, nbins) <= 1``.
+
+    Compares the L2 energy of the phase-averaged ``nbins`` profile against the
+    continuous ``2048``-bin reference profile of the same shape and duty cycle.
+    """
+    if nbins < 2:
+        msg = f"nbins must be >= 2, got {nbins}"
+        raise ValueError(msg)
+    n_hi = max(2048, nbins * 16)
+    n_hi -= n_hi % nbins
+    hi_prof = (
+        gaussian_profile(duty_cycle, n_grid=n_hi)
+        if profile_shape == "gaussian"
+        else von_mises_profile(duty_cycle, n_grid=n_hi)
+    )
+    binned = hi_prof.reshape(nbins, n_hi // nbins).mean(axis=1)
+    binned = binned - float(np.mean(binned))
+    e_hi = float(np.mean(hi_prof * hi_prof))
+    e_bin = float(np.mean(binned * binned))
+    if e_hi <= 0.0:
+        return 0.0
+    return float(min(1.0, math.sqrt(max(e_bin, 0.0) / e_hi)))
+
+
+def chi2_to_sigma_eq(
+    stat: float,
+    df: int,
+    *,
+    n_trials: int = 1,
+) -> float:
+    r"""Convert a :math:`\chi^2_{\mathrm{df}}` statistic to Gaussian sigma_eq."""
+    if df < 1:
+        msg = f"df must be >= 1, got {df}"
+        raise ValueError(msg)
+    if n_trials < 1:
+        msg = f"n_trials must be >= 1, got {n_trials}"
+        raise ValueError(msg)
+    minus_logsf = float(-stats.chi2.logsf(float(stat), df=df)) - math.log(
+        float(n_trials),
+    )
+    if minus_logsf <= 0.0:
+        return 0.0
+    return float(stats.norm.isf(math.exp(-minus_logsf)))
+
+
 def compare_ffa_vs_fft_flux_ratio(
     duty_cycle: float,
     n_harmonics: int,
     *,
     fap: float = 1e-7,
+    fap_fft: float | None = None,
     target_pdet: float = 0.5,
     eta_bin: float = 1.0,
     rho_ep: float = 1.0,
     scalloping: float = 0.773,
     profile_shape: Literal["gaussian", "von_mises"] = "gaussian",
 ) -> SensitivityComparisonResult:
-    """Solve exact minimum detectable S/N and flux ratio ``S_min,FFA / S_min,FFT``."""
+    """Solve exact minimum detectable S/N and flux ratio ``S_min,FFA / S_min,FFT``.
+
+    ``fap`` sets the FFA false-alarm probability; ``fap_fft`` defaults to
+    ``fap`` when omitted, allowing distinct trial-adjusted FAPs for FFA vs FFT.
+    """
     if not (0.0 < target_pdet < 1.0):
         msg = f"target_pdet must be in (0, 1), got {target_pdet}"
         raise ValueError(msg)
+    eff_fap_fft = fap if fap_fft is None else float(fap_fft)
     prof = (
         gaussian_profile(duty_cycle)
         if profile_shape == "gaussian"
@@ -251,18 +321,20 @@ def compare_ffa_vs_fft_flux_ratio(
     snr_min_ffa = max(0.0, (z_fap - z_det) / max(eta_bin * rho_ep, 1e-12))
 
     # FFT minimum ideal S/N via root finding on ncx2.sf(thresh, 2*N_h, nc) = target_pdet
-    if target_pdet <= fap:
+    if target_pdet <= eff_fap_fft:
         snr_min_fft = 0.0
     else:
         lo, hi = 0.0, max(10.0, snr_min_ffa * 2.0)
-        while fft_detection_prob(hi, hp, fap, scalloping=scalloping) < target_pdet:
+        while (
+            fft_detection_prob(hi, hp, eff_fap_fft, scalloping=scalloping) < target_pdet
+        ):
             hi *= 2.0
             if hi > 1e6:
                 break
         snr_min_fft = float(
             optimize.brentq(
                 lambda s: (
-                    fft_detection_prob(float(s), hp, fap, scalloping=scalloping)
+                    fft_detection_prob(float(s), hp, eff_fap_fft, scalloping=scalloping)
                     - target_pdet
                 ),
                 lo,

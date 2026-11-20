@@ -374,3 +374,43 @@ class TestNonlinearKeplerianFits:
         )
         assert res.p_orb == pytest.approx(p_orb_true, rel=1e-3)
         assert res.x_orb == pytest.approx(x_true, rel=1e-2)
+
+    def test_parameter_recovery_score_mode_and_nonlinear_cube_polisher(self) -> None:
+        true_params = (0.01, 3600.0, 1.0, 0.15, 0.4, 0.7)
+        a_grid = np.linspace(-30.0, 30.0, 13, dtype=np.float64)
+        f_grid = np.linspace(99.7, 100.3, 13, dtype=np.float64)
+        nbins = 32
+        t_seg = np.linspace(0.0, 1800.0, 10, dtype=np.float64)
+        cube = _make_synthetic_pffa_cube(
+            t_seg,
+            a_grid,
+            f_grid,
+            nbins,
+            true_params,
+            amp=5.0,
+            seed=9,
+        )
+        # Configurable score_mode ("double_boxcar" / "boxcar_glrt")
+        rec_db = orbit_fit.ParameterRecovery(
+            cube, t_seg, a_grid, f_grid, score_mode="double_boxcar"
+        )
+        insp_db = rec_db.inspect_orbit(true_params)
+        assert np.isfinite(insp_db.snr)
+        assert insp_db.snr > 8.0
+
+        # Mode (c) continuous nonlinear Fourier-shifted P-FFA cube polisher
+        rec_glrt = orbit_fit.ParameterRecovery(
+            cube, t_seg, a_grid, f_grid, score_mode="boxcar_glrt"
+        )
+        perturbed = [
+            true_params[0] * (1.0 + 2e-6),
+            true_params[1] * 1.0005,
+            true_params[2] * 0.998,
+            true_params[3] + 0.002,
+            true_params[4] + 0.002,
+            true_params[5] - 0.002,
+        ]
+        snr_before = rec_glrt.inspect_orbit(perturbed).snr
+        polished = rec_glrt.polish_orbit_nonlinear(perturbed, n_restarts=2, seed=4)
+        assert polished.snr >= snr_before
+        assert polished.snr > 12.0

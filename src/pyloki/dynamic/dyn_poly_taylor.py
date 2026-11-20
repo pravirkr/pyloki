@@ -52,6 +52,9 @@ class PrunePolyTaylorDPFuncts(structref.StructRefProxy):
             cfg.branch_max,
             cfg.tiling_strategy,
             use_moving_grid,
+            getattr(cfg, "score_mode_id", scoring.SCORE_MODE_BOXCAR),
+            getattr(cfg, "score_n_harmonics", 16),
+            getattr(cfg, "kadane_biases", scoring.generate_kadane_biases(cfg.nbins)),
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
@@ -186,6 +189,9 @@ class PrunePolyTaylorComplexDPFuncts(structref.StructRefProxy):
             cfg.branch_max,
             cfg.tiling_strategy,
             use_moving_grid,
+            getattr(cfg, "score_mode_id", scoring.SCORE_MODE_BOXCAR),
+            getattr(cfg, "score_n_harmonics", 16),
+            getattr(cfg, "kadane_biases", scoring.generate_kadane_biases(cfg.nbins)),
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
@@ -309,6 +315,9 @@ fields_prune_poly_taylor_dp_funcs = [
     ("branch_max", types.i8),
     ("tiling_strategy", types.unicode_type),
     ("use_moving_grid", types.bool_),
+    ("score_mode_id", types.i8),
+    ("score_n_harmonics", types.i8),
+    ("kadane_biases", types.f4[::1]),
 ]
 
 structref.define_boxing(PrunePolyTaylorDPFunctsTemplate, PrunePolyTaylorDPFuncts)
@@ -340,6 +349,9 @@ def prune_poly_taylor_dp_functs_init(
     branch_max: int,
     tiling_strategy: str,
     use_moving_grid: bool,
+    score_mode_id: int,
+    score_n_harmonics: int,
+    kadane_biases: np.ndarray,
 ) -> PrunePolyTaylorDPFuncts:
     """Initialize the PrunePolyTaylorDPFuncts object."""
     self = structref.new(PrunePolyTaylorDPFunctsType)  # ty: ignore[missing-argument]
@@ -356,6 +368,9 @@ def prune_poly_taylor_dp_functs_init(
     self.branch_max = branch_max
     self.tiling_strategy = tiling_strategy
     self.use_moving_grid = use_moving_grid
+    self.score_mode_id = score_mode_id
+    self.score_n_harmonics = score_n_harmonics
+    self.kadane_biases = kadane_biases
     return self
 
 
@@ -374,6 +389,9 @@ def prune_poly_taylor_complex_dp_functs_init(
     branch_max: int,
     tiling_strategy: str,
     use_moving_grid: bool,
+    score_mode_id: int,
+    score_n_harmonics: int,
+    kadane_biases: np.ndarray,
 ) -> PrunePolyTaylorComplexDPFuncts:
     """Initialize the PrunePolyTaylorComplexDPFuncts object."""
     self = structref.new(PrunePolyTaylorComplexDPFunctsType)  # ty: ignore[missing-argument]
@@ -390,6 +408,9 @@ def prune_poly_taylor_complex_dp_functs_init(
     self.branch_max = branch_max
     self.tiling_strategy = tiling_strategy
     self.use_moving_grid = use_moving_grid
+    self.score_mode_id = score_mode_id
+    self.score_n_harmonics = score_n_harmonics
+    self.kadane_biases = kadane_biases
     return self
 
 
@@ -539,7 +560,13 @@ def score_func(
     self: PrunePolyTaylorDPFuncts,
     combined_res_batch: np.ndarray,
 ) -> np.ndarray:
-    return scoring.snr_score_batch_func(combined_res_batch, self.score_widths)
+    return scoring.score_batch_ev_njit(
+        combined_res_batch,
+        self.score_widths,
+        self.score_mode_id,
+        self.score_n_harmonics,
+        self.kadane_biases,
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -547,7 +574,13 @@ def score_complex_func(
     self: PrunePolyTaylorComplexDPFuncts,
     combined_res_batch: np.ndarray,
 ) -> np.ndarray:
-    return scoring.snr_score_batch_func_complex(combined_res_batch, self.score_widths)
+    return scoring.score_batch_ev_complex_njit(
+        combined_res_batch,
+        self.score_widths,
+        self.score_mode_id,
+        self.score_n_harmonics,
+        self.kadane_biases,
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -620,9 +653,12 @@ def ascend_func(
             param_idx_arr,
             relative_phase_arr,
         )
-        batch_scores = scoring.snr_score_batch_func(
+        batch_scores = scoring.score_batch_ev_njit(
             batch_combined_res,
             self.score_widths,
+            self.score_mode_id,
+            self.score_n_harmonics,
+            self.kadane_biases,
         )
         world_tree.folds[i_batch_start:i_batch_end] = batch_combined_res
         world_tree.scores[i_batch_start:i_batch_end] = batch_scores
@@ -664,9 +700,12 @@ def ascend_complex_func(
             param_idx_arr,
             relative_phase_arr,
         )
-        batch_scores = scoring.snr_score_batch_func_complex(
+        batch_scores = scoring.score_batch_ev_complex_njit(
             batch_combined_res,
             self.score_widths,
+            self.score_mode_id,
+            self.score_n_harmonics,
+            self.kadane_biases,
         )
         world_tree.folds[i_batch_start:i_batch_end] = batch_combined_res
         world_tree.scores[i_batch_start:i_batch_end] = batch_scores

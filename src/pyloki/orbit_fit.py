@@ -431,6 +431,8 @@ class ParameterRecovery:
         accel_grid: npt.NDArray[np.float64],
         freq_grid: npt.NDArray[np.float64],
         widths: npt.NDArray[np.int64] | None = None,
+        *,
+        score_mode: scoring.ScoreMode = "boxcar_glrt",
     ) -> None:
         arr = np.ascontiguousarray(cubes, dtype=np.float32)
         if arr.ndim != 5 or arr.shape[3] != 2:
@@ -452,6 +454,7 @@ class ParameterRecovery:
             if widths is None
             else np.ascontiguousarray(widths, dtype=np.int64)
         )
+        self._score_mode: scoring.ScoreMode = score_mode
 
     @classmethod
     def from_pffa_cubes(
@@ -462,6 +465,7 @@ class ParameterRecovery:
         freq_grid: npt.ArrayLike,
         *,
         widths: npt.NDArray[np.int64] | None = None,
+        score_mode: scoring.ScoreMode = "boxcar_glrt",
     ) -> ParameterRecovery:
         """Build a ``ParameterRecovery`` instance from one or more P-FFA fold cubes."""
         if len(cubes) == 0 or len(cubes) != len(segment_times):
@@ -481,6 +485,7 @@ class ParameterRecovery:
             np.asarray(accel_grid, dtype=np.float64),
             np.asarray(freq_grid, dtype=np.float64),
             widths=widths,
+            score_mode=score_mode,
         )
 
     @property
@@ -524,13 +529,11 @@ class ParameterRecovery:
             seg_folds[iseg] = np.roll(raw, int(shifts[iseg]), axis=-1)
         integrated = np.sum(seg_folds, axis=0)
         snr = float(
-            np.max(
-                scoring.boxcar_snr_glrt_1d(
-                    np.ascontiguousarray(integrated[0], dtype=np.float32),
-                    np.ascontiguousarray(integrated[1], dtype=np.float32),
-                    self._widths,
-                ),
-            ),
+            scoring.score_profiles(
+                integrated[np.newaxis, :, :].astype(np.float32),
+                self._widths,
+                mode=self._score_mode,
+            )[0],
         )
         return OrbitInspection(
             params=p,
@@ -541,6 +544,113 @@ class ParameterRecovery:
             f_indices=f_idx,
             phase_shifts=shifts,
         )
+
+    def _coherent_snr_fourier(self, p: np.ndarray) -> float:
+        """Smooth Fourier-shifted coherent S/N for continuous nonlinear polishing."""
+        p_pul, p_orb, x_orb, ecc, aop, phi = (float(v) for v in p)
+        if p_pul <= 0.0 or p_orb <= 0.0 or x_orb < 0.0 or not (0.0 <= ecc < 0.99):
+            return -1e30
+        f0 = 1.0 / p_pul
+        z_arr, v_arr, a_arr = kepler.keplerian_z_derivatives_exact(
+            self._segment_times,
+            p_orb,
+            ecc,
+            phi,
+            x_orb * C_VAL,
+            aop,
+            0.5 * math.pi,
+        )
+        f_arr = f0 * (1.0 - v_arr / C_VAL)
+        z0 = float(z_arr[0])
+        t0 = float(self._segment_times[0])
+        frac_shifts = (
+            ((self._segment_times - t0 - (z_arr - z0) / C_VAL) * f0) % 1.0
+        ) * float(self.nbins)
+        a_idx = np.empty(self.nsegments, dtype=np.int64)
+        f_idx = np.empty(self.nsegments, dtype=np.int64)
+        for iseg in range(self.nsegments):
+            a_idx[iseg] = int(np.argmin(np.abs(self._accel_grid - a_arr[iseg])))
+            f_idx[iseg] = int(np.argmin(np.abs(self._freq_grid - f_arr[iseg])))
+        k_freqs = np.fft.rfftfreq(self.nbins)
+        acc_e = np.zeros(self.nbins, dtype=np.float64)
+        acc_v = np.zeros(self.nbins, dtype=np.float64)
+        for iseg in range(self.nsegments):
+            raw = self._cubes[iseg, int(a_idx[iseg]), int(f_idx[iseg])]
+            phase_rot = np.exp(-2j * np.pi * k_freqs * float(frac_shifts[iseg]))
+            acc_e += np.fft.irfft(np.fft.rfft(raw[0]) * phase_rot, n=self.nbins)
+            acc_v += np.maximum(
+                np.fft.irfft(np.fft.rfft(raw[1]) * phase_rot, n=self.nbins),
+                0.0,
+            )
+        integrated = np.stack([acc_e, acc_v], axis=0).astype(np.float32)
+        return float(
+            scoring.score_profiles(
+                integrated[np.newaxis, :, :],
+                self._widths,
+                mode=self._score_mode,
+            )[0],
+        )
+
+    def polish_orbit_nonlinear(
+        self,
+        initial_guess: Sequence[float],
+        *,
+        n_restarts: int = 3,
+        seed: int | None = None,
+    ) -> OrbitInspection:
+        """Mode (c) direct P-FFA cube continuous nonlinear polisher.
+
+        Maximizes coherent Fourier-shifted fold S/N across all P-FFA segments
+        via multi-start Nelder-Mead starting from ``initial_guess``
+        ``[p_pul, p_orb, x_orb, ecc, aop, phi]``.
+        """
+        x0 = np.asarray(initial_guess, dtype=np.float64)
+        if x0.shape != (6,):
+            msg = (
+                "initial_guess must have 6 elements: "
+                "[p_pul, p_orb, x_orb, ecc, aop, phi]"
+            )
+            raise ValueError(msg)
+        scales = np.array(
+            [
+                max(x0[0] * 1e-4, 1e-8),
+                max(x0[1] * 0.01, 1.0),
+                max(x0[2] * 0.05, 1e-3),
+                0.05,
+                0.15,
+                0.15,
+            ],
+            dtype=np.float64,
+        )
+
+        def _obj(u: np.ndarray) -> float:
+            return -self._coherent_snr_fourier(x0 + u * scales)
+
+        rng = np.random.default_rng(seed)
+        starts = [
+            np.zeros(6, dtype=np.float64),
+            *(rng.normal(0.0, 0.3, size=6) for _ in range(max(0, n_restarts))),
+        ]
+
+        best_u = np.zeros(6, dtype=np.float64)
+        best_val = _obj(best_u)
+        simplex_steps = np.full(6, 0.25, dtype=np.float64)
+        for s in starts:
+            init_simplex = np.vstack([s, s + np.diag(simplex_steps)])
+            opt = optimize.minimize(
+                _obj,
+                s,
+                method="Nelder-Mead",
+                options={"initial_simplex": init_simplex, "maxiter": 600},
+            )
+            if float(opt.fun) < best_val:
+                best_val = float(opt.fun)
+                best_u = np.asarray(opt.x, dtype=np.float64)
+
+        p_best = x0 + best_u * scales
+        p_best[4] %= 2.0 * math.pi
+        p_best[5] %= 2.0 * math.pi
+        return self.inspect_orbit(p_best)
 
     def solve_keplerian_grid(
         self,
@@ -569,14 +679,20 @@ class ParameterRecovery:
         )
         if flat.shape[0] == 0:
             return np.empty(0, dtype=np.float32), np.empty((0, 6), dtype=np.float64)
-        scores = _eval_keplerian_grid_batch(
-            self._cubes,
-            self._segment_times,
-            self._accel_grid,
-            self._freq_grid,
-            flat,
-            self._widths,
-        )
+        if self._score_mode == "boxcar_glrt":
+            scores = _eval_keplerian_grid_batch(
+                self._cubes,
+                self._segment_times,
+                self._accel_grid,
+                self._freq_grid,
+                flat,
+                self._widths,
+            )
+        else:
+            scores = np.array(
+                [self.inspect_orbit(flat[i]).snr for i in range(flat.shape[0])],
+                dtype=np.float32,
+            )
         k = min(max(1, top_k), flat.shape[0])
         order = np.argsort(scores)[::-1][:k]
         return scores[order].astype(np.float32), flat[order]
