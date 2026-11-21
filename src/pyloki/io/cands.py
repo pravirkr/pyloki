@@ -1499,8 +1499,8 @@ class HarmonicMatcher:
         """Match a candidate spin period ``period_s`` against precomputed harmonics."""
         if self._periods.size == 0 or period_s <= 0.0:
             return HarmonicMatch(matched=False)
-        lo_val = period_s * (1.0 - rel_tol)
-        hi_val = period_s * (1.0 + rel_tol)
+        lo_val = period_s / (1.0 + rel_tol)
+        hi_val = period_s / max(1.0 - rel_tol, 1e-9)
         lo_idx = int(np.searchsorted(self._periods, lo_val, side="left"))
         hi_idx = int(np.searchsorted(self._periods, hi_val, side="right"))
         if lo_idx >= hi_idx:
@@ -2498,11 +2498,32 @@ def plot_candidate_diagnostic_card(
     ax_f.set_ylabel("Frequency (Hz)")
     ax_f.set_title("Spin Frequency Track")
 
-    # (0, 1): Integrated profile
+    # (0, 1): Integrated profile + winning boxcar template overlay
     ax_p = axes[0, 1]
-    n_bins = waterfall.integrated_profile.size
+    prof = waterfall.integrated_profile
+    n_bins = prof.size
     phase = np.linspace(0.0, 1.0, n_bins, endpoint=False)
-    ax_p.step(phase, waterfall.integrated_profile, where="mid", color="tab:blue")
+    ax_p.step(phase, prof, where="mid", color="tab:blue", label="Profile")
+    w = max(1, min(int(waterfall.best_width), max(1, n_bins - 1)))
+    if n_bins > 1:
+        doubled = np.concatenate([prof, prof[:w]])
+        csum = np.concatenate([[0.0], np.cumsum(doubled)])
+        win_sums = csum[w : w + n_bins] - csum[:n_bins]
+        best_start = int(np.argmax(win_sums))
+        on_mask = np.zeros(n_bins, dtype=bool)
+        on_mask[(np.arange(best_start, best_start + w) % n_bins)] = True
+        on_level = float(np.mean(prof[on_mask]))
+        off_level = float(np.mean(prof[~on_mask])) if np.any(~on_mask) else 0.0
+        boxcar_tmpl = np.where(on_mask, on_level, off_level)
+        ax_p.step(
+            phase,
+            boxcar_tmpl,
+            where="mid",
+            color="tab:red",
+            ls="--",
+            lw=1.3,
+            label=f"Boxcar (w={w})",
+        )
     ax_p.axhline(0.0, color="0.6", ls="--", lw=0.8)
     ax_p.set_xlabel("Pulse Phase")
     ax_p.set_ylabel("Normalized S/N")

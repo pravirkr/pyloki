@@ -130,10 +130,18 @@ class TestBoxcarSnr:
         rng = np.random.default_rng(5)
         ts_e = rng.standard_normal(NBINS).astype(np.float32)
         ts_v = rng.uniform(0.5, 2.0, NBINS).astype(np.float32)
-        want = [
-            np.max((t @ ts_e) / np.sqrt(t**2 @ ts_v))
-            for t in (_templates(NBINS, w) for w in WIDTHS)
-        ]
+        e_tot = float(np.sum(ts_e))
+        v_tot = float(np.sum(ts_v))
+        want = []
+        for w in WIDTHS:
+            best = -np.inf
+            for i in range(NBINS):
+                idx = (i + np.arange(int(w))) % NBINS
+                ew = float(np.sum(ts_e[idx]))
+                vw = float(np.sum(ts_v[idx]))
+                val = (ew - (vw / v_tot) * e_tot) / np.sqrt(vw * (1.0 - vw / v_tot))
+                best = max(best, val)
+            want.append(best)
         np.testing.assert_allclose(impl(ts_e, ts_v, WIDTHS), want, rtol=1e-4)
 
     @pytest.mark.parametrize("impl", jit_variants(scoring.boxcar_snr_beta_1d))
@@ -456,20 +464,41 @@ class TestBoxcarGlrt:
     def test_glrt_null_calibration_and_batch_wrappers(self) -> None:
         rng = np.random.default_rng(23)
         n = 4000
-        ts_v = np.broadcast_to(
-            rng.uniform(0.5, 4.0, NBINS).astype(np.float32),
-            (n, NBINS),
-        ).copy()
+        v_row = rng.uniform(0.5, 4.0, NBINS).astype(np.float32)
+        v_row[0] = 0.0  # masked zero-weight bin
+        ts_v = np.broadcast_to(v_row, (n, NBINS)).copy()
         ts_e = (rng.standard_normal((n, NBINS)) * np.sqrt(ts_v)).astype(np.float32)
-        # Single width=1 fixed window (no trial maximization) has mean ~0, std ~1
+
+        # Fixed window [1, 5) GLRT is N(0, 1) under H0 even with skewed/zero V
+        v_tot = float(np.sum(v_row))
+        v_w = float(np.sum(v_row[1:5]))
+        frac = v_w / v_tot
+        e_tot = np.sum(ts_e, axis=1, dtype=np.float64)
+        e_w = np.sum(ts_e[:, 1:5], axis=1, dtype=np.float64)
+        z_fixed = (e_w - frac * e_tot) / np.sqrt(v_w * (1.0 - frac))
+        assert abs(float(np.mean(z_fixed))) < 0.05
+        assert abs(float(np.std(z_fixed)) - 1.0) < 0.05
+
+        # Max-over-phase null distribution matches uniform-variance baseline
         w1 = np.array([4], dtype=np.int64)
         s_par = scoring.boxcar_snr_glrt_2d(ts_e, ts_v, w1)
         s_ser = scoring.boxcar_snr_glrt_2d_serial(ts_e, ts_v, w1)
+        s_beta = scoring.boxcar_snr_beta_2d(ts_e, ts_v, w1)
         np.testing.assert_allclose(s_par, s_ser, rtol=1e-6)
+        np.testing.assert_allclose(s_beta, s_par, rtol=1e-6)
+
+        # Compare against uniform-variance null of same size
+        uni_e = rng.standard_normal((n, NBINS)).astype(np.float32)
+        uni_v = np.ones((n, NBINS), dtype=np.float32)
+        s_uni = scoring.boxcar_snr_glrt_2d(uni_e, uni_v, w1)
+        assert abs(float(np.mean(s_par)) - float(np.mean(s_uni))) < 0.1
+        assert abs(float(np.std(s_par)) - float(np.std(s_uni))) < 0.1
 
         folds_ev = np.stack([ts_e[:16], ts_v[:16]], axis=1)
         s_3d = scoring.boxcar_snr_glrt_3d(folds_ev, WIDTHS)
+        s_beta_3d = scoring.boxcar_snr_beta_3d(folds_ev, WIDTHS)
         s_batch = scoring.snr_glrt_score_batch_func(folds_ev, WIDTHS)
+        np.testing.assert_allclose(s_beta_3d, s_3d, rtol=1e-6)
         np.testing.assert_allclose(s_batch, np.max(s_3d, axis=1), rtol=1e-6)
 
 
@@ -637,3 +666,146 @@ class TestScoreProfilesMaskedBins:
         assert np.all(np.isfinite(scores))
         assert float(scores[0]) > 3.0
         assert float(scores[1]) > -100.0
+
+
+class TestPhase1ScoringUpgrades:
+    def test_boxcar_snr_beta_heteroscedastic_null_calibration(self) -> None:
+        """Heteroscedastic GLRT SNR_beta is calibrated under H0 with skewed ts_v."""
+        rng = np.random.default_rng(123)
+        nbins = 32
+        n_trials = 2000
+        # Strongly skewed bin weights including zero-weight masked bins
+        ts_v = np.linspace(0.2, 5.0, nbins, dtype=np.float32)
+        ts_v[0] = 0.0
+        ts_v[15] = 0.0
+        dc_offset = 3.5
+        # Under H0: E_b ~ N(dc_offset * V_b, V_b)
+        ts_e = (
+            dc_offset * ts_v[None, :]
+            + rng.standard_normal((n_trials, nbins)).astype(np.float32)
+            * np.sqrt(ts_v)[None, :]
+        )
+        widths = np.array([2], dtype=np.int64)
+        snrs = scoring.boxcar_snr_beta_2d(
+            np.ascontiguousarray(ts_e, dtype=np.float32),
+            np.ascontiguousarray(
+                np.broadcast_to(ts_v, (n_trials, nbins)),
+                dtype=np.float32,
+            ),
+            widths,
+        )[:, 0]
+        assert np.all(np.isfinite(snrs))
+        # Max over 32 circular windows of unit-normal scores has mean ~2.0 and std ~0.6
+        assert 1.5 < float(np.mean(snrs)) < 2.6
+        assert 0.35 < float(np.std(snrs)) < 0.9
+
+    def test_matched_filter_per_width_shift_jump_list(self) -> None:
+        widths = np.array([1, 2, 4, 8], dtype=np.int64)
+        shifts = [1, 1, 2, 4]
+        mf = scoring.MatchedFilter(widths, nbins=32, shift=shifts, kind="gaussian")
+        np.testing.assert_array_equal(mf.shifts, np.array(shifts, dtype=np.int64))
+        # Fewer templates than shift=1 reduces look-elsewhere trials
+        mf_dense = scoring.MatchedFilter(widths, nbins=32, shift=1, kind="gaussian")
+        assert mf.e_mat.shape[0] < mf_dense.e_mat.shape[0]
+
+    def test_kadane_circular_accuracy_on_wrapped_pulse(self) -> None:
+        nbins = 64
+        prof = np.zeros(nbins, dtype=np.float32)
+        # Pulse wrapping across bins 62, 63, 0, 1 (width 4)
+        prof[62:] = 4.0
+        prof[:2] = 4.0
+        widths = np.array([1, 2, 4, 8], dtype=np.int64)
+        exact_box = float(np.max(scoring.boxcar_snr_1d(prof, widths, 1.0)))
+        biases = scoring.generate_kadane_biases(nbins, ducy_max=0.2)
+        kad_snr, kad_w, _ = scoring.kadane_circular_normalized_1d(prof, biases)
+        assert kad_w == 4
+        assert kad_snr == pytest.approx(exact_box, rel=1e-4)
+
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "boxcar",
+            "boxcar_glrt",
+            "double_boxcar",
+            "harmonic_z2",
+            "combined",
+            "kadane",
+        ],
+    )
+    def test_ep_search_wired_with_score_mode(self, mode: str) -> None:
+        from pyloki.config import PulsarSearchConfig  # noqa: PLC0415
+        from pyloki.search import ep_search, ffa_search  # noqa: PLC0415
+        from pyloki.simulation.pulse import PulseSignalConfig  # noqa: PLC0415
+
+        sig = PulseSignalConfig(
+            period=0.02,
+            dt=5e-4,
+            nsamps=2**13,
+            snr=25.0,
+            ducy=0.1,
+            seed=7,
+        )
+        ts = sig.generate(shape="gaussian")
+        cfg = PulsarSearchConfig(
+            nsamps=ts.nsamps,
+            tsamp=ts.dt,
+            nbins=32,
+            eta=1.0,
+            param_limits=np.array([[-10.0, 10.0], [49.8, 50.2]]),
+            prune_poly_order=2,
+            bseg_brute=2**10,
+            bseg_ffa=2**11,
+            use_fourier=False,
+            score_mode=mode,  # type: ignore[arg-type]
+        )
+        # End-to-end EP search with configured score_mode
+        ep_res = ep_search(
+            ts,
+            cfg,
+            threshold_scheme=np.full(3, 1.0, dtype=np.float32),
+            n_runs=1,
+            ref_segs=[1],
+            quiet=True,
+        )
+        assert np.isfinite(ep_res.best_score)
+        assert ep_res.best_score > 6.0
+
+        # End-to-end FFA search with configured score_mode
+        cfg_ffa = PulsarSearchConfig(
+            nsamps=ts.nsamps,
+            tsamp=ts.dt,
+            nbins=32,
+            eta=1.0,
+            param_limits=np.array([[49.8, 50.2]]),
+            bseg_brute=2**10,
+            bseg_ffa=ts.nsamps,
+            use_fourier=False,
+            score_mode=mode,  # type: ignore[arg-type]
+        )
+        _, pgram = ffa_search(ts, cfg_ffa, quiet=True)
+        assert float(np.max(pgram.snrs)) > 6.0
+
+
+def test_markov_hmm_multi_trial_h0_calibration() -> None:
+    """Multi-trial H0 Bayes factor stays bounded and separates intermittent H1."""
+    rng = np.random.default_rng(101)
+    n_trials = 200
+    n_seg = 128
+    h0_scores = np.empty(n_trials, dtype=np.float64)
+    for i in range(n_trials):
+        z = rng.standard_normal(n_seg)
+        h0_scores[i] = float(
+            scoring.markov_hmm_log_llr(z, amp=1.5, p_on_off=0.05, p_off_on=0.02)
+        )
+    # Under H0, E[B_10] = 1 so E[log B_10] <= 0 by Jensen's inequality
+    assert np.all(np.isfinite(h0_scores))
+    assert float(np.mean(h0_scores)) < 0.2
+    assert float(np.percentile(h0_scores, 95)) < 4.0
+
+    # Under intermittent H1 (25% ON burst), log Bayes factor clearly exceeds H0 tail
+    z_h1 = rng.standard_normal(n_seg)
+    z_h1[40:72] += 2.0
+    h1_score = float(
+        scoring.markov_hmm_log_llr(z_h1, amp=1.5, p_on_off=0.05, p_off_on=0.02)
+    )
+    assert h1_score > float(np.max(h0_scores)) + 10.0

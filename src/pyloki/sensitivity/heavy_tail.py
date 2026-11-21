@@ -13,7 +13,7 @@ import math
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-from scipy import integrate, interpolate, special, stats
+from scipy import integrate, interpolate, optimize, special, stats
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -21,28 +21,73 @@ if TYPE_CHECKING:
     from numpy import typing as npt
 
 
-def pareto_a0(mean_s: float, beta: float) -> float:
-    r"""Return Pareto lower cutoff :math:`a_0 = \frac{\beta - 2}{\beta - 1} \mu_S`."""
+def _truncated_pareto_mean(a0: float, s_max: float, beta: float) -> float:
+    """Exact mean of a Pareto(beta) distribution truncated to ``[a0, s_max]``."""
+    ratio = a0 / s_max
+    if abs(beta - 2.0) < 1e-12:
+        # lim_{beta->2} ((beta-1)/(beta-2)) * (a0^(2-beta) - s_max^(2-beta)) / ...
+        return a0 * (-math.log(ratio)) / (1.0 - ratio)
+    num = 1.0 - (ratio ** (beta - 2.0))
+    den = 1.0 - (ratio ** (beta - 1.0))
+    return ((beta - 1.0) / (beta - 2.0)) * a0 * (num / den)
+
+
+def pareto_a0(
+    mean_s: float,
+    beta: float,
+    *,
+    s_max: float | None = None,
+) -> float:
+    r"""Return Pareto lower cutoff :math:`a_0` achieving exact mean :math:`\mu_S`.
+
+    For unbounded Pareto (``s_max is None``), requires ``beta > 2`` and returns
+    :math:`a_0 = \frac{\beta - 2}{\beta - 1} \mu_S`. When ``s_max`` is given,
+    solves for the exact lower cutoff on ``[a_0, s_max]`` with ``beta > 1`` and
+    ``s_max > mean_s``.
+    """
     if mean_s <= 0.0:
         msg = f"mean_s must be positive, got {mean_s}"
         raise ValueError(msg)
-    if beta <= 2.0:
-        msg = f"Pareto exponent beta must be > 2 for finite mean, got {beta}"
+    if s_max is None:
+        if beta <= 2.0:
+            msg = f"Pareto exponent beta must be > 2 for finite mean, got {beta}"
+            raise ValueError(msg)
+        return ((beta - 2.0) / (beta - 1.0)) * mean_s
+    if beta <= 1.0:
+        msg = f"Truncated Pareto exponent beta must be > 1, got {beta}"
         raise ValueError(msg)
-    return ((beta - 2.0) / (beta - 1.0)) * mean_s
+    if s_max <= mean_s:
+        msg = f"s_max must exceed mean_s ({mean_s}), got {s_max}"
+        raise ValueError(msg)
+    lo = 1e-12 * mean_s
+    hi = mean_s * (1.0 - 1e-12)
+    return float(
+        optimize.brentq(
+            lambda a: _truncated_pareto_mean(float(a), s_max, beta) - mean_s,
+            lo,
+            hi,
+            xtol=1e-12,
+        ),
+    )
 
 
 def pareto_signal_pdf(
     s: npt.ArrayLike,
     mean_s: float,
     beta: float,
+    *,
+    s_max: float | None = None,
 ) -> npt.NDArray[np.float64]:
-    r"""Evaluate Pareto PDF :math:`(\beta - 1) a_0^{\beta - 1} s^{-\beta}`."""
-    a0 = pareto_a0(mean_s, beta)
-    norm_c = (beta - 1.0) * (a0 ** (beta - 1.0))
+    r"""Evaluate (optionally truncated) Pareto PDF :math:`C s^{-\beta}`."""
+    a0 = pareto_a0(mean_s, beta, s_max=s_max)
     arr = np.asarray(s, dtype=np.float64)
     out = np.zeros_like(arr, dtype=np.float64)
-    mask = arr >= a0
+    if s_max is None:
+        norm_c = (beta - 1.0) * (a0 ** (beta - 1.0))
+        mask = arr >= a0
+    else:
+        norm_c = (beta - 1.0) / (a0 ** (1.0 - beta) - s_max ** (1.0 - beta))
+        mask = (arr >= a0) & (arr <= s_max)
     out[mask] = norm_c * (arr[mask] ** (-beta))
     return out
 
@@ -157,34 +202,44 @@ class HeavyTailLikelihood:
         sigma_n: float = 1.0,
         x_range: tuple[float, float] = (-8.0, 40.0),
         n_grid: int = 1024,
+        s_max: float | None = None,
     ) -> None:
         self.distribution = distribution
         self.mean_s = float(mean_s)
         self.shape_param = float(shape_param)
         self.sigma_n = float(sigma_n)
         self.x_min, self.x_max = float(x_range[0]), float(x_range[1])
+        self.s_max = None if s_max is None else float(s_max)
 
         if distribution == "pareto":
-            a0 = pareto_a0(self.mean_s, self.shape_param)
+            a0 = pareto_a0(self.mean_s, self.shape_param, s_max=self.s_max)
             s_min = a0
-            # Choose upper cutoff capturing > 1 - 1e-7 of Pareto mass
-            s_max = max(
-                self.x_max + 10.0 * self.sigma_n,
-                a0 * (1e7 ** (1.0 / (self.shape_param - 1.0))),
-            )
-            s_max = min(s_max, 1e6)
+            if self.s_max is not None:
+                quad_s_max = self.s_max
+            else:
+                # Choose upper cutoff capturing > 1 - 1e-7 of Pareto mass
+                quad_s_max = max(
+                    self.x_max + 10.0 * self.sigma_n,
+                    a0 * (1e7 ** (1.0 / (self.shape_param - 1.0))),
+                )
+                quad_s_max = min(quad_s_max, 1e6)
 
             def _pareto_pdf(s: np.ndarray) -> np.ndarray:
-                return pareto_signal_pdf(s, self.mean_s, self.shape_param)
+                return pareto_signal_pdf(
+                    s,
+                    self.mean_s,
+                    self.shape_param,
+                    s_max=self.s_max,
+                )
 
             pdf_fn: Callable[[np.ndarray], np.ndarray] = _pareto_pdf
         elif distribution == "lognormal":
             s_min = 1e-9
-            s_max = max(
+            quad_s_max = max(
                 self.x_max + 10.0 * self.sigma_n,
                 self.mean_s * math.exp(6.0 * self.shape_param),
             )
-            s_max = min(s_max, 1e6)
+            quad_s_max = min(quad_s_max, 1e6)
 
             def _lognormal_pdf(s: np.ndarray) -> np.ndarray:
                 return lognormal_signal_pdf(s, self.mean_s, self.shape_param)
@@ -200,7 +255,7 @@ class HeavyTailLikelihood:
             pdf_fn,
             sigma_n=self.sigma_n,
             s_min=s_min,
-            s_max=s_max,
+            s_max=quad_s_max,
         )
         self.log_p_h0_grid = np.asarray(
             stats.norm.logpdf(self.x_grid, loc=0.0, scale=self.sigma_n),

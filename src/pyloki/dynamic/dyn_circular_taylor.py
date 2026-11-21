@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Self
 
 import numpy as np
@@ -9,6 +10,7 @@ from numba.extending import overload_method
 
 from pyloki.core import circular, common, taylor
 from pyloki.detection import scoring
+from pyloki.utils.snail import MiddleOutScheme
 from pyloki.utils.world_tree import WorldTree, WorldTreeComplex
 
 if TYPE_CHECKING:
@@ -56,6 +58,9 @@ class PruneCircTaylorDPFuncts(structref.StructRefProxy):
             cfg.propagator_significance,
             cfg.validation_significance,
             use_moving_grid,
+            getattr(cfg, "score_mode_id", scoring.SCORE_MODE_BOXCAR),
+            getattr(cfg, "score_n_harmonics", 16),
+            getattr(cfg, "kadane_biases", scoring.generate_kadane_biases(cfg.nbins)),
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
@@ -194,6 +199,9 @@ class PruneCircTaylorComplexDPFuncts(structref.StructRefProxy):
             cfg.propagator_significance,
             cfg.validation_significance,
             use_moving_grid,
+            getattr(cfg, "score_mode_id", scoring.SCORE_MODE_BOXCAR),
+            getattr(cfg, "score_n_harmonics", 16),
+            getattr(cfg, "kadane_biases", scoring.generate_kadane_biases(cfg.nbins)),
         )
 
     def load(self, fold: np.ndarray, seg_idx: int) -> np.ndarray:
@@ -321,6 +329,9 @@ fields_prune_circ_taylor_dp_funcs = [
     ("propagator_significance", types.f8),
     ("validation_significance", types.f8),
     ("use_moving_grid", types.bool_),
+    ("score_mode_id", types.i8),
+    ("score_n_harmonics", types.i8),
+    ("kadane_biases", types.f4[::1]),
 ]
 
 structref.define_boxing(PruneCircTaylorDPFunctsTemplate, PruneCircTaylorDPFuncts)
@@ -356,6 +367,9 @@ def prune_circ_taylor_dp_functs_init(
     propagator_significance: float,
     validation_significance: float,
     use_moving_grid: bool,
+    score_mode_id: int,
+    score_n_harmonics: int,
+    kadane_biases: np.ndarray,
 ) -> PruneCircTaylorDPFuncts:
     """Initialize the PruneCircTaylorDPFuncts object."""
     self = structref.new(PruneCircTaylorDPFunctsType)  # ty: ignore[missing-argument]
@@ -376,6 +390,9 @@ def prune_circ_taylor_dp_functs_init(
     self.propagator_significance = propagator_significance
     self.validation_significance = validation_significance
     self.use_moving_grid = use_moving_grid
+    self.score_mode_id = score_mode_id
+    self.score_n_harmonics = score_n_harmonics
+    self.kadane_biases = kadane_biases
     if self.poly_order != 5:
         msg = (
             f"Poly order {self.poly_order} is not supported for circular orbit pruning"
@@ -403,6 +420,9 @@ def prune_circ_taylor_complex_dp_functs_init(
     propagator_significance: float,
     validation_significance: float,
     use_moving_grid: bool,
+    score_mode_id: int,
+    score_n_harmonics: int,
+    kadane_biases: np.ndarray,
 ) -> PruneCircTaylorComplexDPFuncts:
     """Initialize the PruneCircTaylorComplexDPFuncts object."""
     self = structref.new(PruneCircTaylorComplexDPFunctsType)  # ty: ignore[missing-argument]
@@ -423,6 +443,9 @@ def prune_circ_taylor_complex_dp_functs_init(
     self.propagator_significance = propagator_significance
     self.validation_significance = validation_significance
     self.use_moving_grid = use_moving_grid
+    self.score_mode_id = score_mode_id
+    self.score_n_harmonics = score_n_harmonics
+    self.kadane_biases = kadane_biases
     if self.poly_order != 5:
         msg = (
             f"Poly order {self.poly_order} is not supported for circular orbit pruning"
@@ -586,7 +609,13 @@ def score_func(
     self: PruneCircTaylorDPFuncts,
     combined_res_batch: np.ndarray,
 ) -> np.ndarray:
-    return scoring.snr_score_batch_func(combined_res_batch, self.score_widths)
+    return scoring.score_batch_ev_njit(
+        combined_res_batch,
+        self.score_widths,
+        self.score_mode_id,
+        self.score_n_harmonics,
+        self.kadane_biases,
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -594,7 +623,13 @@ def score_complex_func(
     self: PruneCircTaylorComplexDPFuncts,
     combined_res_batch: np.ndarray,
 ) -> np.ndarray:
-    return scoring.snr_score_batch_func_complex(combined_res_batch, self.score_widths)
+    return scoring.score_batch_ev_complex_njit(
+        combined_res_batch,
+        self.score_widths,
+        self.score_mode_id,
+        self.score_n_harmonics,
+        self.kadane_biases,
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -669,9 +704,12 @@ def ascend_func(
             param_idx_arr,
             relative_phase_arr,
         )
-        batch_scores = scoring.snr_score_batch_func(
+        batch_scores = scoring.score_batch_ev_njit(
             batch_combined_res,
             self.score_widths,
+            self.score_mode_id,
+            self.score_n_harmonics,
+            self.kadane_biases,
         )
         world_tree.folds[i_batch_start:i_batch_end] = batch_combined_res
         world_tree.scores[i_batch_start:i_batch_end] = batch_scores
@@ -714,9 +752,12 @@ def ascend_complex_func(
             param_idx_arr,
             relative_phase_arr,
         )
-        batch_scores = scoring.snr_score_batch_func_complex(
+        batch_scores = scoring.score_batch_ev_complex_njit(
             batch_combined_res,
             self.score_widths,
+            self.score_mode_id,
+            self.score_n_harmonics,
+            self.kadane_biases,
         )
         world_tree.folds[i_batch_start:i_batch_end] = batch_combined_res
         world_tree.scores[i_batch_start:i_batch_end] = batch_scores
@@ -1210,3 +1251,165 @@ def ol_report_complex_func(
         return report_func(self, leaves_batch, coord_report, coord_end)
 
     return impl
+
+
+@dataclass(frozen=True, kw_only=True)
+class Circular4DContinuationResult:
+    """Surviving 4D physical circular leaves after Taylor -> 4D stage handoff."""
+
+    leaves_4d: np.ndarray
+    scores: np.ndarray
+    folds: np.ndarray
+    coord_epoch: tuple[float, float]
+    coord_init: tuple[float, float]
+    n_levels_continued: int
+
+
+def run_circular_4d_continuation(
+    dyp_fold: np.ndarray,
+    taylor_leaves: np.ndarray,
+    taylor_folds: np.ndarray,
+    *,
+    transition_level: int,
+    nsegments: int,
+    tseg: float,
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
+    cfg: PulsarSearchConfig,
+    ref_seg: int = 0,
+    threshold_scheme: np.ndarray | None = None,
+    use_moving_grid: bool = True,
+    max_sugg: int = 2**14,
+) -> Circular4DContinuationResult:
+    """Continue circular-Taylor survivors in exact 4D physical circular coordinates.
+
+    Converts surviving 7-slot circular-Taylor leaves at ``transition_level``
+    into 6-slot 4D circular leaves ``[omega, f0, x_sin_phi, x_cos_phi, 0, 3]``
+    and integrates remaining segments ``transition_level + 1 .. nsegments - 1``
+    branching only ``(omega, f0)``.
+    """
+    scheme = MiddleOutScheme(
+        nsegments=nsegments,
+        ref_idx=ref_seg,
+        tsegment=tseg,
+        stride=1,
+    )
+    coord_init = scheme.get_coord(0)
+    coord_epoch = scheme.get_previous_coord(transition_level + 1, use_moving_grid)
+
+    leaves_4d, origins = circular.convert_circ_taylor_to_4d_leaves(
+        np.ascontiguousarray(taylor_leaves, dtype=np.float64),
+        float(cfg.p_orb_min),
+    )
+    if leaves_4d.shape[0] == 0:
+        return Circular4DContinuationResult(
+            leaves_4d=leaves_4d,
+            scores=np.empty(0, dtype=np.float32),
+            folds=np.empty((0, 2, cfg.nbins), dtype=np.float32),
+            coord_epoch=coord_epoch,
+            coord_init=coord_init,
+            n_levels_continued=0,
+        )
+
+    cur_folds = np.ascontiguousarray(taylor_folds[origins], dtype=np.float32)
+    score_mode_id = getattr(cfg, "score_mode_id", 0)
+    score_n_harmonics = getattr(cfg, "score_n_harmonics", 16)
+    kadane_biases = getattr(
+        cfg,
+        "kadane_biases",
+        scoring.generate_kadane_biases(cfg.nbins),
+    )
+    cur_scores = scoring.score_batch_ev_njit(
+        cur_folds,
+        cfg.score_widths,
+        score_mode_id,
+        score_n_harmonics,
+        kadane_biases,
+    )
+    p_limits_2d = np.ascontiguousarray(param_limits[-2:], dtype=np.float64)
+    p_counts_2d = np.ascontiguousarray(param_grid_count_init[-2:], dtype=np.int64)
+    n_acc = int(p_counts_2d[0])
+    n_freq = int(p_counts_2d[1])
+    fold_5d = np.ascontiguousarray(
+        dyp_fold.reshape(nsegments, -1, n_acc, n_freq, 2, cfg.nbins)[:, 0],
+        dtype=np.float32,
+    )
+
+    n_continued = 0
+    for lvl in range(transition_level + 1, nsegments):
+        seg_idx = scheme.get_segment_idx(lvl)
+        coord_cur = scheme.get_current_coord(lvl, use_moving_grid)
+        coord_prev = scheme.get_previous_coord(lvl, use_moving_grid)
+        coord_add = scheme.get_segment_coord(lvl)
+
+        child_leaves, child_origins = circular.cir_physical_branch_batch(
+            leaves_4d,
+            coord_cur,
+            coord_prev,
+            cfg.nbins,
+            cfg.eta,
+            cfg.branch_max,
+        )
+        if child_leaves.shape[0] == 0:
+            leaves_4d = child_leaves
+            cur_folds = np.empty((0, 2, cfg.nbins), dtype=np.float32)
+            cur_scores = np.empty(0, dtype=np.float32)
+            break
+
+        pidx, pshift = circular.poly_circular_resolve_epoch_batch(
+            child_leaves,
+            coord_add,
+            coord_epoch,
+            coord_init,
+            p_counts_2d,
+            p_limits_2d,
+            cfg.nbins,
+        )
+        fold_seg = fold_5d[seg_idx]
+        loaded = np.ascontiguousarray(
+            fold_seg[pidx[:, 0], pidx[:, 1]],
+            dtype=np.float32,
+        )
+        combined = common.shift_add_batch(loaded, pshift, cur_folds, child_origins)
+        scores = scoring.score_batch_ev_njit(
+            combined,
+            cfg.score_widths,
+            score_mode_id,
+            score_n_harmonics,
+            kadane_biases,
+        )
+
+        thr = (
+            float(threshold_scheme[lvl - 1])
+            if threshold_scheme is not None and lvl - 1 < len(threshold_scheme)
+            else -np.inf
+        )
+        keep = np.flatnonzero(scores >= thr)
+        if keep.size == 0:
+            leaves_4d = np.empty((0, 6, 2), dtype=np.float64)
+            cur_folds = np.empty((0, 2, cfg.nbins), dtype=np.float32)
+            cur_scores = np.empty(0, dtype=np.float32)
+            break
+        if keep.size > max_sugg:
+            top = np.argsort(scores[keep])[::-1][:max_sugg]
+            keep = keep[top]
+
+        leaves_4d = np.ascontiguousarray(child_leaves[keep], dtype=np.float64)
+        cur_folds = np.ascontiguousarray(combined[keep], dtype=np.float32)
+        cur_scores = np.ascontiguousarray(scores[keep], dtype=np.float32)
+        n_continued += 1
+
+    if cur_scores.size > 0:
+        order = np.argsort(cur_scores)[::-1]
+        leaves_4d = leaves_4d[order]
+        cur_folds = cur_folds[order]
+        cur_scores = cur_scores[order]
+
+    return Circular4DContinuationResult(
+        leaves_4d=leaves_4d,
+        scores=cur_scores,
+        folds=cur_folds,
+        coord_epoch=coord_epoch,
+        coord_init=coord_init,
+        n_levels_continued=n_continued,
+    )

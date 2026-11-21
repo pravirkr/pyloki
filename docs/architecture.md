@@ -25,14 +25,16 @@ Modules under [`src/pyloki/`](../src/pyloki) follow a strict layered layout
   kernels and dynamic pruning threshold scheme generation and analysis
   (`DynamicThresholdScheme`, `schedule_survive_probs`).
 - `dynamic/` (`dyn_pffa`, `dyn_poly_taylor`, `dyn_poly_cheby`,
-  `dyn_circular_taylor`): Numba `structref` function bundles (`*DPFuncts`)
+  `dyn_circular_taylor`, `dyn_svd`): Numba `structref` function bundles
+  (`*DPFuncts`), `run_circular_4d_continuation`, and `SVDPruningRunner`
   binding `PulsarSearchConfig` parameters to stateless `core` and `detection`
   kernels.
 - Top-level and supporting modules: `config.py` (`ParamLimits`,
   `PulsarSearchConfig`), `ffa.py` (`FFAPlan`, `DynamicProgramming`), `prune.py`
   (`Pruning`, `prune_dyp_tree`, `trace_ep_hypothesis`,
-  `verify_resolve_stability`), `search.py` (`ffa_search`, `ep_search`,
-  `refold_candidates`, `measure_snr_retention`), `periodogram.py` (`Periodogram`,
+  `verify_resolve_stability`, `prune_suggestion`, `MidTreeCheckpoint`), `search.py` (`ffa_search`, `ep_search`,
+  `ep_sliding_arc_search`, `refold_candidates`, `measure_snr_retention`,
+  `decompose_fold_quality`), `periodogram.py` (`Periodogram`,
   `ScatteredPeriodogram`), `kepler.py`, `orbit_fit.py`, `io/` (`timeseries`,
   `preprocess`, `preprocess_kernels`, `cands`), `simulation/` (`pulse`,
   `modulate`), `sensitivity/` (`sim_ffa`, `analytical`, `heavy_tail`), and

@@ -778,6 +778,23 @@ class SchemeSolution:
     eval_states: StatesInfo
 
 
+def _score_norm_batch(
+    norm_folds: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+    score_mode: scoring.ScoreMode = "boxcar",
+) -> npt.NDArray[np.float32]:
+    """Score a 2D batch of unit-variance ``(ntrials, nbins)`` folds."""
+    if score_mode == "boxcar":
+        return np.max(scoring.boxcar_snr_2d(norm_folds, widths, 1.0), axis=1)
+    folds_ev = np.empty(
+        (norm_folds.shape[0], 2, norm_folds.shape[1]),
+        dtype=np.float32,
+    )
+    folds_ev[:, 0, :] = norm_folds
+    folds_ev[:, 1, :] = 1.0
+    return scoring.score_profiles(folds_ev, widths, mode=score_mode)
+
+
 def simulate_unpruned_signal_scores(
     nstages: int,
     profile: npt.NDArray[np.float32],
@@ -786,8 +803,9 @@ def simulate_unpruned_signal_scores(
     ducy_max: float,
     wtsp: float,
     rng: np.random.Generator,
+    score_mode: scoring.ScoreMode = "boxcar",
 ) -> npt.NDArray[np.float32]:
-    """Simulate unpruned cumulative signal boxcar scores ``(nstages, ntrials)``."""
+    """Simulate unpruned cumulative signal scores ``(nstages, ntrials)``."""
     nbins = len(profile)
     widths = scoring.generate_box_width_trials(nbins, ducy_max=ducy_max, wtsp=wtsp)
     sig_step = (profile * np.float32(bias_snr)).astype(np.float32)
@@ -797,7 +815,7 @@ def simulate_unpruned_signal_scores(
         folds += rng.standard_normal((ntrials, nbins)).astype(np.float32) + sig_step
         inv_std = np.float32(1.0 / math.sqrt(istage + 2.0))
         norm_folds = np.ascontiguousarray(folds * inv_std, dtype=np.float32)
-        scores[istage] = np.max(scoring.boxcar_snr_2d(norm_folds, widths, 1.0), axis=1)
+        scores[istage] = _score_norm_batch(norm_folds, widths, score_mode=score_mode)
     return scores
 
 
@@ -1328,19 +1346,12 @@ class DynamicThresholdScheme:
             self._shared_masks_in = masks_out
             self._shared_h0_in = h0_out
 
-    def _extract_best_path(
+    def _backtrack_cell(
         self,
-        min_pd: float,
+        ithres: int,
+        iprob: int,
     ) -> tuple[npt.NDArray[np.float32], float, float]:
         last = self.states[self.nstages - 1]
-        valid = (last["threshold"] >= 0) & (last["success_h1_cumul"] >= min_pd)
-        if not np.any(valid):
-            valid = last["threshold"] >= 0
-        if not np.any(valid):
-            return np.empty(0, dtype=np.float32), 0.0, float("inf")
-        costs = np.where(valid, last["cost"], np.inf)
-        best_flat = int(np.argmin(costs))
-        ithres, iprob = divmod(best_flat, self.nprobs)
         best_state = last[ithres, iprob]
         search_pd = float(best_state["success_h1_cumul"])
         w_term = (
@@ -1371,22 +1382,142 @@ class DynamicThresholdScheme:
                     )
         return path, search_pd, search_c
 
+    def _extract_top_paths(
+        self,
+        min_pd: float,
+        max_paths: int = 4,
+    ) -> list[tuple[npt.NDArray[np.float32], float, float]]:
+        """Extract up to ``max_paths`` distinct lowest-cost paths meeting ``min_pd``."""
+        last = self.states[self.nstages - 1]
+        valid = (last["threshold"] >= 0) & (last["success_h1_cumul"] >= min_pd)
+        if not np.any(valid):
+            valid = last["threshold"] >= 0
+        if not np.any(valid):
+            return []
+        costs = np.where(valid, last["cost"], np.inf).ravel()
+        order = np.argsort(costs)
+        out: list[tuple[npt.NDArray[np.float32], float, float]] = []
+        seen: set[bytes] = set()
+        for flat_idx in order:
+            if not math.isfinite(float(costs[flat_idx])):
+                break
+            ithres, iprob = divmod(int(flat_idx), self.nprobs)
+            cand = self._backtrack_cell(ithres, iprob)
+            key = cand[0].tobytes()
+            if key not in seen:
+                seen.add(key)
+                out.append(cand)
+                if len(out) >= max_paths:
+                    break
+        return out
+
+    def _extract_best_path(
+        self,
+        min_pd: float,
+    ) -> tuple[npt.NDArray[np.float32], float, float]:
+        top = self._extract_top_paths(min_pd, max_paths=1)
+        if not top:
+            return np.empty(0, dtype=np.float32), 0.0, float("inf")
+        return top[0]
+
+    def _tighten_and_repair(
+        self,
+        search_path: npt.NDArray[np.float32],
+        scores_a: npt.NDArray[np.float32],
+        scores_b: npt.NDArray[np.float32],
+        k_target: int,
+    ) -> npt.NDArray[np.float32]:
+        gamma = search_path.astype(np.float64).copy()
+        margins_a = np.min(scores_a - gamma[:, None], axis=0)
+        if int(np.count_nonzero(margins_a > 0.0)) < k_target:
+            delta_a = float(np.sort(margins_a)[-k_target]) - 1e-6
+            gamma = np.maximum(0.0, gamma + delta_a)
+        surv_a = np.all(scores_a > gamma[:, None], axis=0)
+        if np.any(surv_a):
+            tight = np.min(scores_a[:, surv_a], axis=1) - 1e-6
+            gamma = np.maximum(gamma, tight)
+
+        margins_b = np.min(scores_b - gamma[:, None], axis=0)
+        if int(np.count_nonzero(margins_b > 0.0)) < k_target:
+            delta_b = float(np.sort(margins_b)[-k_target]) - 1e-6
+            gamma = np.maximum(0.0, gamma + delta_b)
+        return gamma.astype(np.float32)
+
+    def _refine_blocks(
+        self,
+        gamma_init: npt.NDArray[np.float32],
+        scores_a: npt.NDArray[np.float32],
+        scores_b: npt.NDArray[np.float32],
+        k_target: int,
+        w_term: float,
+        rng_ref: np.random.Generator,
+    ) -> npt.NDArray[np.float32]:
+        """Local ±2-step block coordinate refinement reducing noise cost."""
+        if self.nstages < 2:
+            return gamma_init
+        step = (
+            float(self.thresholds[1] - self.thresholds[0])
+            if self.thresholds.size >= 2
+            else 0.05
+        )
+        best = gamma_init.copy()
+
+        def _eval_c(g: npt.NDArray[np.float32]) -> float:
+            st = evaluate_scheme(
+                g,
+                self.branching_pattern,
+                self.ref_ducy,
+                nbins=self.nbins,
+                ntrials=min(1024, self.shared_options.ntrials_noise_bank),
+                snr_final=self.snr_final,
+                ducy_max=self.ducy_max,
+                wtsp=self.wtsp,
+                seed=int(rng_ref.integers(0, 2**31 - 1)),
+            )
+            if not st.entries:
+                return float("inf")
+            last_st = st.entries[-1]
+            return float(last_st.complexity_cumul) + w_term * float(last_st.complexity)
+
+        best_c = _eval_c(best)
+        block_size = max(1, self.nstages // 4)
+        for b0 in range(0, self.nstages, block_size):
+            b1 = min(self.nstages, b0 + block_size)
+            for mult in (2, 1, -1, -2):
+                trial = best.copy()
+                trial[b0:b1] = np.maximum(0.0, trial[b0:b1] + mult * step)
+                if (
+                    int(np.count_nonzero(np.all(scores_a > trial[:, None], axis=0)))
+                    < k_target
+                    or int(np.count_nonzero(np.all(scores_b > trial[:, None], axis=0)))
+                    < k_target
+                ):
+                    continue
+                c_trial = _eval_c(trial)
+                if c_trial < best_c:
+                    best = trial
+                    best_c = c_trial
+        return best
+
     def solve(
         self,
         min_pd: float | None = None,
         seed: int | None = None,
     ) -> SchemeSolution:
-        """Sample-split tighten, repair, and unbiased evaluation of the best schedule.
+        """Sample-split tighten, repair, shortlist, and evaluate the best schedule.
 
         Uses three independent signal banks (Bank A to shift/tighten, Bank B to
         repair if needed, and Bank C — untouched by any selection — for unbiased
         ``pd`` and binomial ``pd_se``) plus a fresh noise evaluation for ``c``.
+        In ``robust`` mode, shortlists up to 4 candidate paths on fresh noise
+        and applies ±2-step block coordinate refinement.
         """
         opts = self.shared_options
         target_pd = opts.min_pd if min_pd is None else float(min_pd)
         w_term = opts.w_terminal if self.mode in ("shared", "robust") else 0.0
-        search_path, search_pd, search_c = self._extract_best_path(target_pd)
-        if search_path.size == 0:
+        n_shortlist = 4 if self.mode == "robust" else 1
+        top_paths = self._extract_top_paths(target_pd, max_paths=n_shortlist)
+        if not top_paths:
             return SchemeSolution(
                 thresholds=np.empty(0, dtype=np.float32),
                 pd=0.0,
@@ -1394,7 +1525,7 @@ class DynamicThresholdScheme:
                 pd_trials=0,
                 c=float("inf"),
                 cost=float("inf"),
-                search_thresholds=search_path,
+                search_thresholds=np.empty(0, dtype=np.float32),
                 search_pd=0.0,
                 search_c=float("inf"),
                 delivery="no_path",
@@ -1408,8 +1539,8 @@ class DynamicThresholdScheme:
             if seed is not None
             else np.random.SeedSequence(self._entropy, spawn_key=(9500,))
         )
-        rng_a, rng_b, rng_c, rng_noise = [
-            np.random.default_rng(s) for s in base_seq.spawn(4)
+        rng_a, rng_b, rng_c, rng_short, rng_ref, rng_noise = [
+            np.random.default_rng(s) for s in base_seq.spawn(6)
         ]
         n_sig = opts.ntrials_sig_bank
         scores_a = simulate_unpruned_signal_scores(
@@ -1444,24 +1575,43 @@ class DynamicThresholdScheme:
         se_target = math.sqrt(max(target_pd * (1.0 - target_pd), 1e-6) / n_sig)
         k_target = min(n_sig, math.ceil((target_pd + 2.0 * se_target) * n_sig))
 
-        # 1. Bank A: shift down if under target, then tighten each stage
-        gamma = search_path.astype(np.float64).copy()
-        margins_a = np.min(scores_a - gamma[:, None], axis=0)
-        if int(np.count_nonzero(margins_a > 0.0)) < k_target:
-            delta_a = float(np.sort(margins_a)[-k_target]) - 1e-6
-            gamma = np.maximum(0.0, gamma + delta_a)
-        surv_a = np.all(scores_a > gamma[:, None], axis=0)
-        if np.any(surv_a):
-            tight = np.min(scores_a[:, surv_a], axis=1) - 1e-6
-            gamma = np.maximum(gamma, tight)
+        # 1-2. Tighten/repair shortlisted paths and pick best on fresh shortlist noise
+        best_choice = top_paths[0]
+        gamma_f32 = self._tighten_and_repair(
+            best_choice[0], scores_a, scores_b, k_target
+        )
+        if len(top_paths) > 1:
+            best_short_c = float("inf")
+            for cand in top_paths:
+                cand_g = self._tighten_and_repair(cand[0], scores_a, scores_b, k_target)
+                st_s = evaluate_scheme(
+                    cand_g,
+                    self.branching_pattern,
+                    self.ref_ducy,
+                    nbins=self.nbins,
+                    ntrials=min(1024, opts.ntrials_noise_bank),
+                    snr_final=self.snr_final,
+                    ducy_max=self.ducy_max,
+                    wtsp=self.wtsp,
+                    seed=int(rng_short.integers(0, 2**31 - 1)),
+                )
+                c_s = (
+                    float(st_s.entries[-1].complexity_cumul)
+                    + w_term * float(st_s.entries[-1].complexity)
+                    if st_s.entries
+                    else float("inf")
+                )
+                if c_s < best_short_c:
+                    best_short_c = c_s
+                    best_choice = cand
+                    gamma_f32 = cand_g
 
-        # 2. Bank B: repair if Bank B survival falls below target
-        margins_b = np.min(scores_b - gamma[:, None], axis=0)
-        if int(np.count_nonzero(margins_b > 0.0)) < k_target:
-            delta_b = float(np.sort(margins_b)[-k_target]) - 1e-6
-            gamma = np.maximum(0.0, gamma + delta_b)
+        search_path, search_pd, search_c = best_choice
 
-        gamma_f32 = gamma.astype(np.float32)
+        if self.mode == "robust":
+            gamma_f32 = self._refine_blocks(
+                gamma_f32, scores_a, scores_b, k_target, w_term, rng_ref
+            )
 
         # 3. Bank C: unbiased Pd report + fresh noise cost evaluation
         surv_c = np.all(scores_c > gamma_f32[:, None], axis=0)

@@ -638,3 +638,51 @@ def generate_markov_nulling_envelope(
             state = 1
         env[i] = float(state)
     return env
+
+
+def generate_scintillation_envelope(
+    n_steps: int,
+    dt: float,
+    t_corr: float,
+    *,
+    mod_index: float = 0.5,
+    rng: np.random.Generator | None = None,
+    seed: int | None = None,
+) -> np.ndarray:
+    """Generate a positive Gaussian-spectrum scintillation flux envelope.
+
+    Filters white Gaussian noise with a Gaussian power spectrum of correlation
+    timescale ``t_corr`` (seconds) and maps via a lognormal transform to yield
+    a strictly positive envelope with unit mean and modulation index
+    ``mod_index = std(I) / mean(I)``.
+    """
+    if n_steps < 0:
+        msg = f"n_steps must be nonnegative, got {n_steps}"
+        raise ValueError(msg)
+    if dt <= 0.0:
+        msg = f"dt must be positive, got {dt}"
+        raise ValueError(msg)
+    if t_corr <= 0.0:
+        msg = f"t_corr must be positive, got {t_corr}"
+        raise ValueError(msg)
+    if mod_index < 0.0:
+        msg = f"mod_index must be nonnegative, got {mod_index}"
+        raise ValueError(msg)
+    if n_steps == 0:
+        return np.empty(0, dtype=np.float64)
+    if n_steps == 1 or mod_index == 0.0:
+        return np.ones(n_steps, dtype=np.float64)
+
+    gen = np.random.default_rng(seed) if rng is None else rng
+    white = gen.standard_normal(n_steps)
+    freqs = np.fft.rfftfreq(n_steps, d=dt)
+    spec = np.fft.rfft(white) * np.exp(-((np.pi * freqs * t_corr) ** 2))
+    spec[0] = 0.0
+    corr = np.fft.irfft(spec, n=n_steps)
+    std = float(np.std(corr))
+    if std <= 0.0:
+        return np.ones(n_steps, dtype=np.float64)
+    z = (corr - float(np.mean(corr))) / std
+    sigma_ln = float(np.sqrt(np.log1p(mod_index * mod_index)))
+    env = np.exp(sigma_ln * z - 0.5 * sigma_ln * sigma_ln)
+    return env / float(np.mean(env))

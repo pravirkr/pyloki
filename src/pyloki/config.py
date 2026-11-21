@@ -21,12 +21,19 @@ from pyloki.core import (
     generate_bp_poly_taylor,
     generate_bp_poly_taylor_approx,
 )
-from pyloki.detection.scoring import generate_box_width_trials
+from pyloki.detection.scoring import (
+    ScoreMode,
+    generate_box_width_trials,
+    generate_kadane_biases,
+    score_mode_to_id,
+)
 from pyloki.utils import maths, psr_utils, transforms
-from pyloki.utils.misc import C_VAL
+from pyloki.utils.misc import C_VAL, get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+logger = get_logger(__name__)
 
 
 def compute_min_nsegments(
@@ -527,6 +534,30 @@ class PulsarSearchConfig:
         default="aggressive",
         validator=attrs.validators.in_(["aggressive", "quadrature", "conservative"]),
     )
+    score_mode: ScoreMode = attrs.field(
+        default="boxcar",
+        validator=attrs.validators.in_(
+            [
+                "boxcar",
+                "boxcar_glrt",
+                "double_boxcar",
+                "harmonic_z2",
+                "combined",
+                "kadane",
+            ],
+        ),
+    )
+    score_n_harmonics: int = attrs.field(
+        default=16,
+        validator=[
+            attrs.validators.instance_of(int | np.integer),
+            attrs.validators.gt(0),
+        ],
+    )
+    x_max: float = attrs.field(
+        default=0.0,
+        validator=attrs.validators.ge(0.0),
+    )
 
     def __attrs_post_init__(self) -> None:
         if self.use_fourier and self.nbins % 2 != 0:
@@ -548,6 +579,26 @@ class PulsarSearchConfig:
         if self.prune_poly_order == 5 and self.p_orb_min == 0:
             msg = "p_orb_min must be provided for a circular orbit search"
             raise ValueError(msg)
+        if self.p_orb_min > 0.0 and self.x_max > 0.0:
+            n_seg_cur = max(1, int(self.nsamps // self.bseg_ffa))
+            min_nseg = compute_min_nsegments(
+                self.nsamps * self.tsamp,
+                self.p_orb_min,
+                self.x_max,
+                1.0 / self.f_max,
+                self.nbins,
+                eta=self.eta,
+            )
+            if n_seg_cur < min_nseg:
+                logger.warning(
+                    "Base P-FFA segment count (%d) is below minimum (%d) for "
+                    "p_orb_min=%.1f s, x_max=%.3f lt-s; unmodeled orbital jerk "
+                    "may smear base folds.",
+                    n_seg_cur,
+                    min_nseg,
+                    self.p_orb_min,
+                    self.x_max,
+                )
 
     @property
     def tseg_brute(self) -> float:
@@ -602,6 +653,16 @@ class PulsarSearchConfig:
             ducy_max=self.ducy_max,
             wtsp=self.wtsp,
         )
+
+    @property
+    def score_mode_id(self) -> int:
+        """Integer scoring mode ID for hot ``@njit`` EP structrefs."""
+        return score_mode_to_id(self.score_mode)
+
+    @property
+    def kadane_biases(self) -> np.ndarray:
+        """Get the geometric Kadane bias penalties for circular Kadane scoring."""
+        return generate_kadane_biases(self.nbins, ducy_max=self.ducy_max)
 
     def get_dparams_f(self, ffa_level: int) -> np.ndarray:
         """Get the step sizes for frequency and its derivatives.

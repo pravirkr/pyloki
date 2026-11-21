@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import tkinter as tk
 from pathlib import Path
@@ -68,17 +69,63 @@ class ThresholdAnalyzerApp:
         set_seaborn(font_size=self._base_font_size)
 
     def create_layout(self) -> None:
-        """Create the main layout of the application."""
-        self.main_frame = ttk.Frame(self.root)
-        self.main_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        """Create the main tabbed layout of the application."""
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=5, pady=5)
 
-        # Configure main frame grid
+        self.scheme_tab = ttk.Frame(self.notebook)
+        self.scheme_tab.columnconfigure(0, weight=1)
+        self.scheme_tab.rowconfigure(0, weight=1)
+        self.scheme_tab.rowconfigure(1, weight=0)
+        self.notebook.add(self.scheme_tab, text="Threshold Scheme")
+
+        self.main_frame = ttk.Frame(self.scheme_tab)
+        self.main_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         self.main_frame.columnconfigure(0, weight=1)
         self.main_frame.rowconfigure(0, weight=1)
 
-        # Control panel frame
-        self.control_frame = ttk.Frame(self.root, style="Control.TFrame")
+        self.control_frame = ttk.Frame(self.scheme_tab, style="Control.TFrame")
         self.control_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+
+        self.waterfall_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.waterfall_tab, text="Waterfall Lab")
+        self.waterfall_app: WaterfallLabApp | None = None
+        wf_bar = ttk.Frame(self.waterfall_tab)
+        wf_bar.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        ttk.Button(
+            wf_bar,
+            text="Load Waterfall (.npz)",
+            command=self._browse_waterfall,
+        ).pack(side=tk.LEFT, padx=5)
+        self.waterfall_container = ttk.Frame(self.waterfall_tab)
+        self.waterfall_container.pack(fill=tk.BOTH, expand=True)
+
+    def _browse_waterfall(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select Waterfall NPZ File",
+            filetypes=[("NumPy archives", "*.npz"), ("All files", "*.*")],
+        )
+        if path:
+            self.load_waterfall(path)
+
+    def load_waterfall(
+        self,
+        waterfall_npz: str | Path,
+        *,
+        f0: float = 100.0,
+        orbit_overlay: FourierOrbitFit | KeplerianFitResult | None = None,
+    ) -> None:
+        """Load a waterfall ``.npz`` file into the embedded Waterfall Lab tab."""
+        for child in self.waterfall_container.winfo_children():
+            child.destroy()
+        data = np.load(waterfall_npz)
+        state = WaterfallLabState(
+            data["folds"],
+            data["segment_times"],
+            f0_ref=f0,
+            orbit_overlay=orbit_overlay,
+        )
+        self.waterfall_app = WaterfallLabApp(self.waterfall_container, state)
 
     def create_figure(self) -> None:
         """Create the matplotlib figure and canvas."""
@@ -543,10 +590,66 @@ class WaterfallLabState:
         return snr, fig
 
 
+def load_orbit_overlay(
+    path: str | Path,
+) -> FourierOrbitFit | KeplerianFitResult:
+    """Load an orbit overlay from a JSON file for ``WaterfallLabState``.
+
+    Accepts either a circular/Fourier JSON object containing
+    ``{"omega_orb" | "p_orb", "x_orb", "phi_orb"}`` or a Keplerian JSON object
+    containing ``{"p_orb", "x_orb", "ecc", "aop", "phi"}``.
+    """
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        msg = f"Orbit overlay JSON must be an object, got {type(payload).__name__}"
+        raise TypeError(msg)
+    if "ecc" in payload and "aop" in payload:
+        return KeplerianFitResult(
+            f0=float(payload.get("f0", 0.0)),
+            p_orb=float(payload["p_orb"]),
+            x_orb=float(payload["x_orb"]),
+            ecc=float(payload["ecc"]),
+            aop=float(payload["aop"]),
+            phi=float(payload["phi"]),
+            loss=float(payload.get("loss", 0.0)),
+            rms_residual=float(payload.get("rms_residual", 0.0)),
+            residuals=np.empty(0, dtype=np.float64),
+            success=bool(payload.get("success", True)),
+        )
+    if "omega_orb" in payload:
+        om = float(payload["omega_orb"])
+        p_orb = 2.0 * math.pi / om
+    elif "p_orb" in payload:
+        p_orb = float(payload["p_orb"])
+        om = 2.0 * math.pi / p_orb
+    else:
+        msg = "Orbit overlay JSON must contain 'p_orb' or 'omega_orb'"
+        raise ValueError(msg)
+    x_orb = float(payload["x_orb"])
+    phi_orb = float(payload.get("phi_orb", payload.get("phi", 0.0)))
+    return FourierOrbitFit(
+        p_orb=p_orb,
+        omega_orb=om,
+        x_orb=x_orb,
+        phi_orb=phi_orb,
+        ecc_approx=float(payload.get("ecc_approx", 0.0)),
+        df_over_f=float(payload.get("df_over_f", 0.0)),
+        rms_residual=float(payload.get("rms_residual", 0.0)),
+        amplitudes=np.array([x_orb], dtype=np.float64),
+        phases=np.array([phi_orb], dtype=np.float64),
+        coeffs=np.zeros(4, dtype=np.float64),
+        coeff_uncertainties=np.zeros(4, dtype=np.float64),
+        residuals=np.empty(0, dtype=np.float64),
+        omega_grid=np.array([om], dtype=np.float64),
+        rms_curve=np.array([0.0], dtype=np.float64),
+        t_center=float(payload.get("t_center", 0.0)),
+    )
+
+
 class WaterfallLabApp:
     """Tkinter interactive waterfall slider lab backed by ``WaterfallLabState``."""
 
-    def __init__(self, root: tk.Tk, state: WaterfallLabState) -> None:
+    def __init__(self, root: tk.Misc, state: WaterfallLabState) -> None:
         from matplotlib.backends.backend_tkagg import (  # noqa: PLC0415
             FigureCanvasTkAgg,
             NavigationToolbar2Tk,
@@ -554,8 +657,9 @@ class WaterfallLabApp:
 
         self.root = root
         self.state = state
-        self.root.title("PyLoki Interactive Waterfall Lab")
-        self.root.minsize(950, 650)
+        if isinstance(self.root, tk.Tk | tk.Toplevel):
+            self.root.title("PyLoki Interactive Waterfall Lab")
+            self.root.minsize(950, 650)
 
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -630,21 +734,56 @@ def main() -> None:
     type=(int, int),
     default=(1350, 900),
 )
-def scheme(scheme_file: str, display: tuple[int, int]) -> None:
+@click.option(
+    "--waterfall",
+    "waterfall_npz",
+    type=click.Path(exists=True),
+    default=None,
+    help="Optional waterfall .npz file to pre-load in the Waterfall Lab tab",
+)
+@click.option("--f0", type=float, default=100.0, help="Reference spin frequency (Hz)")
+@click.option(
+    "--orbit-overlay",
+    type=click.Path(exists=True),
+    default=None,
+    help="Optional orbit overlay JSON file for the Waterfall Lab tab",
+)
+def scheme(
+    scheme_file: str,
+    display: tuple[int, int],
+    waterfall_npz: str | None,
+    f0: float,
+    orbit_overlay: str | None,
+) -> None:
     root = tk.Tk()
     app = ThresholdAnalyzerApp(root)
+    if waterfall_npz is not None:
+        overlay = load_orbit_overlay(orbit_overlay) if orbit_overlay else None
+        app.load_waterfall(waterfall_npz, f0=f0, orbit_overlay=overlay)
     app.run(default_file=scheme_file, display=display)
 
 
 @main.command()
 @click.argument("waterfall_npz", type=click.Path(exists=True))
 @click.option("--f0", type=float, default=100.0, help="Reference spin frequency (Hz)")
-def waterfall(waterfall_npz: str, f0: float) -> None:
+@click.option(
+    "--orbit-overlay",
+    type=click.Path(exists=True),
+    default=None,
+    help="Optional orbit overlay JSON file (Fourier or Keplerian parameters)",
+)
+def waterfall(
+    waterfall_npz: str,
+    f0: float,
+    orbit_overlay: str | None,
+) -> None:
     data = np.load(waterfall_npz)
+    overlay = load_orbit_overlay(orbit_overlay) if orbit_overlay else None
     state = WaterfallLabState(
         data["folds"],
         data["segment_times"],
         f0_ref=f0,
+        orbit_overlay=overlay,
     )
     root = tk.Tk()
     WaterfallLabApp(root, state)

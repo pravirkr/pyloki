@@ -859,6 +859,82 @@ class PredictionTableGenerator:
             offsets=np.array([off0, off1, off2], dtype=np.int64),
         )
 
+    def build_dimensionless_voxel_table(
+        self,
+        target_index: int = 7,
+        bin_sizes: tuple[float, float, float] = (0.05, 0.1, 0.1),
+    ) -> PackedVoxelTable:
+        """Build a scale-invariant 64-bit packed voxel table via dimensionless keys.
+
+        Indexes the 3D dimensionless key ``(angle, z5_hat, z6_hat)`` and stores
+        bounds on the dimensionless target derivative
+        ``z_target / (A * om^target_index)``, avoiding brute-force ``(x, omega)``
+        outer grid expansion.
+        """
+        if self.data.shape[1] <= max(6, target_index):
+            msg = (
+                f"Dataset has {self.data.shape[1]} derivative columns; "
+                f"need > {max(6, target_index)} for dimensionless table"
+            )
+            raise ValueError(msg)
+
+        k_arr, v_arr = _extract_dimensionless_keys_vals(
+            np.ascontiguousarray(self.data, dtype=np.float64),
+            int(target_index),
+        )
+        if k_arr.shape[0] == 0:
+            return PackedVoxelTable(
+                keys=np.empty(0, dtype=np.uint64),
+                d_min=np.empty(0, dtype=np.float64),
+                d_max=np.empty(0, dtype=np.float64),
+                bin_sizes=np.array(bin_sizes, dtype=np.float64),
+                offsets=np.zeros(3, dtype=np.int64),
+            )
+        i0 = np.floor(k_arr[:, 0] / bin_sizes[0]).astype(np.int64)
+        i1 = np.floor(k_arr[:, 1] / bin_sizes[1]).astype(np.int64)
+        i2 = np.floor(k_arr[:, 2] / bin_sizes[2]).astype(np.int64)
+        off0 = int(np.min(i0))
+        off1 = int(np.min(i1))
+        off2 = int(np.min(i2))
+        max_21bit = 0x1FFFFF
+        spans = (
+            int(np.max(i0)) - off0,
+            int(np.max(i1)) - off1,
+            int(np.max(i2)) - off2,
+        )
+        if any(s > max_21bit for s in spans):
+            msg = (
+                f"Dimensionless voxel spans {spans} exceed 21-bit limit ({max_21bit}); "
+                "increase bin_sizes to prevent key aliasing"
+            )
+            raise ValueError(msg)
+
+        n = k_arr.shape[0]
+        raw_keys = np.empty(n, dtype=np.uint64)
+        for idx in range(n):
+            raw_keys[idx] = pack_voxel_key_3d(
+                int(i0[idx]),
+                int(i1[idx]),
+                int(i2[idx]),
+                off0,
+                off1,
+                off2,
+            )
+
+        order = np.argsort(raw_keys)
+        sorted_keys = raw_keys[order]
+        sorted_vals = v_arr[order]
+        uniq_keys, starts = np.unique(sorted_keys, return_index=True)
+        d_min = np.minimum.reduceat(sorted_vals, starts)
+        d_max = np.maximum.reduceat(sorted_vals, starts)
+        return PackedVoxelTable(
+            keys=np.ascontiguousarray(uniq_keys, dtype=np.uint64),
+            d_min=np.ascontiguousarray(d_min, dtype=np.float64),
+            d_max=np.ascontiguousarray(d_max, dtype=np.float64),
+            bin_sizes=np.array(bin_sizes, dtype=np.float64),
+            offsets=np.array([off0, off1, off2], dtype=np.int64),
+        )
+
 
 @njit(cache=True)
 def pack_voxel_key_3d(
@@ -891,6 +967,67 @@ def lookup_voxel_bounds(
     if idx < n and keys[idx] == query_key:
         return True, float(d_min[idx]), float(d_max[idx])
     return False, 0.0, 0.0
+
+
+@njit(cache=True)
+def _dimensionless_om_amp(
+    z2: float,
+    z3: float,
+    z4: float,
+    z5: float,
+    eps: float = 1e-18,
+) -> tuple[float, float]:
+    """Return ``(omega_hat, amplitude_hat)`` matching ``dimensionless_kepler_key``."""
+    ok1 = abs(z2) > eps and (-z4 / z2) > 0.0
+    ok2 = abs(z3) > eps and (-z5 / z3) > 0.0
+    om_sq = -1.0
+    if ok1 and ok2:
+        om2_sq = -z5 / z3
+        om2 = math.sqrt(om2_sq)
+        om_sq = om2_sq if abs(z2) < 1e-2 * abs(z3) / om2 else -z4 / z2
+    elif ok1:
+        om_sq = -z4 / z2
+    elif ok2:
+        om_sq = -z5 / z3
+    if om_sq <= 0.0:
+        return 0.0, 0.0
+    om = math.sqrt(om_sq)
+    c2 = z2 / om_sq
+    c3 = z3 / (om_sq * om)
+    amp = math.hypot(c2, c3)
+    if amp <= eps:
+        return 0.0, 0.0
+    return om, amp
+
+
+@njit(cache=True)
+def _extract_dimensionless_keys_vals(
+    data: np.ndarray,
+    target_index: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Batch-compute dimensionless 3D keys and scaled targets inside Numba."""
+    n = data.shape[0]
+    keys = np.empty((n, 3), dtype=np.float64)
+    vals = np.empty(n, dtype=np.float64)
+    count = 0
+    for i in range(n):
+        z2 = data[i, 2]
+        z3 = data[i, 3]
+        z4 = data[i, 4]
+        z5 = data[i, 5]
+        z6 = data[i, 6]
+        ok, angle, z5_hat, z6_hat = dimensionless_kepler_key(z2, z3, z4, z5, z6)
+        if not ok:
+            continue
+        om, amp = _dimensionless_om_amp(z2, z3, z4, z5)
+        if om <= 0.0 or amp <= 0.0:
+            continue
+        keys[count, 0] = angle
+        keys[count, 1] = z5_hat
+        keys[count, 2] = z6_hat
+        vals[count] = data[i, target_index] / (amp * (om**target_index))
+        count += 1
+    return keys[:count], vals[:count]
 
 
 @njit(cache=True)
@@ -965,6 +1102,26 @@ class PackedVoxelTable:
             int(self.offsets[2]),
         )
         return lookup_voxel_bounds(self.keys, self.d_min, self.d_max, qkey)
+
+    def query_dimensionless(
+        self,
+        z2: float,
+        z3: float,
+        z4: float,
+        z5: float,
+        z6: float,
+        target_order: int = 7,
+    ) -> tuple[bool, float, float]:
+        """Query physical ``(d_min, d_max)`` bounds from a dimensionless voxel table."""
+        ok, angle, z5_hat, z6_hat = dimensionless_kepler_key(z2, z3, z4, z5, z6)
+        if not ok:
+            return False, 0.0, 0.0
+        found, lo_hat, hi_hat = self.query(angle, z5_hat, z6_hat)
+        if not found:
+            return False, 0.0, 0.0
+        om, amp = _dimensionless_om_amp(z2, z3, z4, z5)
+        scale = amp * (om**target_order)
+        return True, lo_hat * scale, hi_hat * scale
 
 
 def _grid_axis(bounds: tuple[float, float], step: float) -> np.ndarray:

@@ -807,6 +807,112 @@ def poly_circular_resolve_batch(
 
 
 @njit(cache=True, fastmath=True)
+def poly_circular_resolve_epoch_batch(
+    leaf_batch: np.ndarray,
+    coord_add: tuple[float, float],
+    coord_epoch: tuple[float, float],
+    coord_init: tuple[float, float],
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
+    nbins: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve 4D circular leaves anchored at ``coord_epoch`` to ``coord_add``.
+
+    Supports intermediate Taylor -> 4D circular transition epochs where
+    ``coord_epoch != coord_init`` while computing pulse phase shifts relative
+    to ``coord_init``.
+    """
+    dt_add = coord_add[0] - coord_epoch[0]
+    dt_init = coord_init[0] - coord_epoch[0]
+    dt_phase = coord_add[0] - coord_init[0]
+
+    omega_orb_batch = leaf_batch[:, 0, 0]
+    f_cur_batch = leaf_batch[:, 1, 0]
+    x_sin_nu_batch = leaf_batch[:, 2, 0]
+    x_cos_nu_batch = leaf_batch[:, 3, 0]
+
+    # Evolve from coord_epoch to coord_add
+    om_dt_add = omega_orb_batch * dt_add
+    cos_add = np.cos(om_dt_add)
+    sin_add = np.sin(om_dt_add)
+    x_cos_add = x_cos_nu_batch * cos_add - x_sin_nu_batch * sin_add
+    x_sin_add = x_sin_nu_batch * cos_add + x_cos_nu_batch * sin_add
+
+    # Evolve from coord_epoch to coord_init for exact relative light-travel delay
+    om_dt_init = omega_orb_batch * dt_init
+    cos_init = np.cos(om_dt_init)
+    sin_init = np.sin(om_dt_init)
+    x_sin_init = x_sin_nu_batch * cos_init + x_cos_nu_batch * sin_init
+
+    a_new_batch = -C_VAL * (omega_orb_batch**2) * x_sin_add
+    v_new_batch = omega_orb_batch * x_cos_add
+    delay_batch = x_sin_add - x_sin_init
+    f_new_batch = f_cur_batch * (1.0 - v_new_batch)
+
+    relative_phase_batch = psr_utils.get_phase_idx(
+        dt_phase,
+        f_cur_batch,
+        nbins,
+        delay_batch,
+    )
+    param_idx_batch = psr_utils.get_nearest_indices_2d_batch(
+        a_new_batch,
+        f_new_batch,
+        param_grid_count_init,
+        param_limits,
+    )
+    return param_idx_batch, relative_phase_batch
+
+
+@njit(cache=True, fastmath=True)
+def convert_circ_taylor_to_4d_leaves(
+    leaves_batch: np.ndarray,
+    p_orb_min: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert valid 7-slot circular-Taylor leaves to 6-slot 4D circular leaves.
+
+    Input leaves have layout ``[crackle, snap, jerk, accel, freq, ?, flag]``.
+    Output leaves have layout ``[omega, freq, x_sin_phi, x_cos_phi, 0, flag=3]``
+    together with the parent index array ``origins``.
+    """
+    n_batch = leaves_batch.shape[0]
+    om_max = 2.0 * np.pi / p_orb_min
+    valid_mask = np.zeros(n_batch, dtype=np.bool_)
+    n_valid = 0
+    for i in range(n_batch):
+        snap = leaves_batch[i, 1, 0]
+        accel = leaves_batch[i, 3, 0]
+        if abs(accel) > 1e-18:
+            om_sq = -snap / accel
+            if om_sq > 0.0 and np.sqrt(om_sq) <= om_max:
+                valid_mask[i] = True
+                n_valid += 1
+
+    if n_valid == 0:
+        return np.empty((0, 6, 2), dtype=np.float64), np.empty(0, dtype=np.int64)
+
+    sub_taylor = np.empty((n_valid, 4, 2), dtype=np.float64)
+    origins = np.empty(n_valid, dtype=np.int64)
+    k = 0
+    for i in range(n_batch):
+        if valid_mask[i]:
+            for p in range(4):
+                sub_taylor[k, p, 0] = leaves_batch[i, p + 1, 0]
+                sub_taylor[k, p, 1] = leaves_batch[i, p + 1, 1]
+            origins[k] = i
+            k += 1
+
+    circ4 = transforms.taylor_to_circular_full(sub_taylor)
+    out = np.zeros((n_valid, 6, 2), dtype=np.float64)
+    for i in range(n_valid):
+        for p in range(4):
+            out[i, p, 0] = circ4[i, p, 0]
+            out[i, p, 1] = circ4[i, p, 1]
+        out[i, 5, 0] = 3.0
+    return out, origins
+
+
+@njit(cache=True, fastmath=True)
 def generate_bp_circ_taylor(
     param_arr: list[np.ndarray],
     dparams_act: np.ndarray,

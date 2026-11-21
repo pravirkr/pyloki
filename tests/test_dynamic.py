@@ -52,7 +52,16 @@ POLY_DPARAMS = np.array([1e-4, 0.05, 0.01])  # order 3: jerk, accel, freq
 CIRC_DPARAMS = np.array([1e-9, 1e-6, 1e-4, 0.05, 0.01])  # order 5
 
 
-def _poly_funcs(init: object, order: int, *, moving: bool) -> object:
+def _poly_funcs(
+    init: object,
+    order: int,
+    *,
+    moving: bool,
+    score_mode_id: int = 0,
+    score_n_harmonics: int = 16,
+    kadane_biases: np.ndarray | None = None,
+) -> object:
+    biases = np.empty(0, dtype=np.float32) if kadane_biases is None else kadane_biases
     return init(
         _param_arr(order),
         POLY_DPARAMS,
@@ -67,6 +76,9 @@ def _poly_funcs(init: object, order: int, *, moving: bool) -> object:
         64,
         "aggressive",
         moving,
+        score_mode_id,
+        score_n_harmonics,
+        biases,
     )
 
 
@@ -91,12 +103,20 @@ def _cheby(*, moving: bool, complex_: bool = False) -> object:
 CIRC_EXTRA = (100.0, 1e12, 2.0, 5.0)  # p_orb_min, x_mass_const, prop. and valid. sig.
 
 
-def _circ(*, moving: bool, complex_: bool = False) -> object:
+def _circ(
+    *,
+    moving: bool,
+    complex_: bool = False,
+    score_mode_id: int = 0,
+    score_n_harmonics: int = 16,
+    kadane_biases: np.ndarray | None = None,
+) -> object:
     init = (
         dyn_circular_taylor.prune_circ_taylor_complex_dp_functs_init
         if complex_
         else dyn_circular_taylor.prune_circ_taylor_dp_functs_init
     )
+    biases = np.empty(0, dtype=np.float32) if kadane_biases is None else kadane_biases
     return init(
         _param_arr(5),
         CIRC_DPARAMS,
@@ -112,6 +132,9 @@ def _circ(*, moving: bool, complex_: bool = False) -> object:
         "aggressive",
         *CIRC_EXTRA,
         moving,
+        score_mode_id,
+        score_n_harmonics,
+        biases,
     )
 
 

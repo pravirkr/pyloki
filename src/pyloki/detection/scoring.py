@@ -200,71 +200,6 @@ def boxcar_snr_nd(
     return snrs.reshape((*data.shape[:-1], widths.size))
 
 
-@njit(
-    "f4[::1](f4[::1], f4[::1], i8[::1])",
-    cache=True,
-    fastmath=True,
-    locals={"size_w": types.f4},
-)
-def boxcar_snr_beta_1d(
-    ts_e: npt.NDArray[np.float32],
-    ts_v: npt.NDArray[np.float32],
-    widths: npt.NDArray[np.int64],
-) -> npt.NDArray[np.float32]:
-    """Compute the optimal SNR_beta for a 1D profile using boxcar filters.
-
-    Parameters
-    ----------
-    ts_e : np.ndarray
-        Weighted data profile P_w(b).
-    ts_v : np.ndarray
-        Weight/Variance profile P_s(b).
-    widths : np.ndarray
-        Widths of the boxcar filters.
-
-    Returns
-    -------
-    np.ndarray
-        Max SNR scores for the given widths.
-    """
-    size = len(ts_e)
-    n_widths = len(widths)
-    if size == 0 or n_widths == 0:
-        return np.zeros(n_widths, dtype=np.float32)
-    max_width = max(0, int(np.max(widths)))
-
-    # Allocate and compute prefix sums for BOTH arrays
-    prefix_w = np.empty(size + max_width, dtype=np.float32)
-    prefix_s = np.empty(size + max_width, dtype=np.float32)
-    circular_prefix_sum(ts_e, prefix_w)
-    circular_prefix_sum(ts_v, prefix_s)
-
-    total_w = prefix_w[size - 1]
-    total_s = prefix_s[size - 1]
-    snr = np.empty(n_widths, dtype=np.float32)
-    for iw, width in enumerate(widths):
-        if width <= 0 or width >= size:
-            snr[iw] = 0.0
-            continue
-        size_w = size - width
-        # Zero-mean template coefficients
-        height = np.sqrt(size_w / (size * width))
-        b = width * height / size_w
-        max_snr = -np.finfo(np.float32).max
-        for i in range(size):
-            dw = prefix_w[i + width] - prefix_w[i]
-            ds = prefix_s[i + width] - prefix_s[i]
-            num = (height + b) * dw - b * total_w
-            den2 = (height * height) * ds + (b * b) * (total_s - ds)
-            if den2 > 0:
-                current_snr = num / np.float32(np.sqrt(den2))
-                max_snr = max(max_snr, current_snr)
-
-        snr[iw] = max_snr
-
-    return snr
-
-
 @njit("f4[::1](f4[::1], f4[::1], i8[::1])", cache=True, fastmath=True)
 def boxcar_snr_glrt_1d(
     ts_e: npt.NDArray[np.float32],
@@ -376,6 +311,43 @@ def boxcar_snr_glrt_3d(
             widths,
         )
     return snrs
+
+
+@njit("f4[::1](f4[::1], f4[::1], i8[::1])", cache=True, fastmath=True)
+def boxcar_snr_beta_1d(
+    ts_e: npt.NDArray[np.float32],
+    ts_v: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Compute exact heteroscedastic GLRT SNR_beta for a 1D ``(E, V)`` profile.
+
+    Delegates to ``boxcar_snr_glrt_1d`` which marginalizes the unknown DC
+    background using the variance-weighted MLE ``(V_W / V_tot) * E_tot``.
+    """
+    return boxcar_snr_glrt_1d(ts_e, ts_v, widths)
+
+
+@njit(
+    "f4[:, ::1](f4[:, ::1], f4[:, ::1], i8[::1])",
+    cache=True,
+    fastmath=True,
+)
+def boxcar_snr_beta_2d(
+    ts_e_2d: npt.NDArray[np.float32],
+    ts_v_2d: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Compute exact heteroscedastic GLRT SNR_beta in parallel for 2D ``(E, V)``."""
+    return boxcar_snr_glrt_2d(ts_e_2d, ts_v_2d, widths)
+
+
+@njit("f4[:, ::1](f4[:, :, ::1], i8[::1])", cache=True, fastmath=True)
+def boxcar_snr_beta_3d(
+    folds_ev: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float32]:
+    """Compute exact heteroscedastic GLRT SNR_beta for ``(nfolds, 2, nbins)`` folds."""
+    return boxcar_snr_glrt_3d(folds_ev, widths)
 
 
 @njit("f4(f4[:, ::1], i8[::1])", cache=True, fastmath=True)
@@ -519,7 +491,7 @@ class MatchedFilter:
         self,
         widths: np.ndarray,
         nbins: int,
-        shift: int = 1,
+        shift: int | Sequence[int] = 1,
         kind: str = "boxcar",
     ) -> None:
         self.widths = widths
@@ -558,11 +530,23 @@ class MatchedFilter:
             raise ValueError(msg)
         return templates
 
-    def _init_shifts(self, shift: int) -> np.ndarray:
-        if shift <= 0:
-            msg = "Shift must be greater than 0."
+    def _init_shifts(self, shift: int | Sequence[int]) -> np.ndarray:
+        if isinstance(shift, (int, np.integer)):
+            if int(shift) <= 0:
+                msg = "Shift must be greater than 0."
+                raise ValueError(msg)
+            return np.full(self.ntemp, int(shift), dtype=np.int64)
+        shift_arr = np.asarray(shift, dtype=np.int64)
+        if shift_arr.ndim != 1 or shift_arr.size != self.ntemp:
+            msg = (
+                f"shift sequence length ({shift_arr.size}) must match "
+                f"ntemp ({self.ntemp})"
+            )
             raise ValueError(msg)
-        return np.full(self.ntemp, shift, dtype=np.int64)
+        if np.any(shift_arr <= 0):
+            msg = "All shift strides must be greater than 0."
+            raise ValueError(msg)
+        return np.ascontiguousarray(shift_arr, dtype=np.int64)
 
 
 @njit("f4[::1](f4[::1])", cache=True, fastmath=True)
@@ -1010,6 +994,38 @@ def kadane_circular_normalized_1d(
     return float(best_global_snr), best_global_w, best_global_start
 
 
+@njit(cache=True, fastmath=True)
+def _select_top_k_bins(
+    bin_best_z: npt.NDArray[np.float64],
+    bin_best_w: npt.NDArray[np.int64],
+    k_max: int,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], npt.NDArray[np.int64], int]:
+    """Select up to ``k_max`` highest positive primary windows across start bins."""
+    top_z = np.zeros(k_max, dtype=np.float64)
+    top_s = np.zeros(k_max, dtype=np.int64)
+    top_w = np.zeros(k_max, dtype=np.int64)
+    n_top = 0
+    for s in range(bin_best_z.size):
+        z_cur = bin_best_z[s]
+        if z_cur <= 0.0:
+            continue
+        if n_top < k_max:
+            pos = n_top
+            n_top += 1
+        else:
+            min_idx = 0
+            for k in range(1, k_max):
+                if top_z[k] < top_z[min_idx]:
+                    min_idx = k
+            if z_cur <= top_z[min_idx]:
+                continue
+            pos = min_idx
+        top_z[pos] = z_cur
+        top_s[pos] = s
+        top_w[pos] = bin_best_w[s]
+    return top_z, top_s, top_w, n_top
+
+
 @njit("f4(f4[::1], i8[::1])", cache=True, fastmath=True)
 def double_boxcar_snr_1d(
     norm_data: npt.NDArray[np.float32],
@@ -1032,9 +1048,11 @@ def double_boxcar_snr_1d(
     circular_prefix_sum(norm_data, psum)
     total_sum = float(psum[size - 1])
 
+    # Keep the best positive window per start bin, then select top-K (K=8)
+    # primary peaks so a single wide peak cannot crowd out disjoint partners.
+    bin_best_z = np.zeros(size, dtype=np.float64)
+    bin_best_w = np.zeros(size, dtype=np.int64)
     best_z1 = 0.0
-    best_s1 = 0
-    best_w1 = 0
     n_valid_widths = 0
 
     for iw in range(n_widths):
@@ -1049,10 +1067,11 @@ def double_boxcar_snr_1d(
         for i in range(size):
             dw = float(psum[i + w] - psum[i])
             z = hb * dw - b * total_sum
-            if z > best_z1:
-                best_z1 = z
-                best_s1 = (i + 1) % size
-                best_w1 = w
+            s = (i + 1) % size
+            if z > bin_best_z[s]:
+                bin_best_z[s] = z
+                bin_best_w[s] = w
+            best_z1 = max(best_z1, z)
 
     if n_valid_widths == 0:
         return 0.0
@@ -1064,41 +1083,51 @@ def double_boxcar_snr_1d(
 
     x_single = maths.chi_sq_minus_logsf_func(best_z1 * best_z1, 1) - lee_single
 
-    if best_w1 <= 0 or best_z1 <= 0.0:
+    if best_z1 <= 0.0:
         return float(maths.norm_isf_func(x_single))
+
+    top_z, top_s, top_w, n_top = _select_top_k_bins(
+        bin_best_z,
+        bin_best_w,
+        min(8, size),
+    )
 
     best_s2_chi2 = 0.0
     has_double = False
-    for iw in range(n_widths):
-        w2 = int(widths[iw])
-        if w2 <= 0 or w2 + best_w1 >= size:
-            continue
-        size_w2 = float(size - w2)
-        height2 = np.sqrt(size_w2 / (float(size) * float(w2)))
-        b2 = float(w2) * height2 / size_w2
-        hb2 = height2 + b2
-        gamma = -np.sqrt(
-            (float(best_w1) * float(w2)) / (float(size - best_w1) * size_w2),
-        )
-        if abs(gamma) >= 0.99:
-            continue
-        inv_denom = 1.0 / (1.0 - gamma * gamma)
-        for i in range(size):
-            s2 = (i + 1) % size
-            dist = (s2 - best_s1) % size
-            if dist < best_w1 or dist + w2 > size:
+    for k in range(n_top):
+        z1 = top_z[k]
+        s1 = int(top_s[k])
+        w1 = int(top_w[k])
+        for iw in range(n_widths):
+            w2 = int(widths[iw])
+            if w2 <= 0 or w2 + w1 >= size:
                 continue
-            dw2 = float(psum[i + w2] - psum[i])
-            z2 = hb2 * dw2 - b2 * total_sum
-            if z2 <= 0.0:
+            size_w2 = float(size - w2)
+            height2 = np.sqrt(size_w2 / (float(size) * float(w2)))
+            b2 = float(w2) * height2 / size_w2
+            hb2 = height2 + b2
+            gamma = -np.sqrt(
+                (float(w1) * float(w2)) / (float(size - w1) * size_w2),
+            )
+            if abs(gamma) >= 0.99:
                 continue
-            num1 = best_z1 - gamma * z2
-            num2 = z2 - gamma * best_z1
-            if num1 > 0.0 and num2 > 0.0:
-                s_val = (best_z1 * num1 + z2 * num2) * inv_denom
-                if s_val > best_s2_chi2:
-                    best_s2_chi2 = s_val
-                    has_double = True
+            inv_denom = 1.0 / (1.0 - gamma * gamma)
+            for i in range(size):
+                s2 = (i + 1) % size
+                dist = (s2 - s1) % size
+                if dist < w1 or dist + w2 > size:
+                    continue
+                dw2 = float(psum[i + w2] - psum[i])
+                z2 = hb2 * dw2 - b2 * total_sum
+                if z2 <= 0.0:
+                    continue
+                num1 = z1 - gamma * z2
+                num2 = z2 - gamma * z1
+                if num1 > 0.0 and num2 > 0.0:
+                    s_val = (z1 * num1 + z2 * num2) * inv_denom
+                    if s_val > best_s2_chi2:
+                        best_s2_chi2 = s_val
+                        has_double = True
 
     if has_double:
         x_double = 0.5 * best_s2_chi2 - lee_double
@@ -1189,6 +1218,86 @@ def kadane_circular_snr_2d(
         snr, _, _ = kadane_circular_normalized_1d(folds[i], biases)
         scores[i] = np.float32(snr)
     return scores
+
+
+SCORE_MODE_BOXCAR = 0
+SCORE_MODE_BOXCAR_GLRT = 1
+SCORE_MODE_DOUBLE_BOXCAR = 2
+SCORE_MODE_HARMONIC_Z2 = 3
+SCORE_MODE_COMBINED = 4
+SCORE_MODE_KADANE = 5
+
+_SCORE_MODE_TO_ID: dict[str, int] = {
+    "boxcar": SCORE_MODE_BOXCAR,
+    "boxcar_glrt": SCORE_MODE_BOXCAR_GLRT,
+    "double_boxcar": SCORE_MODE_DOUBLE_BOXCAR,
+    "harmonic_z2": SCORE_MODE_HARMONIC_Z2,
+    "combined": SCORE_MODE_COMBINED,
+    "kadane": SCORE_MODE_KADANE,
+}
+
+
+def score_mode_to_id(mode: str) -> int:
+    """Map a ``ScoreMode`` string to its integer ID for ``@njit`` EP dispatch."""
+    if mode not in _SCORE_MODE_TO_ID:
+        msg = (
+            f"Unsupported hot-loop score_mode {mode!r}; "
+            f"expected one of {sorted(_SCORE_MODE_TO_ID)}"
+        )
+        raise ValueError(msg)
+    return _SCORE_MODE_TO_ID[mode]
+
+
+@njit(
+    "f4[::1](f4[:, :, ::1], i8[::1], i8, i8, f4[::1])",
+    cache=True,
+    fastmath=True,
+)
+def score_batch_ev_njit(
+    folds_ev: npt.NDArray[np.float32],
+    widths: npt.NDArray[np.int64],
+    mode_id: int,
+    n_harmonics: int,
+    kadane_biases: npt.NDArray[np.float32],
+) -> npt.NDArray[np.float32]:
+    """Dispatch ``(nfolds, 2, nbins)`` scoring inside ``@njit`` EP loops."""
+    if mode_id == SCORE_MODE_BOXCAR:
+        return snr_score_batch_func(folds_ev, widths)
+    if mode_id == SCORE_MODE_BOXCAR_GLRT:
+        return snr_glrt_score_batch_func(folds_ev, widths)
+    if mode_id == SCORE_MODE_HARMONIC_Z2:
+        return harmonic_summing_snr_2d(folds_ev, n_harmonics)
+    if mode_id == SCORE_MODE_COMBINED:
+        return combined_score_2d(folds_ev, widths, n_harmonics)
+    batch_size, _, nbins = folds_ev.shape
+    norm = np.empty((batch_size, nbins), dtype=np.float32)
+    for i in range(batch_size):
+        for j in range(nbins):
+            v = folds_ev[i, 1, j]
+            if v > np.float32(0.0):
+                norm[i, j] = folds_ev[i, 0, j] / np.sqrt(v)
+            else:
+                norm[i, j] = np.float32(0.0)
+    if mode_id == SCORE_MODE_DOUBLE_BOXCAR:
+        return double_boxcar_snr_2d(norm, widths)
+    return kadane_circular_snr_2d(norm, kadane_biases)
+
+
+@njit(
+    "f4[::1](c8[:, :, ::1], i8[::1], i8, i8, f4[::1])",
+    cache=True,
+    fastmath=True,
+)
+def score_batch_ev_complex_njit(
+    folds_ev: npt.NDArray[np.complex64],
+    widths: npt.NDArray[np.int64],
+    mode_id: int,
+    n_harmonics: int,
+    kadane_biases: npt.NDArray[np.float32],
+) -> npt.NDArray[np.float32]:
+    """Dispatch complex FFT-format ``(nfolds, 2, nbins//2+1)`` scoring in ``@njit``."""
+    folds_t = np.fft.irfft(folds_ev).astype(np.float32)
+    return score_batch_ev_njit(folds_t, widths, mode_id, n_harmonics, kadane_biases)
 
 
 ScoreMode = Literal[

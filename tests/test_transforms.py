@@ -395,7 +395,7 @@ class TestTaylorToCircular:
         return np.array(
             [
                 np.sqrt(w_sq),
-                freq * (1 - jerk / (w_sq * C_VAL)),
+                freq / (1.0 + jerk / (w_sq * C_VAL)),
                 -accel / (w_sq * C_VAL),
                 -jerk / (w_sq**1.5 * C_VAL),
             ]
@@ -420,7 +420,7 @@ class TestTaylorToCircular:
         np.testing.assert_allclose(out[0, 0], self.OMEGA, rtol=1e-12)
         np.testing.assert_allclose(
             out[1, 0],
-            self.FREQ * (1 + velocity / C_VAL),
+            self.FREQ / (1.0 - velocity / C_VAL),
             rtol=1e-12,
         )
         np.testing.assert_allclose(

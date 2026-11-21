@@ -183,3 +183,91 @@ def test_even_n_z2m_excludes_nyquist_and_compare_handles_target_le_fap() -> None
     )
     assert cmp_res.snr_min_ffa == 0.0
     assert cmp_res.snr_min_fft == 0.0
+
+
+def test_scalloping_eta_bin_sigma_eq_and_distinct_fap_fft() -> None:
+    """Verify sinc^2 scalloping, eta_bin, chi2_to_sigma_eq, and distinct fap_fft."""
+    # Exact sinc^2 scalloping loss at 0, 0.5, and uniform mean ~0.7737
+    assert float(analytical.fft_scalloping_loss(0.0)) == pytest.approx(1.0)
+    assert float(analytical.fft_scalloping_loss(0.5)) == pytest.approx(
+        (2.0 / np.pi) ** 2, rel=1e-12
+    )
+    grid = np.linspace(-0.5, 0.5, 4001)
+    assert float(np.mean(analytical.fft_scalloping_loss(grid))) == pytest.approx(
+        0.7737, abs=1e-3
+    )
+
+    # eta_bin increases with nbins and stays in (0, 1]
+    eta_16 = analytical.eta_bin_loss(0.05, 16)
+    eta_128 = analytical.eta_bin_loss(0.05, 128)
+    assert 0.0 < eta_16 < eta_128 <= 1.0
+
+    # chi2_to_sigma_eq maps high chi2 to positive sigma and penalizes trials
+    s1 = analytical.chi2_to_sigma_eq(40.0, df=8, n_trials=1)
+    s100 = analytical.chi2_to_sigma_eq(40.0, df=8, n_trials=100)
+    assert s1 > s100 > 2.0
+
+    # Distinct fap_fft tighter than fap increases snr_min_fft
+    c_same = analytical.compare_ffa_vs_fft_flux_ratio(0.05, 8, fap=1e-5)
+    c_tight = analytical.compare_ffa_vs_fft_flux_ratio(0.05, 8, fap=1e-5, fap_fft=1e-9)
+    assert c_tight.snr_min_fft > c_same.snr_min_fft
+    assert c_tight.snr_min_ffa == pytest.approx(c_same.snr_min_ffa)
+
+
+def test_truncated_pareto_heavy_tail_exact_mean_and_finite_kl() -> None:
+    """Truncated Pareto with s_max preserves unit norm, exact mean, and finite D_KL."""
+    mean_s = 1.5
+    s_max = 30.0
+    for beta in (1.5, 2.0, 2.5, 3.0):
+        a0 = heavy_tail.pareto_a0(mean_s, beta, s_max=s_max)
+        assert 0.0 < a0 < mean_s < s_max
+        s_grid = np.geomspace(a0, s_max, 8192)
+        ps = heavy_tail.pareto_signal_pdf(s_grid, mean_s, beta, s_max=s_max)
+        norm = float(np.trapezoid(ps, s_grid))
+        est_mean = float(np.trapezoid(s_grid * ps, s_grid))
+        assert norm == pytest.approx(1.0, rel=1e-3)
+        assert est_mean == pytest.approx(mean_s, rel=1e-3)
+
+        model = heavy_tail.HeavyTailLikelihood(
+            distribution="pareto",
+            mean_s=mean_s,
+            shape_param=beta,
+            sigma_n=1.0,
+            x_range=(-8.0, 45.0),
+            s_max=s_max,
+        )
+        dkl = model.kl_divergence()
+        assert np.isfinite(dkl)
+        assert dkl > model.linear_kl_baseline()
+
+
+def test_spectral_index_sensitivity_increase_and_limits() -> None:
+    """Verify wideband spectral-index SNR^2 gain and removable singularities."""
+    # Flat band (A=1) or flat spectrum (alpha=0) gives unity gain
+    assert analytical.spectral_index_sensitivity_increase(1.0, -2.0) == pytest.approx(
+        1.0
+    )
+    assert analytical.spectral_index_sensitivity_increase(5.0, 0.0) == pytest.approx(
+        1.0
+    )
+
+    # Removable singularities at alpha = -1 and alpha = -0.5 match analytical limits
+    a = 4.0
+    g_m1 = analytical.spectral_index_sensitivity_increase(a, -1.0)
+    expected_m1 = ((a - 1.0) ** 2) / (a * (np.log(a) ** 2))
+    assert g_m1 == pytest.approx(expected_m1, rel=1e-12)
+    assert g_m1 == pytest.approx(
+        analytical.spectral_index_sensitivity_increase(a, -1.0 + 1e-6),
+        rel=1e-5,
+    )
+
+    g_m05 = analytical.spectral_index_sensitivity_increase(a, -0.5)
+    expected_m05 = ((a - 1.0) * np.log(a)) / (4.0 * ((np.sqrt(a) - 1.0) ** 2))
+    assert g_m05 == pytest.approx(expected_m05, rel=1e-12)
+    assert g_m05 == pytest.approx(
+        analytical.spectral_index_sensitivity_increase(a, -0.5 - 1e-6),
+        rel=1e-5,
+    )
+
+    # Ultra-wideband steep-spectrum MSP (A=5.7, alpha=-2.0) achieves >30% SNR^2 gain
+    assert analytical.spectral_index_sensitivity_increase(5.7, -2.0) > 1.30
