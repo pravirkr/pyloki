@@ -17,6 +17,7 @@ import numpy as np
 from numba import njit
 from scipy.interpolate import CubicSpline
 
+from pyloki.utils import psr_utils
 from pyloki.utils.kepler_math import keplerian_z
 from pyloki.utils.misc import C_VAL
 
@@ -487,3 +488,71 @@ def svd_resolve_batch(
             pbin = 0.0
         phase_out[i] = pbin
     return acc_out, freq_out, phase_out
+
+
+@njit(cache=True)
+def svd_resolve_to_pffa_batch(
+    coords_batch: np.ndarray,
+    f0_batch: np.ndarray,
+    t_ref: float,
+    t_eval: float,
+    t_axis: np.ndarray,
+    v_phase: np.ndarray,
+    v_vel: np.ndarray,
+    v_acc: np.ndarray,
+    tau_tol: float,
+    param_grid_count_init: np.ndarray,
+    param_limits: np.ndarray,
+    nbins: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve SVD leaves directly onto P-FFA grid ``(param_idx_2d, phase_bin)``."""
+    acc_out, freq_out, phase_out = svd_resolve_batch(
+        coords_batch,
+        f0_batch,
+        t_ref,
+        t_eval,
+        t_axis,
+        v_phase,
+        v_vel,
+        v_acc,
+        tau_tol,
+        nbins,
+    )
+    param_idx = psr_utils.get_nearest_indices_2d_batch(
+        acc_out,
+        freq_out,
+        param_grid_count_init,
+        param_limits,
+    )
+    return param_idx, phase_out
+
+
+def smart_svd_covering(
+    v_phase: np.ndarray,
+    novelties: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Rotate an SVD subspace to align with novelty-cloud covariance eigenvectors.
+
+    Finds an orthogonal matrix ``Q`` in ``span(v_phase)`` diagonalizing the
+    empirical novelty covariance so axis-aligned lattice quantization minimizes
+    box-covering redundancy. Returns ``(Q, v_rot, novelties_rot, delta_rot)``.
+    """
+    vp = np.asarray(v_phase, dtype=np.float64)
+    nov = np.asarray(novelties, dtype=np.float64)
+    rank = vp.shape[0]
+    if rank <= 1 or nov.shape[0] <= 1:
+        q = np.eye(rank, dtype=np.float64)
+        rms = np.std(vp, axis=1)
+        delta = np.where(rms > 1e-12, 1.0 / rms, 1.0)
+        return q, vp.copy(), nov.copy(), delta
+
+    centered = nov - np.mean(nov, axis=0, keepdims=True)
+    cov = (centered.T @ centered) / max(1, nov.shape[0] - 1)
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    order = np.argsort(eigvals)[::-1]
+    q = np.ascontiguousarray(eigvecs[:, order], dtype=np.float64)
+    v_rot = np.ascontiguousarray(q.T @ vp, dtype=np.float64)
+    nov_rot = np.ascontiguousarray(nov @ q, dtype=np.float64)
+    rms_rot = np.std(v_rot, axis=1)
+    delta_rot = np.where(rms_rot > 1e-12, 1.0 / rms_rot, 1.0)
+    return q, v_rot, nov_rot, delta_rot

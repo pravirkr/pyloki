@@ -25,7 +25,8 @@ Modules under [`src/pyloki/`](../src/pyloki) follow a strict layered layout
   kernels and dynamic pruning threshold scheme generation and analysis
   (`DynamicThresholdScheme`, `schedule_survive_probs`).
 - `dynamic/` (`dyn_pffa`, `dyn_poly_taylor`, `dyn_poly_cheby`,
-  `dyn_circular_taylor`): Numba `structref` function bundles (`*DPFuncts`)
+  `dyn_circular_taylor`, `dyn_svd`): Numba `structref` function bundles
+  (`*DPFuncts`), `run_circular_4d_continuation`, and `SVDPruningRunner`
   binding `PulsarSearchConfig` parameters to stateless `core` and `detection`
   kernels.
 - Top-level and supporting modules: `config.py` (`ParamLimits`,

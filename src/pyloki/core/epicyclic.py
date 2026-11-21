@@ -33,8 +33,12 @@ class ValidatorConfig:
     x_max: float = 5.0
     ecc_max: float = 0.25
     v_max: float | None = None
+    excursion_sigma: float = 3.2
+    f_search_bounds: tuple[float, float] | None = None
+    deriv_bounds: tuple[float, ...] | None = None
     n_colloc: int = 20
     svd_rcond: float = 1e-10
+    min_level: int = 2
 
     @property
     def max_residual_m(self) -> float:
@@ -95,7 +99,7 @@ class EpicyclicProjector:
         t_seg: float,
         config: ValidatorConfig,
         *,
-        max_omega_points: int = 256,
+        max_omega_points: int | None = None,
     ) -> EpicyclicProjector:
         """Build interior collocation grid and thin-SVD residual projectors."""
         lo = t_start + 1.5 * t_seg
@@ -111,10 +115,9 @@ class EpicyclicProjector:
         if config.omega_max <= config.omega_min:
             omega_grid = np.array([config.omega_min], dtype=np.float64)
         else:
-            n_om = min(
-                max_omega_points,
-                max(2, math.ceil((config.omega_max - config.omega_min) / d_om) + 1),
-            )
+            n_om = max(2, math.ceil((config.omega_max - config.omega_min) / d_om) + 1)
+            if max_omega_points is not None:
+                n_om = min(max_omega_points, n_om)
             omega_grid = np.linspace(
                 config.omega_min,
                 config.omega_max,
@@ -155,16 +158,96 @@ class EpicyclicProjector:
         z_batch: npt.ArrayLike,
         *,
         v_batch: npt.ArrayLike | None = None,
+        f0_batch: npt.ArrayLike | None = None,
+        deriv_batches: tuple[npt.ArrayLike, ...] | None = None,
     ) -> npt.NDArray[np.bool_]:
-        """Return boolean mask of trajectories passing the epicyclic residual bound."""
+        """Return boolean mask of trajectories passing epicyclic & physical bounds."""
         z = np.ascontiguousarray(z_batch, dtype=np.float64)
         if z.ndim != 2 or z.shape[1] != self.t_colloc.size:
             msg = f"z_batch must have shape (N, {self.t_colloc.size}), got {z.shape}"
             raise ValueError(msg)
-        residuals = epicyclic_min_residual_batch(z, self.projectors)
-        valid = residuals <= self.config.max_residual_m
-        if v_batch is not None and self.config.v_max is not None:
+        n_batch = z.shape[0]
+        valid = np.ones(n_batch, dtype=np.bool_)
+        if n_batch == 0:
+            return valid
+
+        # 1. Cheap O(M) excursion pre-filter before projector matrix multiplies
+        if self.config.excursion_sigma > 0.0:
+            med = np.median(z, axis=1)
+            std = np.std(z, axis=1)
+            max_exc = np.max(z, axis=1) - med
+            min_exc = med - np.min(z, axis=1)
+            thr_exc = self.config.excursion_sigma * std
+            # Constant / near-zero trajectories (std == 0) always pass
+            non_flat = std > 1e-15
+            valid &= (~non_flat) | ((max_exc <= thr_exc) & (min_exc <= thr_exc))
+
+        # 2. Velocity excursion & search-frequency band overlap checks
+        if v_batch is not None:
             v = np.asarray(v_batch, dtype=np.float64)
-            v_span = np.max(v, axis=1) - np.min(v, axis=1)
-            valid &= v_span <= (2.0 * self.config.v_max)
+            v_min = np.min(v, axis=1)
+            v_max = np.max(v, axis=1)
+            if self.config.v_max is not None:
+                valid &= (v_max - v_min) <= (2.0 * self.config.v_max)
+            if self.config.f_search_bounds is not None and f0_batch is not None:
+                f0 = np.asarray(f0_batch, dtype=np.float64)
+                f_lo, f_hi = self.config.f_search_bounds
+                f_traj_lo = f0 * (1.0 - v_max / C_VAL)
+                f_traj_hi = f0 * (1.0 - v_min / C_VAL)
+                valid &= (f_traj_hi >= f_lo) & (f_traj_lo <= f_hi)
+
+        # 3. Higher-derivative (r >= 2) infinity-norm bounds
+        if deriv_batches is not None and self.config.deriv_bounds is not None:
+            for d_arr, bound in zip(
+                deriv_batches,
+                self.config.deriv_bounds,
+                strict=False,
+            ):
+                if bound > 0.0:
+                    d_vals = np.asarray(d_arr, dtype=np.float64)
+                    valid &= np.max(np.abs(d_vals), axis=1) <= bound
+
+        # 4. Run O(n_omega * M^2) SVD projector only on surviving candidates
+        surv_idx = np.flatnonzero(valid)
+        if surv_idx.size > 0:
+            residuals = epicyclic_min_residual_batch(
+                np.ascontiguousarray(z[surv_idx], dtype=np.float64),
+                self.projectors,
+            )
+            valid[surv_idx] = residuals <= self.config.max_residual_m
         return valid
+
+
+def evaluate_taylor_leaves_on_grid(
+    leaves_batch: np.ndarray,
+    t_ref: float,
+    t_colloc: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[np.ndarray, ...]]:
+    """Evaluate Taylor leaves ``(N, n_order+2, 2)`` on ``t_colloc``.
+
+    Returns ``(z_batch, v_batch, f0_batch, deriv_batches)`` where
+    ``deriv_batches[r - 2]`` is the ``r``-th time derivative of ``z(t)`` for
+    ``r >= 2``.
+    """
+    n_batch, n_slots, _ = leaves_batch.shape
+    n_order = n_slots - 2
+    dt = np.asarray(t_colloc, dtype=np.float64) - float(t_ref)
+    m_pts = dt.size
+    z = np.zeros((n_batch, m_pts), dtype=np.float64)
+    v = np.zeros((n_batch, m_pts), dtype=np.float64)
+    f0 = np.asarray(leaves_batch[:, n_order - 1, 0], dtype=np.float64)
+
+    # Descending Taylor derivatives: slot (n_order - k) holds d_k for k = 2..n_order
+    for k in range(2, n_order + 1):
+        dk = leaves_batch[:, n_order - k, 0][:, None]
+        z += dk * (dt[None, :] ** k) / math.factorial(k)
+        v += dk * (dt[None, :] ** (k - 1)) / math.factorial(k - 1)
+
+    derivs: list[np.ndarray] = []
+    for r in range(2, n_order + 1):
+        dr = np.zeros((n_batch, m_pts), dtype=np.float64)
+        for k in range(r, n_order + 1):
+            dk = leaves_batch[:, n_order - k, 0][:, None]
+            dr += dk * (dt[None, :] ** (k - r)) / math.factorial(k - r)
+        derivs.append(dr)
+    return z, v, f0, tuple(derivs)

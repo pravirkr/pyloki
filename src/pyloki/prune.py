@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from multiprocessing.managers import DictProxy
     from queue import Queue
 
+    from pyloki.core.epicyclic import ValidatorConfig
     from pyloki.ffa import DynamicProgramming
     from pyloki.utils.world_tree import WorldTree, WorldTreeComplex
 
@@ -405,6 +406,7 @@ class Pruning:
         mid_tree_report_snr: float | None = None,
         mid_tree_min_level: int = 1,
         mid_tree_max_keep: int = 16,
+        validator_cfg: ValidatorConfig | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self._dyp = dyp
@@ -412,11 +414,13 @@ class Pruning:
         self._max_sugg = max_sugg
         self._batch_size = batch_size
         self._intermediate_k = intermediate_k
+        self._poly_basis = poly_basis
         self._use_moving_grid = use_moving_grid
         self._mid_tree_report_snr = mid_tree_report_snr
         self._mid_tree_min_level = max(1, int(mid_tree_min_level))
         self._mid_tree_max_keep = max(1, int(mid_tree_max_keep))
         self._mid_tree_checkpoints: list[MidTreeCheckpoint] = []
+        self._validator_cfg = validator_cfg
         self._setup_pruning(poly_basis, use_moving_grid)
         self._logger = logger or get_logger(__name__)
 
@@ -604,6 +608,13 @@ class Pruning:
             get_leaves=lambda: self.world_tree.size_lb,
         ):
             self.execute_iter(log_file)
+            if (
+                self._validator_cfg is not None
+                and self._validator_cfg.enabled
+                and self.prune_level >= self._validator_cfg.min_level
+                and self.world_tree.size > 0
+            ):
+                self._apply_epicyclic_validator()
             # Should we reintegrate survivors at this level?
             if ascend_levels_set is not None and self.prune_level in ascend_levels_set:
                 self._do_ascend()
@@ -774,6 +785,72 @@ class Pruning:
                 leaves=np.asarray(reported_leaves, dtype=np.float64),
             ),
         )
+
+    def _apply_epicyclic_validator(self) -> None:
+        """Filter surviving polynomial leaves using the O(e) epicyclic projector."""
+        if self._validator_cfg is None or not self._validator_cfg.enabled:
+            return
+        valid_n = int(self.world_tree.valid_size)
+        if valid_n == 0:
+            return
+        from pyloki.core.epicyclic import (  # noqa: PLC0415
+            EpicyclicProjector,
+            evaluate_taylor_leaves_on_grid,
+        )
+        from pyloki.utils import transforms  # noqa: PLC0415
+
+        seg_indices = np.array(
+            [self.scheme.get_segment_idx(i) for i in range(self.prune_level + 1)],
+            dtype=np.int64,
+        )
+        t_start = float(np.min(seg_indices)) * float(self.dyp.tseg)
+        t_end = float(np.max(seg_indices) + 1) * float(self.dyp.tseg)
+        projector = EpicyclicProjector.build(
+            t_start,
+            t_end,
+            float(self.dyp.tseg),
+            self._validator_cfg,
+        )
+        coord_end = self.scheme.get_previous_coord(
+            self.prune_level + 1,
+            self.use_moving_grid,
+        )
+        leaves = np.ascontiguousarray(
+            self.world_tree.leaves[:valid_n],
+            dtype=np.float64,
+        )
+        if self._poly_basis == "chebyshev":
+            leaves_taylor = leaves.copy()
+            leaves_taylor[:, :-1, :] = transforms.cheby_to_taylor_full(
+                leaves[:, :-1, :],
+                coord_end[1],
+            )
+            t_ref = coord_end[0]
+        else:
+            leaves_taylor = leaves
+            t_ref = coord_end[0]
+
+        z_b, v_b, f0_b, derivs = evaluate_taylor_leaves_on_grid(
+            leaves_taylor,
+            t_ref,
+            projector.t_colloc,
+        )
+        keep_mask = projector.filter_trajectories(
+            z_b,
+            v_batch=v_b,
+            f0_batch=f0_b,
+            deriv_batches=derivs,
+        )
+        if bool(np.all(keep_mask)):
+            return
+        keep_idx = np.flatnonzero(keep_mask)
+        new_n = int(keep_idx.size)
+        if new_n > 0:
+            self.world_tree.leaves[:new_n] = self.world_tree.leaves[keep_idx]
+            self.world_tree.folds[:new_n] = self.world_tree.folds[keep_idx]
+            self.world_tree.scores[:new_n] = self.world_tree.scores[keep_idx]
+            self.world_tree.backtracks[:new_n] = self.world_tree.backtracks[keep_idx]
+        self.world_tree.valid_size = new_n
 
     def trace_integration_path(
         self,

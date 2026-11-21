@@ -222,18 +222,21 @@ def taylor_to_circular_full(param_sets: np.ndarray) -> np.ndarray:
     omega_sq = -snap / accel
     out = np.empty_like(param_sets)
     out[:, 0, 0] = np.sqrt(omega_sq)
-    # Invert f_obs = f0 * (1 - v_orb / c) with v_orb = -jerk / omega_sq
-    out[:, 1, 0] = freq * (1 - jerk / (omega_sq * C_VAL))
+    # Exact inversion of f_obs = f0 * (1 - v_orb / c) with v_orb = -jerk / omega_sq
+    doppler_denom = 1.0 + jerk / (omega_sq * C_VAL)
+    out[:, 1, 0] = freq / doppler_denom
     out[:, 2, 0] = -accel / (omega_sq * C_VAL)
     out[:, 3, 0] = -jerk / (omega_sq * np.sqrt(omega_sq) * C_VAL)
     d_omega_sq = np.sqrt(
         (dsnap / accel) ** 2 + ((snap * daccel) / (accel**2)) ** 2,
     )
     out[:, 0, 1] = 0.5 * d_omega_sq / np.sqrt(omega_sq)
+    inv_denom = 1.0 / doppler_denom
+    inv_denom_sq = inv_denom * inv_denom
     out[:, 1, 1] = np.sqrt(
-        ((1 - jerk / (omega_sq * C_VAL)) * dfreq) ** 2
-        + ((freq / (omega_sq * C_VAL)) * djerk) ** 2
-        + ((freq * jerk / (omega_sq**2 * C_VAL)) * d_omega_sq) ** 2,
+        (inv_denom * dfreq) ** 2
+        + ((freq * inv_denom_sq / (omega_sq * C_VAL)) * djerk) ** 2
+        + ((freq * jerk * inv_denom_sq / (omega_sq**2 * C_VAL)) * d_omega_sq) ** 2,
     )
     out[:, 2, 1] = np.abs(out[:, 2, 0]) * np.sqrt(
         (2 * daccel / accel) ** 2 + (dsnap / snap) ** 2,
