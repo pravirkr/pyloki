@@ -402,6 +402,9 @@ class Pruning:
         intermediate_k: int = 1,
         *,
         use_moving_grid: bool = True,
+        mid_tree_report_snr: float | None = None,
+        mid_tree_min_level: int = 1,
+        mid_tree_max_keep: int = 16,
         logger: logging.Logger | None = None,
     ) -> None:
         self._dyp = dyp
@@ -410,6 +413,10 @@ class Pruning:
         self._batch_size = batch_size
         self._intermediate_k = intermediate_k
         self._use_moving_grid = use_moving_grid
+        self._mid_tree_report_snr = mid_tree_report_snr
+        self._mid_tree_min_level = max(1, int(mid_tree_min_level))
+        self._mid_tree_max_keep = max(1, int(mid_tree_max_keep))
+        self._mid_tree_checkpoints: list[MidTreeCheckpoint] = []
         self._setup_pruning(poly_basis, use_moving_grid)
         self._logger = logger or get_logger(__name__)
 
@@ -466,6 +473,11 @@ class Pruning:
         return self._world_tree
 
     @property
+    def mid_tree_checkpoints(self) -> list[MidTreeCheckpoint]:
+        """Non-destructive mid-tree significance checkpoints."""
+        return self._mid_tree_checkpoints
+
+    @property
     def pstats(self) -> PruneStatsCollection:
         return self._pstats
 
@@ -510,6 +522,7 @@ class Pruning:
         self._world_tree = self.prune_funcs.seed(fold_segment, coord_init)
         # Per-level backtracks for all survivors (integration path reconstruction)
         self._backtrack_hist: list[np.ndarray] = []
+        self._mid_tree_checkpoints = []
         self._best_intermediate_arr = np.zeros(
             (self.dyp.nsegments - 1, self.intermediate_k),
             dtype=np.dtype(
@@ -594,6 +607,12 @@ class Pruning:
             # Should we reintegrate survivors at this level?
             if ascend_levels_set is not None and self.prune_level in ascend_levels_set:
                 self._do_ascend()
+            if (
+                self._mid_tree_report_snr is not None
+                and self.prune_level >= self._mid_tree_min_level
+                and self.world_tree.size > 0
+            ):
+                self._record_mid_tree_checkpoint()
 
         # Final ascend if needed
         if ascend_levels_set is None or self.prune_level not in ascend_levels_set:
@@ -709,6 +728,51 @@ class Pruning:
             segment_coords,
             coord_end,
             self.batch_size,
+        )
+
+    def _record_mid_tree_checkpoint(self) -> None:
+        """Non-destructively snapshot surviving leaves above ``mid_tree_report_snr``."""
+        if self._mid_tree_report_snr is None:
+            return
+        valid_n = int(self.world_tree.valid_size)
+        if valid_n == 0:
+            return
+        scores = np.asarray(self.world_tree.scores[:valid_n], dtype=np.float32)
+        above = np.flatnonzero(scores >= self._mid_tree_report_snr)
+        if above.size == 0:
+            return
+        order = above[np.argsort(scores[above])[::-1][: self._mid_tree_max_keep]]
+        top_scores = scores[order].copy()
+        top_leaves = np.ascontiguousarray(
+            self.world_tree.leaves[order],
+            dtype=np.float64,
+        )
+        coord_end = self.scheme.get_previous_coord(
+            self.prune_level + 1,
+            self.use_moving_grid,
+        )
+        coord_report = self.scheme.get_report_coord(self.use_moving_grid)
+        reported_leaves = self.prune_funcs.report(
+            top_leaves,
+            coord_report,
+            coord_end,
+        )
+        seg_indices = np.array(
+            [self.scheme.get_segment_idx(i) for i in range(self.prune_level + 1)],
+            dtype=np.int64,
+        )
+        t_start = float(np.min(seg_indices)) * float(self.dyp.tseg)
+        t_end = float(np.max(seg_indices) + 1) * float(self.dyp.tseg)
+        self._mid_tree_checkpoints.append(
+            MidTreeCheckpoint(
+                level=int(self.prune_level),
+                n_segments_integrated=int(seg_indices.size),
+                t_start=t_start,
+                t_end=t_end,
+                segment_indices=seg_indices,
+                scores=top_scores,
+                leaves=np.asarray(reported_leaves, dtype=np.float64),
+            ),
         )
 
     def trace_integration_path(
@@ -1260,4 +1324,156 @@ def verify_resolve_stability(
         param_idx_diffs=pidx_diffs,
         phase_shift_diffs=pshift_diffs,
         is_stable=(max_pidx <= max_grid_step_tol) and (max_pshift <= max_phase_tol),
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class MidTreeCheckpoint:
+    """Non-destructive mid-tree checkpoint for eclipsing/transient tracks."""
+
+    level: int
+    n_segments_integrated: int
+    t_start: float
+    t_end: float
+    segment_indices: np.ndarray
+    scores: np.ndarray
+    leaves: np.ndarray
+
+
+@dataclass(frozen=True, kw_only=True)
+class BranchFanoutReport:
+    """Single-level child-branch fan-out inspection result from ``prune_suggestion``."""
+
+    level: int
+    seg_idx: int
+    parent_leaf: np.ndarray
+    child_leaves: np.ndarray
+    child_origins: np.ndarray
+    param_indices: np.ndarray
+    phase_shifts: np.ndarray
+    scores: np.ndarray
+    surviving_mask: np.ndarray
+    threshold: float
+
+
+def prune_suggestion(
+    dyp: DynamicProgramming,
+    param_vec: np.ndarray,
+    *,
+    level: int = 1,
+    ref_seg: int = 0,
+    poly_basis: str = "taylor",
+    use_moving_grid: bool = True,
+    threshold: float = 0.0,
+) -> BranchFanoutReport:
+    """Inspect single-level child-branch fan-out for one EP hypothesis.
+
+    Advances ``param_vec`` deterministically from ``ref_seg`` to ``level - 1``,
+    then executes ``branch -> validate -> resolve -> load -> shift_add -> score``
+    at ``level`` and returns all generated child branches with their scores and
+    survival mask relative to ``threshold``.
+    """
+    from pyloki.utils import transforms  # noqa: PLC0415
+
+    if not 1 <= level < dyp.nsegments:
+        msg = f"level must be in [1, {dyp.nsegments - 1}], got {level}"
+        raise ValueError(msg)
+
+    prn = Pruning(
+        dyp=dyp,
+        threshold_scheme=np.zeros(dyp.nsegments, dtype=np.float32),
+        poly_basis=poly_basis,
+        use_moving_grid=use_moving_grid,
+    )
+    scheme = MiddleOutScheme(
+        nsegments=dyp.nsegments,
+        ref_idx=ref_seg,
+        tsegment=dyp.tseg,
+        stride=1,
+    )
+    coord_init = scheme.get_coord(0)
+    cur_leaf = _build_single_leaf(dyp, param_vec, poly_basis, coord_init)
+
+    init_pidx, _ = prn.prune_funcs.resolve(cur_leaf, coord_init, coord_init, coord_init)
+    fold_seg0 = prn.prune_funcs.load(dyp.fold, ref_seg)
+    cur_fold = prn.load_func(fold_seg0, init_pidx)
+
+    orig0 = np.array([0], dtype=np.int64)
+    for lvl in range(1, level):
+        seg_i = scheme.get_segment_idx(lvl)
+        c_prev = scheme.get_previous_coord(lvl, use_moving_grid)
+        c_cur = scheme.get_current_coord(lvl, use_moving_grid)
+        c_next = scheme.get_coord(lvl)
+        c_add = scheme.get_segment_coord(lvl)
+        if poly_basis == "chebyshev" and c_cur != c_prev:
+            cur_leaf = cur_leaf.copy()
+            cur_leaf[:, :-1] = transforms.shift_cheby_full(
+                cur_leaf[:, :-1],
+                c_cur,
+                c_prev,
+                dyp.cfg.tiling_strategy,
+            )
+        branched_i, _ = prn.prune_funcs.branch(cur_leaf, c_cur, c_prev)
+        if len(branched_i) > 0:
+            # Keep the child closest to the tracked parameter center so error bars
+            # shrink consistently with the pruning tree level.
+            diffs = branched_i[:, :-2, 0] - cur_leaf[0, :-2, 0]
+            best_c = int(np.argmin(np.sum(diffs * diffs, axis=1)))
+            cur_leaf = np.ascontiguousarray(branched_i[best_c : best_c + 1])
+        pidx_i, pshift_i = prn.prune_funcs.resolve(cur_leaf, c_add, c_cur, coord_init)
+        loaded_i = prn.load_func(prn.prune_funcs.load(dyp.fold, seg_i), pidx_i)
+        cur_fold = prn.prune_funcs.shift_add(loaded_i, pshift_i, cur_fold, orig0)
+        cur_leaf = prn.prune_funcs.transform(cur_leaf, c_next, c_cur)
+
+    # Single-level fan-out at ``level``
+    seg_idx = scheme.get_segment_idx(level)
+    coord_prev = scheme.get_previous_coord(level, use_moving_grid)
+    coord_cur = scheme.get_current_coord(level, use_moving_grid)
+    coord_add = scheme.get_segment_coord(level)
+
+    child_leaves, child_origins = prn.prune_funcs.branch(
+        cur_leaf,
+        coord_cur,
+        coord_prev,
+    )
+    child_leaves, child_origins = prn.prune_funcs.validate(
+        child_leaves,
+        child_origins,
+        coord_cur,
+    )
+    if len(child_leaves) == 0:
+        return BranchFanoutReport(
+            level=level,
+            seg_idx=seg_idx,
+            parent_leaf=cur_leaf[0].copy(),
+            child_leaves=child_leaves,
+            child_origins=child_origins,
+            param_indices=np.empty((0, init_pidx.shape[1]), dtype=np.int64),
+            phase_shifts=np.empty(0, dtype=np.float64),
+            scores=np.empty(0, dtype=np.float32),
+            surviving_mask=np.empty(0, dtype=bool),
+            threshold=float(threshold),
+        )
+
+    pidx, pshift = prn.prune_funcs.resolve(
+        child_leaves,
+        coord_add,
+        coord_cur,
+        coord_init,
+    )
+    fold_seg = prn.prune_funcs.load(dyp.fold, seg_idx)
+    loaded = prn.load_func(fold_seg, pidx)
+    combined = prn.prune_funcs.shift_add(loaded, pshift, cur_fold, child_origins)
+    scores = np.asarray(prn.prune_funcs.score(combined), dtype=np.float32)
+    return BranchFanoutReport(
+        level=level,
+        seg_idx=seg_idx,
+        parent_leaf=cur_leaf[0].copy(),
+        child_leaves=np.asarray(child_leaves, dtype=np.float64),
+        child_origins=np.asarray(child_origins, dtype=np.int64),
+        param_indices=np.asarray(pidx, dtype=np.int64),
+        phase_shifts=np.asarray(pshift, dtype=np.float64),
+        scores=scores,
+        surviving_mask=scores >= float(threshold),
+        threshold=float(threshold),
     )

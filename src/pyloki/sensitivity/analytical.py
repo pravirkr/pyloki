@@ -354,3 +354,39 @@ def compare_ffa_vs_fft_flux_ratio(
         fft_gain_factor=1.0 / max(ratio, 1e-12),
         harmonic_power_fraction=power_frac,
     )
+
+
+def spectral_index_sensitivity_increase(
+    band_ratio: float,
+    alpha: float,
+) -> float:
+    r"""Return :math:`\mathrm{SNR}^2` gain of spectral-index weighting vs flat summing.
+
+    For a power-law flux spectrum :math:`S(\nu) \propto \nu^\alpha` across a
+    fractional bandwidth ratio :math:`A = \nu_{\max} / \nu_{\min} \ge 1`,
+    evaluates:
+
+    .. math::
+        G_{\mathrm{SNR}^2}(A, \alpha) =
+        \frac{(\alpha + 1)^2}{2\alpha + 1}
+        \frac{(A - 1)(A^{2\alpha + 1} - 1)}{(A^{\alpha + 1} - 1)^2}
+
+    using smooth Taylor limits at the removable singularities
+    :math:`\alpha = -1`, :math:`\alpha = -0.5`, and :math:`A = 1`.
+    """
+    if band_ratio < 1.0:
+        msg = f"band_ratio must be >= 1.0, got {band_ratio}"
+        raise ValueError(msg)
+    if abs(band_ratio - 1.0) < 1e-12:
+        return 1.0
+    log_a = math.log(band_ratio)
+
+    def _expm1_over_x(x: float) -> float:
+        xl = x * log_a
+        if abs(xl) < 1e-7:
+            return log_a * (1.0 + 0.5 * xl + (xl * xl) / 6.0)
+        return math.expm1(xl) / x
+
+    num = (band_ratio - 1.0) * _expm1_over_x(2.0 * alpha + 1.0)
+    den = _expm1_over_x(alpha + 1.0)
+    return float(num / (den * den))

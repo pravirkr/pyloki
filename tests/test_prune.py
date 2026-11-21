@@ -318,3 +318,95 @@ def test_trace_ep_hypothesis_circular_crackle() -> None:
     assert np.all(np.isfinite(trace.scores))
     report = verify_resolve_stability(dyp, param_vec, ref_seg=0, poly_basis="taylor")
     assert report.is_stable
+
+
+def test_prune_suggestion_single_level_fanout(search: DynamicProgramming) -> None:
+    """prune_suggestion inspects all child branches and scores at a single level."""
+    from pyloki.prune import prune_suggestion  # noqa: PLC0415
+
+    dyp = search
+    freq = 1.0 / 0.007
+    param_vec = np.array([6.0, 500.0, freq], dtype=np.float64)
+    rep = prune_suggestion(
+        dyp,
+        param_vec,
+        level=2,
+        ref_seg=dyp.nsegments // 2,
+        poly_basis="taylor",
+        threshold=1.0,
+    )
+    assert rep.level == 2
+    assert rep.child_leaves.shape[0] >= 1
+    assert rep.scores.shape[0] == rep.child_leaves.shape[0]
+    assert rep.surviving_mask.shape == rep.scores.shape
+    assert np.all(np.isfinite(rep.scores))
+    assert float(np.max(rep.scores)) > 3.0
+
+
+def test_mid_tree_non_destructive_checkpointing_eclipsing_pulsar(
+    tmp_path: Path,
+) -> None:
+    """Mid-tree checkpointing captures partial-span eclipsing tracks cleanly."""
+    from pyloki.simulation.pulse import PulseSignalConfig  # noqa: PLC0415
+
+    sig = PulseSignalConfig(
+        period=0.02,
+        dt=5e-4,
+        nsamps=2**14,
+        snr=28.0,
+        ducy=0.1,
+        seed=13,
+    )
+    ts_full = sig.generate(shape="gaussian")
+    # Simulate a 60% eclipse: signal present in first 40%, pure noise in last 60%
+    rng = np.random.default_rng(14)
+    n_on = int(0.4 * ts_full.nsamps)
+    std_noise = float(np.sqrt(ts_full.ts_v[0]))
+    e_eclipsed = ts_full.ts_e.copy()
+    e_eclipsed[n_on:] = rng.normal(
+        0.0,
+        std_noise,
+        size=ts_full.nsamps - n_on,
+    ).astype(ts_full.ts_e.dtype)
+    ts_ecl = TimeSeries(e_eclipsed, ts_full.ts_v.copy(), ts_full.dt)
+
+    cfg = PulsarSearchConfig(
+        nsamps=ts_ecl.nsamps,
+        tsamp=ts_ecl.dt,
+        nbins=32,
+        eta=1.0,
+        param_limits=np.array([[-5.0, 5.0], [49.8, 50.2]]),
+        prune_poly_order=2,
+        bseg_brute=2**10,
+        bseg_ffa=2**11,
+        use_fourier=False,
+    )
+    dyp = DynamicProgramming(ts_ecl, cfg)
+    dyp.initialize()
+    dyp.execute(show_progress=False)
+
+    thresholds = np.full(dyp.nsegments - 1, 1.0, dtype=np.float32)
+    prn = Pruning(
+        dyp=dyp,
+        threshold_scheme=thresholds,
+        mid_tree_report_snr=5.0,
+        mid_tree_min_level=1,
+        mid_tree_max_keep=8,
+    )
+    prn.execute(
+        ref_seg=0,
+        outdir=tmp_path,
+        log_file=tmp_path / "ecl.log",
+        result_file=tmp_path / "ecl.h5",
+    )
+    assert prn.prune_level == dyp.nsegments - 1
+    assert prn.world_tree.size > 0  # non-destructive: tree still has final survivors
+    assert len(prn.mid_tree_checkpoints) >= 1
+    peak_mid = max(float(cp.scores[0]) for cp in prn.mid_tree_checkpoints)
+    final_max = float(prn.world_tree.score_max)
+    # Mid-tree partial-span checkpoint captures higher S/N than full eclipsed span
+    assert peak_mid > final_max
+    for cp in prn.mid_tree_checkpoints:
+        assert cp.t_end > cp.t_start
+        assert cp.n_segments_integrated == cp.level + 1
+        assert cp.leaves.shape[0] == cp.scores.shape[0]

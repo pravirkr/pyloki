@@ -236,3 +236,38 @@ def test_proper_time_length_matches_nsamps() -> None:
     for nsamps, dt in [(1006, 3e-3), (3018, 1e-3)]:
         cfg = PulseSignalConfig(period=0.1, dt=dt, nsamps=nsamps)
         assert len(cfg.proper_time) == nsamps
+
+
+def test_generate_markov_nulling_envelope() -> None:
+    from pyloki.simulation.pulse import (  # noqa: PLC0415
+        generate_markov_nulling_envelope,
+    )
+
+    assert len(generate_markov_nulling_envelope(0, 0.1, 0.1, seed=1)) == 0
+    env = generate_markov_nulling_envelope(20_000, 0.1, 0.025, seed=42)
+    assert len(env) == 20_000
+    assert set(np.unique(env)).issubset({0.0, 1.0})
+    # Stationary ON probability pi_1 = 0.025 / (0.1 + 0.025) = 0.2
+    assert float(np.mean(env)) == pytest.approx(0.2, abs=0.03)
+    # Deterministic under identical seed
+    env2 = generate_markov_nulling_envelope(20_000, 0.1, 0.025, seed=42)
+    np.testing.assert_array_equal(env, env2)
+
+
+def test_generate_scintillation_envelope() -> None:
+    from pyloki.simulation.pulse import (  # noqa: PLC0415
+        generate_scintillation_envelope,
+    )
+
+    assert len(generate_scintillation_envelope(0, 1.0, 10.0, seed=1)) == 0
+    flat = generate_scintillation_envelope(64, 1.0, 10.0, mod_index=0.0, seed=1)
+    np.testing.assert_array_equal(flat, np.ones(64))
+
+    env = generate_scintillation_envelope(4096, 1.0, 20.0, mod_index=0.6, seed=7)
+    assert len(env) == 4096
+    assert np.all(env > 0.0)
+    assert float(np.mean(env)) == pytest.approx(1.0, rel=1e-12)
+    assert float(np.std(env)) == pytest.approx(0.6, abs=0.15)
+    # Positive lag-1 autocorrelation due to t_corr = 20 s >> dt = 1 s
+    ac1 = float(np.corrcoef(env[:-1], env[1:])[0, 1])
+    assert ac1 > 0.9

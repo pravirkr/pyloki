@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import matplotlib as mpl
 import numpy as np
+import pytest
 from click.testing import CliRunner
 from matplotlib import pyplot as plt
 
@@ -257,3 +258,43 @@ def test_waterfall_lab_state_shifts_and_renders() -> None:
     x_data = np.asarray(overlay_line.get_xdata(), dtype=np.float64)
     assert np.any(np.isnan(x_data)) or np.all(np.abs(np.diff(x_data)) <= 0.5)
     plt.close(fig)
+
+
+def test_load_orbit_overlay_and_cli_options(tmp_path) -> None:
+    """Verify JSON orbit overlay loading and --orbit-overlay CLI exposure."""
+    import json  # noqa: PLC0415
+
+    circ_path = tmp_path / "circ.json"
+    circ_path.write_text(
+        json.dumps({"p_orb": 3600.0, "x_orb": 1.2, "phi_orb": 0.4}),
+        encoding="utf-8",
+    )
+    circ = pyloki_viewer.load_orbit_overlay(circ_path)
+    assert circ.p_orb == pytest.approx(3600.0)
+    assert circ.x_orb == pytest.approx(1.2)
+
+    kep_path = tmp_path / "kep.json"
+    kep_path.write_text(
+        json.dumps(
+            {
+                "p_orb": 5000.0,
+                "x_orb": 2.0,
+                "ecc": 0.3,
+                "aop": 0.8,
+                "phi": 0.2,
+            },
+        ),
+        encoding="utf-8",
+    )
+    kep = pyloki_viewer.load_orbit_overlay(kep_path)
+    assert kep.p_orb == pytest.approx(5000.0)
+    assert kep.ecc == pytest.approx(0.3)
+
+    runner = CliRunner()
+    res_wf = runner.invoke(pyloki_viewer.main, ["waterfall", "--help"])
+    assert res_wf.exit_code == 0
+    assert "--orbit-overlay" in res_wf.output
+    res_sc = runner.invoke(pyloki_viewer.main, ["scheme", "--help"])
+    assert res_sc.exit_code == 0
+    assert "--waterfall" in res_sc.output
+    assert "--orbit-overlay" in res_sc.output

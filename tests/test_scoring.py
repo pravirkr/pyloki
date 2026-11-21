@@ -784,3 +784,28 @@ class TestPhase1ScoringUpgrades:
         )
         _, pgram = ffa_search(ts, cfg_ffa, quiet=True)
         assert float(np.max(pgram.snrs)) > 6.0
+
+
+def test_markov_hmm_multi_trial_h0_calibration() -> None:
+    """Multi-trial H0 Bayes factor stays bounded and separates intermittent H1."""
+    rng = np.random.default_rng(101)
+    n_trials = 200
+    n_seg = 128
+    h0_scores = np.empty(n_trials, dtype=np.float64)
+    for i in range(n_trials):
+        z = rng.standard_normal(n_seg)
+        h0_scores[i] = float(
+            scoring.markov_hmm_log_llr(z, amp=1.5, p_on_off=0.05, p_off_on=0.02)
+        )
+    # Under H0, E[B_10] = 1 so E[log B_10] <= 0 by Jensen's inequality
+    assert np.all(np.isfinite(h0_scores))
+    assert float(np.mean(h0_scores)) < 0.2
+    assert float(np.percentile(h0_scores, 95)) < 4.0
+
+    # Under intermittent H1 (25% ON burst), log Bayes factor clearly exceeds H0 tail
+    z_h1 = rng.standard_normal(n_seg)
+    z_h1[40:72] += 2.0
+    h1_score = float(
+        scoring.markov_hmm_log_llr(z_h1, amp=1.5, p_on_off=0.05, p_off_on=0.02)
+    )
+    assert h1_score > float(np.max(h0_scores)) + 10.0

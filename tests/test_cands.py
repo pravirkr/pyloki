@@ -765,3 +765,22 @@ def test_export_segment_ephemeris_no_cancellation(tmp_path: Path) -> None:
         fmt="json",
     )
     assert all(np.isfinite(r["f1_hz_s"]) and r["f1_hz_s"] != 0.0 for r in rows_kep)
+
+
+def test_diagnostic_card_panel01_overlays_winning_boxcar() -> None:
+    """Panel (0, 1) of diagnostic card overlays the winning boxcar template."""
+    from matplotlib import pyplot as plt  # noqa: PLC0415
+
+    n_seg, n_bins = 8, 32
+    folds = np.zeros((n_seg, 2, n_bins), dtype=np.float32)
+    folds[:, 1, :] = 1.0
+    folds[:, 0, 10:14] = 4.0
+    wf = extract_segment_waterfall(folds)
+    t_seg = np.linspace(0.0, 80.0, n_seg)
+    f_curve = np.full(n_seg, 100.0)
+    fig = plot_candidate_diagnostic_card(wf, t_seg, f_curve)
+    ax_p = fig.axes[1]
+    labels = [line.get_label() for line in ax_p.lines]
+    assert "Profile" in labels
+    assert any(lbl.startswith("Boxcar (w=") for lbl in labels)
+    plt.close(fig)
